@@ -19,6 +19,7 @@ import {
   executeX402Round,
   fetchX402Status,
   previewX402Round,
+  quoteX402Round,
   X402PaymentOutcomeUnknownError,
   X402PaymentRequiredError,
   type X402RoundContext
@@ -800,6 +801,42 @@ describe("execute_x402_round and get_x402_status tools", () => {
       payerUsdc: { ata: env.payerAta, exists: true, balanceAtomicUsdc: "5000000" },
       caps: { spentTodayUsdcAtomic: "0", remainingTodayUsdcAtomic: "10000000" }
     });
+    expect(env.payments).toHaveLength(0);
+  });
+});
+
+
+describe("hosted x402 policies", () => {
+  it("returns the real unpaid 402 quote without accessing payer accounts", async () => {
+    const env = await setup();
+    const { signer, ...unsigned } = env.ctx;
+    const sign = vi.spyOn(signer, "signTransaction");
+    const result = await quoteX402Round(unsigned, { apiConfig, signaturesRequired: 2 });
+    expect(result).toMatchObject({ payment: "x402", quoteOnly: true, dryRun: true,
+      paymentRequired: { x402Version: 2, accepts: [{ amount: String(PRICE), payTo: env.authority }] } });
+    expect(env.payments).toHaveLength(0);
+    expect(env.connection.getMultipleAccountsInfo).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+  });
+  it("ignores and never increments process daily spend when hosted caps are disabled", async () => {
+    const env = await setup({ caps: { dailyCapsEnabled: false, maxSpendPerDayUsdcAtomic: 1n } });
+    recordX402Spend(7n);
+    await executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 });
+    expect(env.payments).toHaveLength(1);
+    expect(x402SpentToday()).toBe(7n);
+    expect(await previewX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).not.toHaveProperty("spentTodayAtomicUsdc");
+  });
+  it("retains the per-round limit with daily caps disabled", async () => {
+    const env = await setup({ caps: { dailyCapsEnabled: false, maxPriceUsdcAtomic: 1n } });
+    await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).rejects.toThrow("per-round");
+    expect(env.payments).toHaveLength(0);
+  });
+  it("does not start a cancelled round", async () => {
+    const env = await setup();
+    const controller = new AbortController(); controller.abort();
+    env.ctx.lifecycle = { signal: controller.signal };
+    await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).rejects.toThrow();
+    expect(env.quotes).toHaveLength(0);
     expect(env.payments).toHaveLength(0);
   });
 });

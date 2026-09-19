@@ -15,7 +15,7 @@
 import { address, type Address } from "@solana/kit";
 import type { Connection } from "@solana/web3.js";
 import { canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
-import { getMolphaProgramId, requireMethod } from "./clients.js";
+import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
 import { checkX402PerRoundCap, checkX402SpendCap, recordX402Spend, x402SpentToday } from "./guardrails.js";
 import { normalizeSourceId } from "./hex.js";
@@ -50,6 +50,7 @@ export interface X402RoundOptions {
 }
 
 export interface X402RoundContext {
+  lifecycle?: RequestLifecycle;
   config: MolphaConfig;
   connection: Pick<Connection, "getAccountInfo" | "getMultipleAccountsInfo" | "getGenesisHash" | "getLatestBlockhash">;
   signer: MolphaSigner;
@@ -126,7 +127,8 @@ export interface GatewayFloatStatus {
 
 export async function fetchX402Status(
   config: MolphaConfig,
-  signaturesRequired?: number
+  signaturesRequired?: number,
+  signal?: AbortSignal
 ): Promise<{ endpoint: string; status: GatewayFloatStatus }> {
   const query = signaturesRequired === undefined ? "" : `?signatures_required=${signaturesRequired}`;
   let lastError = "no gateway endpoint configured";
@@ -134,7 +136,7 @@ export async function fetchX402Status(
   for (const endpoint of config.gatewayEndpoints) {
     let res: Response;
     try {
-      res = await fetch(`${trimSlash(endpoint)}/v1/x402/status${query}`, { method: "GET" });
+      res = await fetch(`${trimSlash(endpoint)}/v1/x402/status${query}`, { method: "GET", ...(signal ? { signal } : {}) });
     } catch (error) {
       lastError = `${endpoint}: ${errorMessage(error)}`;
       continue;
@@ -152,11 +154,52 @@ export async function fetchX402Status(
   throw new Error(`GET /v1/x402/status failed on every gateway (${lastError})`);
 }
 
+/** Unsigned quote: no payer accounts, signature, payment, or attestation. */
+export async function quoteX402Round(ctx: Omit<X402RoundContext, "signer">, opts: X402RoundOptions): Promise<Record<string, unknown>> {
+  ctx.lifecycle?.signal.throwIfAborted();
+  const plan = await planRound(ctx, opts);
+  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan, nowSeconds()), ctx.lifecycle?.signal);
+  const envelope = asRecord(required);
+  if (!envelope || !Array.isArray(envelope.accepts) || envelope.accepts.length === 0 || envelope.x402Version !== 2) {
+    throw new Error("Invalid payment-required envelope");
+  }
+  // Exclude gateway diagnostic text/extensions: only the protocol quote is returned.
+  const accepts = envelope.accepts.map(value => {
+    const item = asRecord(value);
+    if (!item || ["scheme", "network", "asset", "amount", "payTo"].some(key => typeof item[key] !== "string")) {
+      throw new Error("Invalid payment requirements");
+    }
+    if (item.scheme !== "exact" || !/^solana:[1-9A-HJ-NP-Za-km-z]+$/.test(String(item.network)) || !/^\d+$/.test(String(item.amount))) {
+      throw new Error("Unsupported payment requirements");
+    }
+    parseSolanaPubkey(String(item.asset), "quote asset");
+    parseSolanaPubkey(String(item.payTo), "quote payTo");
+    if (item.maxTimeoutSeconds !== undefined && (typeof item.maxTimeoutSeconds !== "number" || !Number.isInteger(item.maxTimeoutSeconds) || item.maxTimeoutSeconds <= 0)) {
+      throw new Error("Invalid quote timeout");
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of ["scheme", "network", "asset", "amount", "payTo", "maxTimeoutSeconds"]) {
+      if (item[key] !== undefined) out[key] = item[key];
+    }
+    const extra = asRecord(item.extra);
+    if (extra) {
+      if (extra.feePayer !== undefined) parseSolanaPubkey(String(extra.feePayer), "quote feePayer");
+      if (extra.memo !== undefined && (typeof extra.memo !== "string" || !/^[a-fA-F0-9]{64}$/.test(extra.memo))) throw new Error("Invalid quote memo");
+      out.extra = Object.fromEntries(["feePayer", "memo"].filter(key => typeof extra[key] === "string").map(key => [key, extra[key]]));
+    }
+    return out;
+  });
+  return { payment: "x402", dryRun: true, quoteOnly: true, action: "execute_x402_round",
+    sourceId: `0x${plan.sourceId}`, endpoint, paymentRequired: { x402Version: 2, accepts },
+    note: "Unsigned gateway quote; no payer-specific verification, signature, payment, or attestation. Supply managed-signer headers to execute." };
+}
+
 /** Quotes and verifies a round's payment without signing or spending anything. */
 export async function previewX402Round(
   ctx: X402RoundContext,
   opts: X402RoundOptions
 ): Promise<Record<string, unknown>> {
+  ctx.lifecycle?.signal.throwIfAborted();
   const plan = await planRound(ctx, opts);
   const { endpoint, verified, accounts } = await preparePayment(ctx, plan, nowSeconds());
   const shortfall = verified.amount > accounts.payerBalance ? verified.amount - accounts.payerBalance : 0n;
@@ -175,7 +218,7 @@ export async function previewX402Round(
     payerUsdcAta: accounts.payerAta,
     payerBalanceAtomicUsdc: accounts.payerBalance.toString(),
     shortfallAtomicUsdc: shortfall.toString(),
-    spentTodayAtomicUsdc: x402SpentToday().toString(),
+    ...(ctx.config.x402.dailyCapsEnabled !== false ? { spentTodayAtomicUsdc: x402SpentToday().toString() } : {}),
     note:
       shortfall > 0n
         ? "The signer's USDC balance does not cover this round; a live call would refuse before signing."
@@ -185,6 +228,7 @@ export async function previewX402Round(
 
 /** Pays for and runs one round, returning the signed aggregate and its payment receipt. */
 export async function executeX402Round(ctx: X402RoundContext, opts: X402RoundOptions): Promise<X402RoundResult> {
+  ctx.lifecycle?.signal.throwIfAborted();
   const plan = await planRound(ctx, opts);
   let canonicalTimestamp = nowSeconds();
 
@@ -198,8 +242,17 @@ export async function executeX402Round(ctx: X402RoundContext, opts: X402RoundOpt
     }
 
     const paymentHeader = await signPayment(ctx, payment);
-    recordX402Spend(verified.amount);
-    const outcome = await postPaidExecute(payment.endpoint, executeBody(plan, canonicalTimestamp), paymentHeader);
+    ctx.lifecycle?.signal.throwIfAborted();
+    if (ctx.config.x402.dailyCapsEnabled !== false) recordX402Spend(verified.amount);
+    if (ctx.lifecycle) {
+      ctx.lifecycle.effectStarted = true;
+      ctx.lifecycle.reconciliation = {
+        endpoint: payment.endpoint, payer: ctx.signer.publicKey, payTo: verified.payTo,
+        asset: verified.asset, amountAtomicUsdc: verified.amount.toString(), memo: verified.memo,
+        sourceId: plan.sourceId, canonicalTimestamp
+      };
+    }
+    const outcome = await postPaidExecute(payment.endpoint, executeBody(plan, canonicalTimestamp), paymentHeader, ctx.lifecycle?.signal);
 
     if (outcome.kind === "ok") {
       return completeRound(ctx, plan, payment, outcome);
@@ -225,7 +278,7 @@ interface RoundPlan {
   priceAtomic: bigint;
 }
 
-async function planRound(ctx: X402RoundContext, opts: X402RoundOptions): Promise<RoundPlan> {
+async function planRound(ctx: Omit<X402RoundContext, "signer">, opts: X402RoundOptions): Promise<RoundPlan> {
   const sourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
   if (opts.sourceId !== undefined && normalizeSourceId(opts.sourceId) !== sourceId) {
     throw new Error(`sourceId does not match apiConfig: expected ${sourceId}, got ${opts.sourceId}`);
@@ -281,7 +334,7 @@ async function preparePayment(
   plan: RoundPlan,
   canonicalTimestamp: number
 ): Promise<PreparedPayment> {
-  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan, canonicalTimestamp));
+  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan, canonicalTimestamp), ctx.lifecycle?.signal);
   const authority = await gatewayAuthority(ctx, endpoint);
   const accounts = await readPaymentAccounts(ctx.connection, {
     programId: plan.programId,
@@ -305,7 +358,11 @@ async function preparePayment(
       canonicalTimestamp
     })
   });
-  checkX402SpendCap(verified.amount, ctx.config.x402.maxPriceUsdcAtomic, ctx.config.x402.maxSpendPerDayUsdcAtomic);
+  if (ctx.config.x402.dailyCapsEnabled !== false) {
+    checkX402SpendCap(verified.amount, ctx.config.x402.maxPriceUsdcAtomic, ctx.config.x402.maxSpendPerDayUsdcAtomic);
+  } else {
+    checkX402PerRoundCap(verified.amount, ctx.config.x402.maxPriceUsdcAtomic);
+  }
 
   return { endpoint, required, canonicalTimestamp, verified, accounts };
 }
@@ -324,6 +381,7 @@ async function signPayment(ctx: X402RoundContext, payment: PreparedPayment): Pro
     memo: verified.memo,
     recentBlockhash: blockhash
   });
+  ctx.lifecycle?.signal.throwIfAborted();
   const signed = await signPaymentTransaction(ctx.signer, transaction, verified.feePayer);
   const resource = describedResource(payment.required);
 
@@ -350,11 +408,12 @@ type PaidOutcome =
 async function postPaidExecute(
   endpoint: string,
   body: Record<string, unknown>,
-  paymentHeader: string
+  paymentHeader: string,
+  signal?: AbortSignal
 ): Promise<PaidOutcome> {
   let res: Response;
   try {
-    res = await postExecute(endpoint, body, paymentHeader);
+    res = await postExecute(endpoint, body, paymentHeader, signal);
   } catch (error) {
     return { kind: "unknown", message: errorMessage(error) };
   }
@@ -473,14 +532,16 @@ function completeRound(
 /** The first endpoint that quotes the round; the paid request goes to that endpoint only. */
 async function requestQuote(
   endpoints: string[],
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<{ endpoint: string; required: unknown }> {
   let lastError = "no gateway endpoint configured";
 
   for (const endpoint of endpoints) {
     let res: Response;
     try {
-      res = await postExecute(endpoint, body);
+      signal?.throwIfAborted();
+      res = await postExecute(endpoint, body, undefined, signal);
     } catch (error) {
       lastError = `${endpoint}: ${errorMessage(error)}`;
       continue;
@@ -499,24 +560,18 @@ async function requestQuote(
   throw new Error(`no gateway returned an x402 payment quote (${lastError})`);
 }
 
-const discoveredAuthorities = new Map<string, Promise<Address>>();
+// Cache only public resolved addresses, never promises closing over request clients.
+const discoveredAuthorities = new Map<string, Address>();
 
-/** GATEWAY_AUTHORITIES pin for the endpoint, else its `GET /v1/info` (cached per endpoint). */
-function gatewayAuthority(ctx: X402RoundContext, endpoint: string): Promise<Address> {
+async function gatewayAuthority(ctx: X402RoundContext, endpoint: string): Promise<Address> {
   const pinned = ctx.config.gatewayAuthorities[ctx.config.gatewayEndpoints.indexOf(endpoint)];
-  if (pinned) {
-    return Promise.resolve(address(pinned));
-  }
-
-  let pending = discoveredAuthorities.get(endpoint);
-  if (!pending) {
-    pending = requireMethod<[string], Promise<{ gatewayAuthority: string }>>(ctx.gateway, "fetchGatewayInfo")(
-      endpoint
-    ).then((info) => parseSolanaPubkey(info.gatewayAuthority, `GET ${endpoint}/v1/info gatewayAuthority`));
-    pending.catch(() => discoveredAuthorities.delete(endpoint));
-    discoveredAuthorities.set(endpoint, pending);
-  }
-  return pending;
+  if (pinned) return address(pinned);
+  const cached = discoveredAuthorities.get(endpoint);
+  if (cached) return cached;
+  const info = await requireMethod<[string], Promise<{ gatewayAuthority: string }>>(ctx.gateway, "fetchGatewayInfo")(endpoint);
+  const authority = parseSolanaPubkey(info.gatewayAuthority, "gateway authority");
+  discoveredAuthorities.set(endpoint, authority);
+  return authority;
 }
 
 const clusterNetworks = new WeakMap<object, Promise<string>>();
@@ -541,14 +596,15 @@ function executeBody(plan: RoundPlan, canonicalTimestamp: number): Record<string
   };
 }
 
-function postExecute(endpoint: string, body: Record<string, unknown>, paymentHeader?: string): Promise<Response> {
+function postExecute(endpoint: string, body: Record<string, unknown>, paymentHeader?: string, signal?: AbortSignal): Promise<Response> {
   return fetch(`${trimSlash(endpoint)}/v1/x402/execute`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       ...(paymentHeader ? { "PAYMENT-SIGNATURE": paymentHeader } : {})
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {})
   });
 }
 

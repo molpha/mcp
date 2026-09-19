@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getMolphaContext, requireMethod } from "../clients.js";
+import { requireSigner, assertActive, getMolphaContext, requireMethod, type ToolDependencies } from "../clients.js";
 import { toolHandler } from "../mcp.js";
 import { buildRoundResult, prepareRound, roundInputSchema, roundOutputShape, type RoundArgs } from "./round.js";
 import { type ToolServer } from "./types.js";
@@ -11,7 +11,7 @@ const outputSchema = z.object({
   signaturesRequired: z.number().int().optional().describe("Preview only; a live round carries it in dataUpdate.")
 });
 
-export function registerExecuteSubscriptionRoundTool(server: ToolServer): void {
+export function registerExecuteSubscriptionRoundTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "execute_subscription_round",
     {
@@ -33,7 +33,9 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer): void {
     },
     toolHandler(outputSchema, async (args: RoundArgs & { encryptSecrets?: Record<string, string> }) => {
       const { apiConfig, signaturesRequired, maxAge, chains, encryptSecrets, autoSubmit = false, dryRun } = args;
-      const { config, gateway } = await getMolphaContext();
+      const context = await (dependencies.getContext ?? getMolphaContext)();
+      requireSigner(context);
+      const { config, gateway } = context;
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
       const sourceId = prepareRound(args);
 
@@ -52,6 +54,8 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer): void {
         gateway,
         "requestSignedData"
       );
+      assertActive(context);
+      if (context.lifecycle) context.lifecycle.effectStarted = true;
       const result = await requestSignedData({
         apiConfig,
         signaturesRequired,
@@ -59,7 +63,7 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer): void {
         ...(encryptSecrets ? { encrypt: { secrets: encryptSecrets } } : {})
       });
 
-      return buildRoundResult(result, chains, config, "subscription", autoSubmit);
+      return buildRoundResult(result, chains, config, "subscription", autoSubmit, context);
     })
   );
 }

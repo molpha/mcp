@@ -5,7 +5,7 @@
  */
 
 import { toSignedResult } from "./artifacts.js";
-import { getMolphaContext, requireMethod } from "./clients.js";
+import { getMolphaContext, requireMethod, requireSigner, assertActive, type RequestContext } from "./clients.js";
 import { enforceExecuteCap, previewWrite } from "./guardrails.js";
 
 export interface SubmitOutcome {
@@ -58,8 +58,10 @@ export function previewSubmit(
 }
 
 /** Enforces the daily execute cap, then submits. Callers must pass a prepared result. */
-export async function submitSignedResult(result: Record<string, unknown>): Promise<SubmitOutcome> {
-  const { config, solana, signer } = await getMolphaContext();
+export async function submitSignedResult(result: Record<string, unknown>, context?: RequestContext): Promise<SubmitOutcome> {
+  const ctx = context ?? await getMolphaContext();
+  requireSigner(ctx);
+  const { config, solana, signer } = ctx;
   enforceExecuteCap(config.guardrails);
 
   const submitAttestation = requireMethod<
@@ -67,6 +69,8 @@ export async function submitSignedResult(result: Record<string, unknown>): Promi
     Promise<{ signature: string; feed: unknown }>
   >(solana, "submitAttestation");
 
+  assertActive(ctx);
+  if (ctx.lifecycle) ctx.lifecycle.effectStarted = true;
   const tx = await submitAttestation(result);
 
   return {

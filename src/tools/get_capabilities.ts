@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getMolphaContext, getMolphaProgramId, requireMethod } from "../clients.js";
+import { getMolphaContext, getMolphaProgramId, requireMethod, type ToolDependencies } from "../clients.js";
 import { settle } from "../errors.js";
 import { toolHandler } from "../mcp.js";
 import { getVerifierMetadata } from "../verifiers.js";
@@ -36,11 +36,11 @@ const outputSchema = z.object({
   payment: z.object({
     subscription: z.literal("execute_subscription_round"),
     x402: z.literal("execute_x402_round"),
-    x402Caps: z.object({ maxPriceUsdcAtomic: z.string(), maxSpendPerDayUsdcAtomic: z.string() })
+    x402Caps: z.object({ maxPriceUsdcAtomic: z.string(), maxSpendPerDayUsdcAtomic: z.string().optional(), dailyCapsEnabled: z.boolean().optional() })
   })
 });
 
-export function registerGetCapabilitiesTool(server: ToolServer): void {
+export function registerGetCapabilitiesTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "get_capabilities",
     {
@@ -54,7 +54,7 @@ export function registerGetCapabilitiesTool(server: ToolServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true }
     },
     toolHandler(outputSchema, async ({ includeAbi = false }: { includeAbi?: boolean }) => {
-      const { config, gateway, solana } = await getMolphaContext();
+      const { config, gateway, solana, hosted } = await (dependencies.getContext ?? getMolphaContext)();
       const [nodesResult, registryVersionResult] = await Promise.all([
         settle("gateway.getNodes", async () => requireMethod<[], Promise<unknown[]>>(gateway, "getNodes")()),
         settle("solana.getRegistryVersion", async () =>
@@ -81,14 +81,14 @@ export function registerGetCapabilitiesTool(server: ToolServer): void {
         })),
         nodeCount: Array.isArray(nodes) ? nodes.length : 0,
         nodes: nodesResult.ok ? nodes : nodesResult,
-        solanaRpc: config.solanaRpc,
+        solanaRpc: hosted ? new URL(config.solanaRpc).origin : config.solanaRpc,
         verifiers,
         payment: {
           subscription: "execute_subscription_round",
           x402: "execute_x402_round",
           x402Caps: {
             maxPriceUsdcAtomic: config.x402.maxPriceUsdcAtomic.toString(),
-            maxSpendPerDayUsdcAtomic: config.x402.maxSpendPerDayUsdcAtomic.toString()
+            ...(config.x402.dailyCapsEnabled === false ? { dailyCapsEnabled: false } : { maxSpendPerDayUsdcAtomic: config.x402.maxSpendPerDayUsdcAtomic.toString() })
           }
         }
       };

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getMolphaContext, requireMethod } from "../clients.js";
+import { getMolphaContext, requireMethod, type ToolDependencies } from "../clients.js";
 import { presentFeed } from "../feed.js";
 import { toCanonicalHex } from "../hex.js";
 import { toolHandler } from "../mcp.js";
@@ -16,7 +16,7 @@ const outputSchema = z.object({
     .describe("null until this submitter's first submit_attestation for (sourceId, signaturesRequired).")
 });
 
-export function registerGetLatestValueTool(server: ToolServer): void {
+export function registerGetLatestValueTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "get_latest_value",
     {
@@ -42,13 +42,14 @@ export function registerGetLatestValueTool(server: ToolServer): void {
         submitter?: string;
       }
     ) => {
-      const { solana, signer } = await getMolphaContext();
+      const { solana, signer } = await (dependencies.getContext ?? getMolphaContext)();
       const readFeed = requireMethod<[string, number, string], Promise<Record<string, unknown> | null>>(
         solana,
         "readFeed"
       );
       const canonicalSourceId = toCanonicalHex(sourceId, 32, "sourceId");
-      const feedSubmitter = submitter ?? String(signer.publicKey);
+      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly for unsigned hosted feed reads."), { code: "submitter_required" });
+      const feedSubmitter = submitter ?? String(signer!.publicKey);
 
       return {
         sourceId: canonicalSourceId,

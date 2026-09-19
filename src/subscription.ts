@@ -11,7 +11,8 @@ export interface SubscriptionStatus {
 }
 
 export async function readSubscriptionStatus(
-  solana: Record<string, unknown>
+  solana: Record<string, unknown>,
+  hosted = false
 ): Promise<SubscriptionStatus> {
   const readSubscription = requireMethod<[], Promise<Record<string, unknown> | null>>(solana, "readSubscription");
 
@@ -51,7 +52,7 @@ export async function readSubscriptionStatus(
   } catch (error) {
     return {
       active: false,
-      message: error instanceof Error ? error.message : String(error)
+      message: hosted ? "Subscription status unavailable." : error instanceof Error ? error.message : String(error)
     };
   }
 }

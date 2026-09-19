@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { getMolphaContext } from "../clients.js";
+import { getMolphaContext, requireSigner, type ToolDependencies } from "../clients.js";
 import { toolHandler } from "../mcp.js";
-import { executeX402Round, previewX402Round } from "../x402.js";
+import { executeX402Round, previewX402Round, quoteX402Round } from "../x402.js";
 import { buildRoundResult, prepareRound, roundInputSchema, roundOutputShape, type RoundArgs } from "./round.js";
 import { type ToolServer } from "./types.js";
 
@@ -35,10 +35,13 @@ const outputSchema = z.object({
   payerBalanceAtomicUsdc: z.string().optional(),
   shortfallAtomicUsdc: z.string().optional(),
   spentTodayAtomicUsdc: z.string().optional(),
-  note: z.string().optional()
+  note: z.string().optional(),
+  quoteOnly: z.literal(true).optional(),
+  endpoint: z.string().optional(),
+  paymentRequired: z.object({ x402Version: z.literal(2), accepts: z.array(z.record(z.unknown())) }).optional()
 });
 
-export function registerExecuteX402RoundTool(server: ToolServer): void {
+export function registerExecuteX402RoundTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "execute_x402_round",
     {
@@ -52,7 +55,7 @@ export function registerExecuteX402RoundTool(server: ToolServer): void {
     },
     toolHandler(outputSchema, async (args: RoundArgs) => {
       const { apiConfig, signaturesRequired, maxAge, chains, autoSubmit = false, dryRun } = args;
-      const context = await getMolphaContext();
+      const context = await (dependencies.getContext ?? getMolphaContext)();
       const isDryRun = dryRun ?? context.config.guardrails.dryRunDefault;
       const round = {
         apiConfig,
@@ -60,6 +63,9 @@ export function registerExecuteX402RoundTool(server: ToolServer): void {
         sourceId: prepareRound(args),
         ...(maxAge !== undefined ? { maxAge } : {})
       };
+
+      if (!context.signer) return quoteX402Round(context, round);
+      requireSigner(context);
 
       if (isDryRun) {
         return {
@@ -71,7 +77,7 @@ export function registerExecuteX402RoundTool(server: ToolServer): void {
 
       const { result, payment } = await executeX402Round(context, round);
       return {
-        ...(await buildRoundResult(result, chains, context.config, "x402", autoSubmit)),
+        ...(await buildRoundResult(result, chains, context.config, "x402", autoSubmit, context)),
         paymentReceipt: payment
       };
     })

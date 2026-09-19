@@ -1,3 +1,4 @@
+import type { ToolDependencies } from "../clients.js";
 import { z } from "zod";
 import { deriveSourceId } from "../apiconfig.js";
 import { checkApiConfigDeterminism } from "../determinism.js";
@@ -19,7 +20,7 @@ const outputSchema = z.object({
   note: z.string()
 });
 
-export function registerDeriveSourceIdTool(server: ToolServer): void {
+export function registerDeriveSourceIdTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "derive_source_id",
     {
