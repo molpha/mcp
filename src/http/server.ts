@@ -36,14 +36,34 @@ function bool(value: string | undefined, fallback: boolean): boolean {
   return value === "true";
 }
 const list = (value: string | undefined, fallback: string[]) => value === undefined ? fallback : value.split(",").map(item => item.trim()).filter(Boolean);
+const unique = (values: string[]) => [...new Set(values)];
+
+function hostnameFromPlatformUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    return new URL(value.includes("://") ? value : `https://${value}`).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Deployment hostnames Vercel injects; merged into Host/Origin allowlists. */
+export function vercelPublicHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+  return unique(
+    [env.VERCEL_URL, env.VERCEL_BRANCH_URL, env.VERCEL_PROJECT_PRODUCTION_URL]
+      .map(hostnameFromPlatformUrl)
+      .filter((value): value is string => Boolean(value))
+  );
+}
 
 export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env, portOverride?: number): HttpConfig {
-  const port = portOverride ?? positive(env.MOLPHA_HTTP_PORT, 8402);
+  const port = portOverride ?? positive(env.MOLPHA_HTTP_PORT || env.PORT, 8402);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("HTTP port must be between 1 and 65535");
+  const vercelHosts = vercelPublicHosts(env);
   return {
-    host: env.MOLPHA_HTTP_HOST ?? "127.0.0.1", port,
-    allowedHosts: list(env.MOLPHA_HTTP_ALLOWED_HOSTS, ["localhost", "127.0.0.1", "[::1]", "mcp.molpha.io"]),
-    allowedOrigins: list(env.MOLPHA_HTTP_ALLOWED_ORIGINS, [`http://localhost:${port}`, `http://127.0.0.1:${port}`, "https://mcp.molpha.io"]),
+    host: env.MOLPHA_HTTP_HOST ?? (env.VERCEL === "1" ? "0.0.0.0" : "127.0.0.1"), port,
+    allowedHosts: unique([...list(env.MOLPHA_HTTP_ALLOWED_HOSTS, ["localhost", "127.0.0.1", "[::1]", "mcp.molpha.io"]), ...vercelHosts]),
+    allowedOrigins: unique([...list(env.MOLPHA_HTTP_ALLOWED_ORIGINS, [`http://localhost:${port}`, `http://127.0.0.1:${port}`, "https://mcp.molpha.io"]), ...vercelHosts.map(host => `https://${host}`)]),
     trustedProxies: list(env.MOLPHA_HTTP_TRUSTED_PROXIES, []),
     allowEncryptSecrets: bool(env.MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS, false),
     rateLimit: bool(env.MOLPHA_HTTP_RATE_LIMIT, true),

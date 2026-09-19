@@ -9,8 +9,8 @@ import { serverVersion } from "./version.js";
 try {
   const { values } = parseArgs({ options: { http: { type: "boolean" }, port: { type: "string" }, help: { type: "boolean" } }, strict: true });
   if (values.help) {
-    console.log("Usage: molpha-mcp [--http [--port 8402]]\nDefault transport: stdio. HTTP endpoint: /mcp; health: /healthz.");
-  } else if (values.http) {
+    console.log("Usage: molpha-mcp [--http [--port 8402]]\nDefault transport: stdio. HTTP endpoint: /mcp; health: /healthz. Vercel sets VERCEL=1 and starts HTTP automatically.");
+  } else if (values.http || process.env.VERCEL === "1") {
     const { createHostedHttpServer, loadHttpConfig } = await import("./http/server.js");
     const hosted = createHostedHttpServer({ config: loadHttpConfig(process.env, values.port === undefined ? undefined : Number(values.port)) });
     await new Promise<void>((resolve, reject) => {

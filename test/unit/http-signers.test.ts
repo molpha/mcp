@@ -57,6 +57,16 @@ describe("HTTP configuration and limiter", () => {
   it("uses strict defaults with explicit self-hosted overrides", () => {
     expect(loadHttpConfig({})).toMatchObject({ host: "127.0.0.1", port: 8402, burst: 60, refillPerSecond: 1, allowEncryptSecrets: false, rateLimit: true });
     expect(loadHttpConfig({ MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS: "true", MOLPHA_HTTP_RATE_LIMIT: "false" }, 1234)).toMatchObject({ port: 1234, allowEncryptSecrets: true, rateLimit: false });
+    expect(loadHttpConfig({ PORT: "3000" }).port).toBe(3000);
+    expect(loadHttpConfig({ MOLPHA_HTTP_PORT: "8402", PORT: "3000" }).port).toBe(8402);
+    expect(loadHttpConfig({ VERCEL: "1" }).host).toBe("0.0.0.0");
+    expect(loadHttpConfig({
+      VERCEL_URL: "molpha-mcp-abc123.vercel.app",
+      VERCEL_PROJECT_PRODUCTION_URL: "https://mcp.molpha.io"
+    }).allowedHosts).toEqual(expect.arrayContaining(["mcp.molpha.io", "molpha-mcp-abc123.vercel.app"]));
+    expect(loadHttpConfig({
+      VERCEL_URL: "molpha-mcp-abc123.vercel.app"
+    }).allowedOrigins).toEqual(expect.arrayContaining(["https://mcp.molpha.io", "https://molpha-mcp-abc123.vercel.app"]));
     expect(getSharedRuntime({ MOLPHA_HTTP_DAILY_CAPS: "true" }).config.x402.dailyCapsEnabled).toBe(true);
     expect(() => loadHttpConfig({}, 65536)).toThrow();
     expect(() => loadHttpConfig({ MOLPHA_HTTP_RATE_LIMIT: "maybe" })).toThrow();
