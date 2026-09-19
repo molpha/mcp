@@ -52,7 +52,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       ...withStatus("payment_required", message, status),
       remediation:
-        "The gateway rejected the x402 payment (see details.error). Check the signer's USDC balance and the x402 caps with get_agent_status, then retry, or use execute_subscription_round with an active subscription.",
+        "The gateway rejected the x402 payment (see details.error). Check the signer's USDC balance and the x402 caps with get_x402_status, then retry, or use execute_subscription_round with an active subscription.",
       ...(payload !== undefined ? { details: payload } : {})
     };
   }
@@ -61,7 +61,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       ...withStatus("forbidden", message, status),
       remediation:
-        "The gateway refused this signer's subscription (missing, expired, or out of quota). Extend it via the bootstrap CLI, or use execute_agent_round for a self-funded round."
+        "The gateway refused this signer's subscription (missing, expired, or out of quota). Extend it via the bootstrap CLI, or use execute_x402_round for a self-funded round."
     };
   }
 
@@ -106,7 +106,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       code: "subscription_inactive",
       message,
-      remediation: "Run the bootstrap CLI to subscribe, or use execute_agent_round for a self-funded round."
+      remediation: "Run the bootstrap CLI to subscribe, or use execute_x402_round for a self-funded round."
     };
   }
 
@@ -123,7 +123,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     };
   }
 
-  if (message.includes("/v1/agent/execute") && message.includes("page not found")) {
+  if (message.includes("/v1/x402/execute") && message.includes("page not found")) {
     return {
       code: "invalid_config",
       message,

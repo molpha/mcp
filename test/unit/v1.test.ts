@@ -221,7 +221,7 @@ describe("guardrails", () => {
 describe("normalizeError", () => {
   it("maps subscription, payment, and config errors with remediation", () => {
     expect(normalizeError(new Error("OWNER_KEYPAIR is required")).code).toBe("missing_config");
-    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("execute_agent_round");
+    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("execute_x402_round");
     expect(normalizeError(new Error("execute cap reached (10 per day)")).code).toBe("guardrail_exceeded");
     expect(
       normalizeError(new Error("x402 per-round price cap reached: round price (2 USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (1 USDC).")).code
@@ -239,7 +239,7 @@ describe("normalizeError", () => {
     const error = Object.assign(new Error("Gateway rejected request (403): subscription expired"), { status: 403 });
     const normalized = normalizeError(error);
     expect(normalized.code).toBe("forbidden");
-    expect(normalized.remediation).toContain("execute_agent_round");
+    expect(normalized.remediation).toContain("execute_x402_round");
   });
 
   it("maps a gateway without GET /v1/info to a GATEWAY_AUTHORITIES fix", () => {

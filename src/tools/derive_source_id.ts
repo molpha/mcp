@@ -5,6 +5,20 @@ import { toolHandler } from "../mcp.js";
 import { apiConfigSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
+const outputSchema = z.object({
+  sourceId: z.string().describe("32-byte sourceId, 0x-prefixed hex."),
+  canonicalApiConfig: z.object({
+    url: z.string(),
+    method: z.string(),
+    headers: z.record(z.string()),
+    responseParser: z.string(),
+    valueTransform: z.string()
+  }),
+  canonicalJson: z.string().describe("The exact UTF-8 preimage hashed into sourceId."),
+  determinismWarnings: z.array(z.string()).optional(),
+  note: z.string()
+});
+
 export function registerDeriveSourceIdTool(server: ToolServer): void {
   server.registerTool(
     "derive_source_id",
@@ -15,9 +29,11 @@ export function registerDeriveSourceIdTool(server: ToolServer): void {
       inputSchema: {
         apiConfig: apiConfigSchema,
         rejectNonDeterministic: z.boolean().optional()
-      }
+      },
+      outputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: false }
     },
-    toolHandler((
+    toolHandler(outputSchema, (
       {
         apiConfig,
         rejectNonDeterministic = false

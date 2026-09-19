@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24-339933?logo=node.js&logoColor=white)](package.json)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI agents create, fetch, verify, and publish [Molpha](https://docs.molpha.io/) oracle data.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI agents fetch signed [Molpha](https://docs.molpha.io/) oracle data, publish it on Solana, and build verifier calldata for EVM and Starknet.
 
 Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet. This server exposes that workflow as a small set of MCP tools and keeps signing behind a local, Privy, or Turnkey-backed wallet.
 
@@ -25,20 +25,35 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 | Tool | Access | Description |
 | --- | --- | --- |
 | `get_capabilities` | Read | Return the program id, registry version, node set, gateways, chains, verifier metadata, and x402 caps. |
-| `derive_source_id` | Read | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
+| `derive_source_id` | Read, local | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
 | `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass `sourceId`, or `apiConfig` to derive it. |
 | `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
-| `get_agent_status` | Read | Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget. |
-| `execute_subscription_round` | Read/quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
-| `execute_agent_round` | Read/spend | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
-| `verify_attestation` | Read | Build EVM/Starknet verifier address and call arguments (calldata only, by design). |
+| `get_x402_status` | Read | Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget. |
+| `execute_subscription_round` | Spends quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
+| `execute_x402_round` | Spends USDC | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
+| `build_verifier_calldata` | Read, local | Build EVM/Starknet verifier address and `verify()` call arguments. Calldata only: it verifies nothing. |
 | `submit_attestation` | Write | Submit a signed attestation to Solana. Accepts a round tool's output unmodified. |
 
-`verify_attestation` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `submit_attestation` or a round tool's `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `get_latest_value`.
+`build_verifier_calldata` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `submit_attestation` or a round tool's `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `get_latest_value`.
 
-`submit_attestation` and `verify_attestation` take a round tool's response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
+`submit_attestation` and `build_verifier_calldata` take a round tool's response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
 
 Solana feed accounts are keyed by `(sourceId, signaturesRequired, submitter)`: every wallet that submits a source maintains its own feed for it, created by that wallet's first `submit_attestation`. `describe_feed` and `get_latest_value` default `submitter` to this server's signer; pass another wallet's address to read the feed it maintains.
+
+### Structured output and annotations
+
+Every tool declares an `outputSchema` and returns its result as `structuredContent`, with the same JSON in a text block for clients that do not read structured content. The round tools' `value`, `fresh`, `dataUpdate`, and `signature` fields follow one canonical signed-artifact schema — the same shape `submit_attestation` and `build_verifier_calldata` accept — so a round's output passes to either without remapping. If a result ever fails to match its schema, the tool still returns it in full, flagged as an error, rather than dropping it — so a schema mismatch cannot discard a paid round's signed artifact.
+
+Each tool also carries MCP annotations, so clients can decide what needs confirmation:
+
+| Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --- | --- | --- | --- | --- |
+| `get_capabilities`, `describe_feed`, `get_latest_value`, `get_x402_status` | `true` | — | — | `true` |
+| `derive_source_id`, `build_verifier_calldata` | `true` | — | — | `false` |
+| `execute_subscription_round`, `execute_x402_round` | `false` | `true` | `false` | `true` |
+| `submit_attestation` | `false` | `false` | `true` | `true` |
+
+The round tools are marked destructive because each call irreversibly spends subscription quota or USDC, and a repeated call pays for another round. `submit_attestation` only ever advances the signer's own feed: the program accepts an attestation only if it is newer than the one the feed holds, so resubmitting the same payload changes nothing.
 
 ### How sourceId is derived
 
@@ -194,13 +209,13 @@ Once the server is connected, these prompts exercise the main workflows.
 
 Replace the example URL with a public endpoint that returns stable, independently reproducible data. Live ticker endpoints may produce different values across oracle nodes and fail to reach quorum.
 
-### Fetch and verify a result
+### Fetch a signed result
 
 > For that same source, run a subscription round with 3 required signatures and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp, registry version, quorum, and EVM verifier call. Treat the signed attestation as the trust anchor; do not trust the value by itself.
 
 ### Check x402 spend before paying
 
-> Call `get_agent_status` for 3 required signatures. Tell me the quoted next price, whether the gateway's float covers it, and my USDC balance before I authorize an `execute_agent_round`.
+> Call `get_x402_status` for 3 required signatures. Tell me the quoted next price, whether the gateway's float covers it, and my USDC balance before I authorize an `execute_x402_round`.
 
 ### Publish with an approval checkpoint
 
@@ -218,7 +233,7 @@ flowchart LR
     Server --> SDK["Molpha SDK"]
     Server --> X402["x402 client<br/>payment checks · USDC transfer"]
     SDK --> Gateway["Molpha gateway<br/>subscription round"]
-    X402 --> Gateway2["Molpha gateway<br/>x402 agent round"]
+    X402 --> Gateway2["Molpha gateway<br/>x402 round"]
     Gateway2 --> Facilitator["x402 facilitator<br/>verify · settle"]
     Gateway <--> Nodes["Oracle node quorum"]
     Gateway2 <--> Nodes
@@ -248,7 +263,7 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `KEYCHAIN_BACKEND` | — | `privy` or `turnkey` for a keychain signer |
 | `OWNER_KEYPAIR` | — | Local Solana JSON keypair path |
 | `SOLANA_RPC` | `https://api.devnet.solana.com` | Solana RPC endpoint |
-| `GATEWAY_ENDPOINTS` | `https://dev-gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/agent/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
+| `GATEWAY_ENDPOINTS` | `https://dev-gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/x402/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
 | `GATEWAY_AUTHORITIES` | — | Comma-separated base58 gateway authorities, one per `GATEWAY_ENDPOINTS` entry in the same order. Bound into request signatures; required for gateways that do not serve `GET /v1/info`. |
 | `MOLPHA_EVM_NETWORKS` | `evm-sepolia` | Comma-separated EVM verifier networks |
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Comma-separated Starknet verifier networks |
@@ -264,7 +279,7 @@ The daily counters are process-local and reset when the server restarts. They ar
 Each way of paying for a round has its own tool:
 
 - `execute_subscription_round` — use the signer's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
-- `execute_agent_round` — pay for the round itself with an [x402](https://github.com/x402-foundation/x402) `exact` payment on Solana, with no subscription required. The signer transfers the round price in USDC to the gateway authority; the gateway's facilitator pays the network fee.
+- `execute_x402_round` — pay for the round itself with an [x402](https://github.com/x402-foundation/x402) `exact` payment on Solana, with no subscription required. The signer transfers the round price in USDC to the gateway authority; the gateway's facilitator pays the network fee.
 
 A paid round works like this:
 
@@ -280,7 +295,7 @@ A paid round works like this:
 
 The daily cap counts every payment the server signs, whether or not its round completes, because a signed transfer can settle until its blockhash expires. When the gateway rejects a payment, the tool fails without paying again. When the gateway's answer leaves the outcome unknown (a 5xx, or a dropped connection after the payment was sent), the tool fails with `payment_outcome_unknown` and the payment's memo; look for that memo in the signer's USDC account before paying for the round again.
 
-Call `get_agent_status` before spending. It returns the quoted price for a quorum, the gateway's USDC float (its working capital for protocol settlement, not a per-payer balance; the gateway refuses rounds its float cannot cover), the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_agent_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
+Call `get_x402_status` before spending. It returns the quoted price for a quorum, the gateway's USDC float (its working capital for protocol settlement, not a per-payer balance; the gateway refuses rounds its float cannot cover), the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_x402_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
 
 ## Development
 

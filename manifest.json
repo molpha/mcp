@@ -3,7 +3,7 @@
   "name": "molpha-mcp",
   "display_name": "Molpha MCP",
   "version": "0.1.1",
-  "description": "MCP server that lets AI agents create, fetch, verify, and publish Molpha oracle data.",
+  "description": "Lets AI agents fetch signed Molpha oracle data, publish it on Solana, and build verifier calldata.",
   "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.",
   "author": {
     "name": "Molpha",
@@ -76,7 +76,7 @@
       "description": "Read the latest attested value stored in a Solana feed account."
     },
     {
-      "name": "get_agent_status",
+      "name": "get_x402_status",
       "description": "Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget."
     },
     {
@@ -84,12 +84,12 @@
       "description": "Run a subscription-paid signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
     },
     {
-      "name": "execute_agent_round",
+      "name": "execute_x402_round",
       "description": "Run an x402 pay-per-request signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
     },
     {
-      "name": "verify_attestation",
-      "description": "Build EVM/Starknet verifier address and call arguments. Calldata only — the agent executes verify() itself."
+      "name": "build_verifier_calldata",
+      "description": "Build EVM/Starknet verifier address and verify() call arguments. Calldata only: it verifies nothing — the agent executes verify() itself."
     },
     {
       "name": "submit_attestation",

@@ -9,19 +9,19 @@ import {
 } from "@solana-program/token";
 import { Keypair, PublicKey, Transaction, VersionedTransaction, type AccountInfo } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getMolphaProgramId } from "../../src/clients.js";
+import { getMolphaContext, getMolphaProgramId, type MolphaContext } from "../../src/clients.js";
 import { type MolphaConfig } from "../../src/config.js";
 import { normalizeError } from "../../src/errors.js";
 import { recordX402Spend, resetGuardrailCounters, x402SpentToday } from "../../src/guardrails.js";
 import { requireSdkExport } from "../../src/sdk.js";
 import { type MolphaSigner } from "../../src/signer/types.js";
 import {
-  executeAgentRound,
-  fetchAgentStatus,
-  previewAgentRound,
+  executeX402Round,
+  fetchX402Status,
+  previewX402Round,
   X402PaymentOutcomeUnknownError,
   X402PaymentRequiredError,
-  type AgentRoundContext
+  type X402RoundContext
 } from "../../src/x402.js";
 import {
   computeX402Price,
@@ -30,6 +30,12 @@ import {
   x402RoundMemo,
   type ExpectedPayment
 } from "../../src/x402-payment.js";
+import { callTool } from "./tool-harness.js";
+
+vi.mock("../../src/clients.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/clients.js")>()),
+  getMolphaContext: vi.fn()
+}));
 
 const programId = getMolphaProgramId();
 const GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
@@ -101,7 +107,7 @@ interface FakeGatewayOptions {
 }
 
 interface Env {
-  ctx: AgentRoundContext;
+  ctx: X402RoundContext;
   endpoint: string;
   authority: Address;
   mint: Address;
@@ -212,7 +218,19 @@ async function setup(
   const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
     const href = String(url);
     if (href.startsWith(unreachable)) throw new TypeError("fetch failed");
-    expect(href).toBe(`${endpoint}/v1/agent/execute`);
+    if (href.startsWith(`${endpoint}/v1/x402/status`)) {
+      return jsonResponse(200, {
+        gateway: gatewayPda,
+        authority,
+        ataAddress: payToAta,
+        ataExists: true,
+        ataBalance: "1000000",
+        committedAmount: "0",
+        quotedNextPrice: String(PRICE),
+        unsettledRounds: 0
+      });
+    }
+    expect(href).toBe(`${endpoint}/v1/x402/execute`);
 
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     // What the gateway's service advertises for this body.
@@ -234,7 +252,7 @@ async function setup(
       gw.tamper?.(offer);
       const required = {
         x402Version: 2,
-        resource: { url: `${endpoint}/v1/agent/execute`, description: "Molpha oracle round", mimeType: "application/json" },
+        resource: { url: `${endpoint}/v1/x402/execute`, description: "Molpha oracle round", mimeType: "application/json" },
         accepts: [offer]
       };
       return jsonResponse(402, required, { "PAYMENT-REQUIRED": b64(required) });
@@ -286,9 +304,9 @@ async function setup(
     x402: { maxPriceUsdcAtomic: 1_000_000n, maxSpendPerDayUsdcAtomic: 10_000_000n, ...options.caps }
   };
 
-  const ctx: AgentRoundContext = {
+  const ctx: X402RoundContext = {
     config,
-    connection: connection as unknown as AgentRoundContext["connection"],
+    connection: connection as unknown as X402RoundContext["connection"],
     signer,
     solana: { getRegistrySelectionConfig: async () => ({ registryVersion: 3, redundancyBuffer: 1, nodeCount: 3 }) },
     gateway: { fetchGatewayInfo: vi.fn(async () => ({ gatewayAuthority: authority })) }
@@ -399,7 +417,7 @@ describe("verifyPaymentRequirements", () => {
   const required = (mutate: (offer: Record<string, unknown>) => void = () => {}) => {
     const entry = offer();
     mutate(entry);
-    return { x402Version: 2, resource: { url: "/v1/agent/execute" }, accepts: [entry] };
+    return { x402Version: 2, resource: { url: "/v1/x402/execute" }, accepts: [entry] };
   };
 
   it("accepts the protocol payment and echoes the offer unchanged", () => {
@@ -432,11 +450,11 @@ describe("verifyPaymentRequirements", () => {
   });
 });
 
-describe("executeAgentRound", () => {
+describe("executeX402Round", () => {
   it("pays the verified quote with an exact-SVM transfer and returns the round with its receipt", async () => {
     const env = await setup();
 
-    const { result, payment } = await executeAgentRound(env.ctx, round);
+    const { result, payment } = await executeX402Round(env.ctx, round);
 
     expect(result).toMatchObject({ sourceId, value: "42", configHash: sourceId, registryVersion: 3, signaturesRequired: 2 });
     expect(env.quotes).toHaveLength(1);
@@ -456,7 +474,7 @@ describe("executeAgentRound", () => {
       memo: env.memoFor(timestamp),
       transaction: SETTLEMENT_TX
     });
-    expect(paid!.payload).toMatchObject({ x402Version: 2, resource: { url: `${env.endpoint}/v1/agent/execute` } });
+    expect(paid!.payload).toMatchObject({ x402Version: 2, resource: { url: `${env.endpoint}/v1/x402/execute` } });
 
     // The facilitator's exact-SVM checks: v0, it pays the fee and has not signed yet,
     // only it and the payer sign, and the layout is limit, price, TransferChecked, memo.
@@ -491,7 +509,7 @@ describe("executeAgentRound", () => {
   it("discovers an unpinned gateway authority and pays it once its Gateway account is Active", async () => {
     const env = await setup({ pinned: false });
 
-    await executeAgentRound(env.ctx, round);
+    await executeX402Round(env.ctx, round);
 
     expect(env.ctx.gateway.fetchGatewayInfo).toHaveBeenCalledWith(env.endpoint);
     expect(env.payments).toHaveLength(1);
@@ -503,7 +521,7 @@ describe("executeAgentRound", () => {
   ] as const)("refuses to pay an unpinned %s gateway authority", async (_label, gatewayStatus, error) => {
     const env = await setup({ pinned: false, gatewayStatus });
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(error);
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(error);
     expect(env.payments).toHaveLength(0);
   });
 
@@ -520,7 +538,7 @@ describe("executeAgentRound", () => {
   ])("signs nothing for a 402 with %s", async (_label, tamper, error) => {
     const env = await setup({ gateway: { tamper } });
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(error);
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(error);
     expect(env.payments).toHaveLength(0);
     expect(env.connection.getLatestBlockhash).not.toHaveBeenCalled();
     expect(x402SpentToday()).toBe(0n);
@@ -529,7 +547,7 @@ describe("executeAgentRound", () => {
   it("refuses a round above the per-round cap before contacting any gateway", async () => {
     const env = await setup({ caps: { maxPriceUsdcAtomic: PRICE - 1n } });
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(/per-round price cap reached/);
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(/per-round price cap reached/);
     expect(env.fetch).not.toHaveBeenCalled();
   });
 
@@ -537,21 +555,21 @@ describe("executeAgentRound", () => {
     recordX402Spend(10_000_000n);
     const env = await setup();
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(/daily spend cap reached/);
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(/daily spend cap reached/);
     expect(env.payments).toHaveLength(0);
   });
 
   it("refuses a quorum below the protocol min_signers before contacting any gateway", async () => {
     const env = await setup();
 
-    await expect(executeAgentRound(env.ctx, { apiConfig, signaturesRequired: 1 })).rejects.toThrow(/min_signers 2/);
+    await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 1 })).rejects.toThrow(/min_signers 2/);
     expect(env.fetch).not.toHaveBeenCalled();
   });
 
   it("refuses before signing when the signer's USDC does not cover the round", async () => {
     const env = await setup({ payerBalance: PRICE - 1n });
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(/insufficient USDC/);
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(/insufficient USDC/);
     expect(env.payments).toHaveLength(0);
     expect(x402SpentToday()).toBe(0n);
   });
@@ -563,7 +581,7 @@ describe("executeAgentRound", () => {
       }
     });
 
-    const error = await executeAgentRound(env.ctx, round).catch((caught: unknown) => caught);
+    const error = await executeX402Round(env.ctx, round).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(X402PaymentRequiredError);
     expect((error as Error).message).toMatch(/facilitator rejected payment/);
@@ -577,7 +595,7 @@ describe("executeAgentRound", () => {
       gateway: { onPaid: (attempt) => (attempt === 1 ? jsonResponse(409, { error: "round or payment already reserved" }) : undefined) }
     });
 
-    const { payment } = await executeAgentRound(env.ctx, round);
+    const { payment } = await executeX402Round(env.ctx, round);
 
     expect(env.quotes).toHaveLength(2);
     expect(env.payments).toHaveLength(2);
@@ -594,7 +612,7 @@ describe("executeAgentRound", () => {
       }
     });
 
-    const error = await executeAgentRound(env.ctx, round).catch((caught: unknown) => caught);
+    const error = await executeX402Round(env.ctx, round).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(X402PaymentOutcomeUnknownError);
     const reconciliation = (error as X402PaymentOutcomeUnknownError).reconciliation;
@@ -613,7 +631,7 @@ describe("executeAgentRound", () => {
   it("fails over to the next endpoint for the quote and pays only the endpoint that quoted", async () => {
     const env = await setup({ unreachableFirst: true });
 
-    await executeAgentRound(env.ctx, round);
+    await executeX402Round(env.ctx, round);
 
     expect(env.payments.map((paid) => paid.endpoint)).toEqual([env.endpoint]);
   });
@@ -623,14 +641,14 @@ describe("executeAgentRound", () => {
       gateway: { quote: () => jsonResponse(400, { error: "registry_version: registry version or quorum does not match current snapshot" }) }
     });
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(/x402 agent execute rejected: registry_version/);
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(/x402 execute rejected: registry_version/);
     expect(env.payments).toHaveLength(0);
   });
 
   it("rejects a caller sourceId that does not match apiConfig before any network call", async () => {
     const env = await setup();
 
-    await expect(executeAgentRound(env.ctx, { ...round, sourceId: "ff".repeat(32) })).rejects.toThrow(
+    await expect(executeX402Round(env.ctx, { ...round, sourceId: "ff".repeat(32) })).rejects.toThrow(
       /sourceId does not match apiConfig/
     );
     expect(env.fetch).not.toHaveBeenCalled();
@@ -639,26 +657,26 @@ describe("executeAgentRound", () => {
   it("accepts a caller sourceId that matches apiConfig, with or without 0x", async () => {
     const env = await setup();
 
-    await executeAgentRound(env.ctx, { ...round, sourceId: `0x${sourceId.toUpperCase()}` });
+    await executeX402Round(env.ctx, { ...round, sourceId: `0x${sourceId.toUpperCase()}` });
     expect(env.payments).toHaveLength(1);
   });
 
   it("refuses to return an aggregate for a different round", async () => {
     const env = await setup({ gateway: { data: { sourceId: "cd".repeat(32) } } });
 
-    await expect(executeAgentRound(env.ctx, round)).rejects.toThrow(new RegExp(`settled x402 payment ${SETTLEMENT_TX}.*different round`));
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(new RegExp(`settled x402 payment ${SETTLEMENT_TX}.*different round`));
   });
 });
 
-describe("previewAgentRound", () => {
+describe("previewX402Round", () => {
   it("quotes and verifies the payment without signing or spending", async () => {
     const env = await setup();
 
-    const preview = await previewAgentRound(env.ctx, round);
+    const preview = await previewX402Round(env.ctx, round);
 
     expect(preview).toMatchObject({
       dryRun: true,
-      sourceId,
+      sourceId: `0x${sourceId}`,
       gateway: { endpoint: env.endpoint, authority: env.authority, pda: env.gatewayPda },
       network: NETWORK,
       asset: env.mint,
@@ -677,7 +695,7 @@ describe("previewAgentRound", () => {
   it("reports the shortfall when the signer's USDC does not cover the round", async () => {
     const env = await setup({ payerBalance: 15n });
 
-    const preview = await previewAgentRound(env.ctx, round);
+    const preview = await previewX402Round(env.ctx, round);
 
     expect(preview.shortfallAtomicUsdc).toBe(String(PRICE - 15n));
     expect(preview.note).toMatch(/refuse before signing/);
@@ -686,11 +704,11 @@ describe("previewAgentRound", () => {
   it("applies the same verification as a live round", async () => {
     const env = await setup({ gateway: { tamper: (offer) => (offer.payTo = randomAddress()) } });
 
-    await expect(previewAgentRound(env.ctx, round)).rejects.toThrow(/payTo mismatch/);
+    await expect(previewX402Round(env.ctx, round)).rejects.toThrow(/payTo mismatch/);
   });
 });
 
-describe("fetchAgentStatus", () => {
+describe("fetchX402Status", () => {
   const floatStatus = {
     gateway: randomAddress(),
     authority: randomAddress(),
@@ -722,9 +740,9 @@ describe("fetchAgentStatus", () => {
       })
     );
 
-    expect(await fetchAgentStatus(config(["http://one.test/"]))).toEqual({ endpoint: "http://one.test/", status: floatStatus });
-    await fetchAgentStatus(config(["http://one.test"]), 3);
-    expect(urls).toEqual(["http://one.test/v1/agent/status", "http://one.test/v1/agent/status?signatures_required=3"]);
+    expect(await fetchX402Status(config(["http://one.test/"]))).toEqual({ endpoint: "http://one.test/", status: floatStatus });
+    await fetchX402Status(config(["http://one.test"]), 3);
+    expect(urls).toEqual(["http://one.test/v1/x402/status", "http://one.test/v1/x402/status?signatures_required=3"]);
   });
 
   it("falls through unreachable gateways but surfaces a rejected quorum", async () => {
@@ -736,8 +754,52 @@ describe("fetchAgentStatus", () => {
       })
     );
 
-    await expect(fetchAgentStatus(config(["http://down.test", "http://up.test"]), 9)).rejects.toThrow(
+    await expect(fetchX402Status(config(["http://down.test", "http://up.test"]), 9)).rejects.toThrow(
       /rejected: signatures_required: outside current protocol quorum limits/
     );
+  });
+});
+
+describe("execute_x402_round and get_x402_status tools", () => {
+  it("previews, then pays, returning output that matches the advertised schema", async () => {
+    const env = await setup();
+    vi.mocked(getMolphaContext).mockResolvedValue(env.ctx as unknown as MolphaContext);
+
+    const preview = await callTool("execute_x402_round", { ...round, chains: ["evm"], dryRun: true });
+    expect(preview).toMatchObject({
+      payment: "x402",
+      dryRun: true,
+      action: "execute_x402_round",
+      sourceId: `0x${sourceId}`,
+      priceAtomicUsdc: String(PRICE)
+    });
+    expect(env.payments).toHaveLength(0);
+
+    const live = await callTool("execute_x402_round", { ...round, chains: ["evm"] });
+    expect(live).toMatchObject({
+      payment: "x402",
+      value: "42",
+      dataUpdate: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 },
+      verifierArgs: { evm: { args: {} } },
+      paymentReceipt: { payTo: env.authority, amountAtomicUsdc: String(PRICE), transaction: SETTLEMENT_TX }
+    });
+    expect(env.payments).toHaveLength(1);
+  });
+
+  it("get_x402_status reports the quote, the gateway float, the signer's USDC, and the budget", async () => {
+    const env = await setup();
+    vi.mocked(getMolphaContext).mockResolvedValue(env.ctx as unknown as MolphaContext);
+
+    expect(await callTool("get_x402_status", { signaturesRequired: 2 })).toMatchObject({
+      endpoint: env.endpoint,
+      signaturesRequired: 2,
+      quotedNextPriceAtomicUsdc: String(PRICE),
+      withinPerRoundCap: true,
+      gatewayFloat: { authority: env.authority, coversNextRound: true },
+      payer: env.payer,
+      payerUsdc: { ata: env.payerAta, exists: true, balanceAtomicUsdc: "5000000" },
+      caps: { spentTodayUsdcAtomic: "0", remainingTodayUsdcAtomic: "10000000" }
+    });
+    expect(env.payments).toHaveLength(0);
   });
 });

@@ -1,9 +1,20 @@
+import { z } from "zod";
 import { getMolphaContext, requireMethod } from "../clients.js";
 import { presentFeed } from "../feed.js";
 import { toCanonicalHex } from "../hex.js";
 import { toolHandler } from "../mcp.js";
+import { feedAccount } from "./outputs.js";
 import { signaturesRequiredSchema, sourceIdSchema, submitterSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
+
+const outputSchema = z.object({
+  sourceId: z.string(),
+  signaturesRequired: z.number().int(),
+  submitter: z.string(),
+  feed: feedAccount()
+    .nullable()
+    .describe("null until this submitter's first submit_attestation for (sourceId, signaturesRequired).")
+});
 
 export function registerGetLatestValueTool(server: ToolServer): void {
   server.registerTool(
@@ -16,9 +27,11 @@ export function registerGetLatestValueTool(server: ToolServer): void {
         sourceId: sourceIdSchema,
         signaturesRequired: signaturesRequiredSchema,
         submitter: submitterSchema
-      }
+      },
+      outputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: true }
     },
-    toolHandler(async (
+    toolHandler(outputSchema, async (
       {
         sourceId,
         signaturesRequired,

@@ -22,7 +22,7 @@ export async function readSubscriptionStatus(
       return {
         active: false,
         message:
-          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use execute_agent_round for a self-funded pay-per-request round."
+          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use execute_x402_round for a self-funded pay-per-request round."
       };
     }
 
@@ -45,7 +45,7 @@ export async function readSubscriptionStatus(
             message:
               validUntil <= now
                 ? "Subscription expired. Extend via the bootstrap CLI before requesting data."
-                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use execute_agent_round."
+                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use execute_x402_round."
           })
     };
   } catch (error) {

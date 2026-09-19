@@ -1,6 +1,6 @@
 /**
- * x402 pay-per-request client for `POST /v1/agent/execute` and
- * `GET /v1/agent/status`. The SDK only covers the subscription round path, so
+ * x402 pay-per-request client for `POST /v1/x402/execute` and
+ * `GET /v1/x402/status`. The SDK only covers the subscription round path, so
  * this talks to the gateway directly.
  *
  * A round is first requested without payment; the gateway answers 402 with
@@ -40,7 +40,7 @@ import {
  */
 const MAX_PAID_ATTEMPTS = 3;
 
-export interface AgentRoundOptions {
+export interface X402RoundOptions {
   apiConfig: ApiConfigLike;
   signaturesRequired: number;
   /** When set, must match the sourceId derived from apiConfig. */
@@ -49,7 +49,7 @@ export interface AgentRoundOptions {
   maxAge?: number | undefined;
 }
 
-export interface AgentRoundContext {
+export interface X402RoundContext {
   config: MolphaConfig;
   connection: Pick<Connection, "getAccountInfo" | "getMultipleAccountsInfo" | "getGenesisHash" | "getLatestBlockhash">;
   signer: MolphaSigner;
@@ -70,7 +70,7 @@ export interface X402PaymentReceipt {
   transaction?: string;
 }
 
-export interface AgentRoundResult {
+export interface X402RoundResult {
   /** The gateway's signed aggregate, in the shape buildRoundResult consumes. */
   result: Record<string, unknown>;
   payment: X402PaymentReceipt;
@@ -112,7 +112,7 @@ export class X402PaymentOutcomeUnknownError extends Error {
   }
 }
 
-/** The gateway's advisory `GET /v1/agent/status`: its USDC float, not a per-payer balance. */
+/** The gateway's advisory `GET /v1/x402/status`: its USDC float, not a per-payer balance. */
 export interface GatewayFloatStatus {
   gateway: string;
   authority: string;
@@ -124,7 +124,7 @@ export interface GatewayFloatStatus {
   unsettledRounds: number;
 }
 
-export async function fetchAgentStatus(
+export async function fetchX402Status(
   config: MolphaConfig,
   signaturesRequired?: number
 ): Promise<{ endpoint: string; status: GatewayFloatStatus }> {
@@ -134,7 +134,7 @@ export async function fetchAgentStatus(
   for (const endpoint of config.gatewayEndpoints) {
     let res: Response;
     try {
-      res = await fetch(`${trimSlash(endpoint)}/v1/agent/status${query}`, { method: "GET" });
+      res = await fetch(`${trimSlash(endpoint)}/v1/x402/status${query}`, { method: "GET" });
     } catch (error) {
       lastError = `${endpoint}: ${errorMessage(error)}`;
       continue;
@@ -144,18 +144,18 @@ export async function fetchAgentStatus(
     }
     const message = await readErrorMessage(res);
     if (res.status === 400) {
-      throw Object.assign(new Error(`GET /v1/agent/status rejected: ${message}`), { status: 400 });
+      throw Object.assign(new Error(`GET /v1/x402/status rejected: ${message}`), { status: 400 });
     }
     lastError = `${endpoint}: HTTP ${res.status}: ${message}`;
   }
 
-  throw new Error(`GET /v1/agent/status failed on every gateway (${lastError})`);
+  throw new Error(`GET /v1/x402/status failed on every gateway (${lastError})`);
 }
 
 /** Quotes and verifies a round's payment without signing or spending anything. */
-export async function previewAgentRound(
-  ctx: AgentRoundContext,
-  opts: AgentRoundOptions
+export async function previewX402Round(
+  ctx: X402RoundContext,
+  opts: X402RoundOptions
 ): Promise<Record<string, unknown>> {
   const plan = await planRound(ctx, opts);
   const { endpoint, verified, accounts } = await preparePayment(ctx, plan, nowSeconds());
@@ -163,8 +163,8 @@ export async function previewAgentRound(
 
   return {
     dryRun: true,
-    action: "x402_agent_execute",
-    sourceId: plan.sourceId,
+    action: "execute_x402_round",
+    sourceId: `0x${plan.sourceId}`,
     gateway: { endpoint, authority: verified.payTo, pda: accounts.gatewayPda },
     network: plan.network,
     asset: verified.asset,
@@ -184,7 +184,7 @@ export async function previewAgentRound(
 }
 
 /** Pays for and runs one round, returning the signed aggregate and its payment receipt. */
-export async function executeAgentRound(ctx: AgentRoundContext, opts: AgentRoundOptions): Promise<AgentRoundResult> {
+export async function executeX402Round(ctx: X402RoundContext, opts: X402RoundOptions): Promise<X402RoundResult> {
   const plan = await planRound(ctx, opts);
   let canonicalTimestamp = nowSeconds();
 
@@ -225,7 +225,7 @@ interface RoundPlan {
   priceAtomic: bigint;
 }
 
-async function planRound(ctx: AgentRoundContext, opts: AgentRoundOptions): Promise<RoundPlan> {
+async function planRound(ctx: X402RoundContext, opts: X402RoundOptions): Promise<RoundPlan> {
   const sourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
   if (opts.sourceId !== undefined && normalizeSourceId(opts.sourceId) !== sourceId) {
     throw new Error(`sourceId does not match apiConfig: expected ${sourceId}, got ${opts.sourceId}`);
@@ -277,7 +277,7 @@ interface PreparedPayment {
 }
 
 async function preparePayment(
-  ctx: AgentRoundContext,
+  ctx: X402RoundContext,
   plan: RoundPlan,
   canonicalTimestamp: number
 ): Promise<PreparedPayment> {
@@ -310,7 +310,7 @@ async function preparePayment(
   return { endpoint, required, canonicalTimestamp, verified, accounts };
 }
 
-async function signPayment(ctx: AgentRoundContext, payment: PreparedPayment): Promise<string> {
+async function signPayment(ctx: X402RoundContext, payment: PreparedPayment): Promise<string> {
   const { verified, accounts } = payment;
   const { blockhash } = await ctx.connection.getLatestBlockhash();
   const transaction = buildPaymentTransaction({
@@ -383,7 +383,7 @@ async function postPaidExecute(
 }
 
 function paidOutcomeError(
-  ctx: AgentRoundContext,
+  ctx: X402RoundContext,
   plan: RoundPlan,
   payment: PreparedPayment,
   outcome: Exclude<PaidOutcome, { kind: "ok" }>
@@ -392,7 +392,7 @@ function paidOutcomeError(
     case "payment_rejected":
       return new X402PaymentRequiredError(`x402 payment rejected by the gateway: ${outcome.message}`, outcome.required);
     case "rejected":
-      return Object.assign(new Error(`x402 agent execute rejected: ${outcome.message}`), { status: 400 });
+      return Object.assign(new Error(`x402 execute rejected: ${outcome.message}`), { status: 400 });
     case "conflict":
       return Object.assign(
         new Error(`x402 round identity still reserved after ${MAX_PAID_ATTEMPTS} paid attempts: ${outcome.message}`),
@@ -420,11 +420,11 @@ function paidOutcomeError(
 }
 
 function completeRound(
-  ctx: AgentRoundContext,
+  ctx: X402RoundContext,
   plan: RoundPlan,
   payment: PreparedPayment,
   outcome: Extract<PaidOutcome, { kind: "ok" }>
-): AgentRoundResult {
+): X402RoundResult {
   const { verified } = payment;
   const transaction = outcome.receipt?.transaction;
   const receipt: X402PaymentReceipt = {
@@ -491,7 +491,7 @@ async function requestQuote(
     const message = await readErrorMessage(res);
     if (res.status === 400) {
       // Stale registry version, clock skew, malformed apiConfig: every gateway agrees.
-      throw Object.assign(new Error(`x402 agent execute rejected: ${message}`), { status: 400 });
+      throw Object.assign(new Error(`x402 execute rejected: ${message}`), { status: 400 });
     }
     lastError = `${endpoint}: HTTP ${res.status}: ${message}`;
   }
@@ -502,7 +502,7 @@ async function requestQuote(
 const discoveredAuthorities = new Map<string, Promise<Address>>();
 
 /** GATEWAY_AUTHORITIES pin for the endpoint, else its `GET /v1/info` (cached per endpoint). */
-function gatewayAuthority(ctx: AgentRoundContext, endpoint: string): Promise<Address> {
+function gatewayAuthority(ctx: X402RoundContext, endpoint: string): Promise<Address> {
   const pinned = ctx.config.gatewayAuthorities[ctx.config.gatewayEndpoints.indexOf(endpoint)];
   if (pinned) {
     return Promise.resolve(address(pinned));
@@ -542,7 +542,7 @@ function executeBody(plan: RoundPlan, canonicalTimestamp: number): Record<string
 }
 
 function postExecute(endpoint: string, body: Record<string, unknown>, paymentHeader?: string): Promise<Response> {
-  return fetch(`${trimSlash(endpoint)}/v1/agent/execute`, {
+  return fetch(`${trimSlash(endpoint)}/v1/x402/execute`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -595,7 +595,7 @@ function parseFloatStatus(raw: unknown): GatewayFloatStatus {
   const amount = (field: string): string => {
     const value = record[field];
     if (typeof value !== "string" || !/^\d+$/.test(value)) {
-      throw new Error(`GET /v1/agent/status returned a malformed ${field}`);
+      throw new Error(`GET /v1/x402/status returned a malformed ${field}`);
     }
     return value;
   };
