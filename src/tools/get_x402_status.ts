@@ -1,29 +1,67 @@
+import { z } from "zod";
 import { getMolphaContext } from "../clients.js";
 import { settle } from "../errors.js";
 import { x402SpentToday } from "../guardrails.js";
 import { toolHandler } from "../mcp.js";
-import { fetchAgentStatus } from "../x402.js";
+import { fetchX402Status } from "../x402.js";
 import { readPayerUsdc } from "../x402-payment.js";
+import { settleFailure } from "./outputs.js";
 import { signaturesRequiredSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
-export function registerGetAgentStatusTool(server: ToolServer): void {
+const outputSchema = z.object({
+  endpoint: z.string().describe("The gateway that answered."),
+  signaturesRequired: z.union([z.number().int(), z.literal("protocol minimum")]),
+  quotedNextPriceAtomicUsdc: z.string(),
+  withinPerRoundCap: z.boolean().describe("Whether the quote is within MOLPHA_X402_MAX_PRICE_USDC."),
+  gatewayFloat: z
+    .object({
+      gateway: z.string(),
+      authority: z.string(),
+      ataAddress: z.string(),
+      ataExists: z.boolean(),
+      ataBalance: z.string(),
+      committedAmount: z.string().describe("USDC unsettled rounds have committed."),
+      availableAtomicUsdc: z.string(),
+      coversNextRound: z.boolean(),
+      unsettledRounds: z.number().int()
+    })
+    .describe("The gateway's working capital for protocol settlement — not a per-payer balance."),
+  payer: z.string(),
+  payerUsdc: z
+    .union([
+      z.object({ usdcMint: z.string(), ata: z.string(), exists: z.boolean(), balanceAtomicUsdc: z.string() }),
+      settleFailure()
+    ])
+    .describe("The signer's USDC, which pays each round."),
+  caps: z.object({
+    maxPriceUsdcAtomic: z.string(),
+    maxSpendPerDayUsdcAtomic: z.string(),
+    spentTodayUsdcAtomic: z.string(),
+    remainingTodayUsdcAtomic: z.string()
+  }),
+  warning: z.string().optional()
+});
+
+export function registerGetX402StatusTool(server: ToolServer): void {
   server.registerTool(
-    "get_agent_status",
+    "get_x402_status",
     {
       title: "Get x402 gateway status",
       description:
-        "Advisory read before execute_agent_round: the next x402 round's quoted price for a quorum; the gateway's USDC float (its authority's token balance minus what unsettled rounds have committed — the gateway's working capital for protocol settlement, not a per-payer balance; a round is refused while the float cannot cover it); the signer's own USDC balance, which pays each round; and the remaining MOLPHA_X402_MAX_SPEND_PER_DAY_USDC budget.",
+        "Advisory read before execute_x402_round: the next x402 round's quoted price for a quorum; the gateway's USDC float (its authority's token balance minus what unsettled rounds have committed — the gateway's working capital for protocol settlement, not a per-payer balance; a round is refused while the float cannot cover it); the signer's own USDC balance, which pays each round; and the remaining MOLPHA_X402_MAX_SPEND_PER_DAY_USDC budget. Signs and spends nothing.",
       inputSchema: {
         signaturesRequired: signaturesRequiredSchema
           .optional()
           .describe("Quorum to quote. Omit for the protocol minimum (min_signers).")
-      }
+      },
+      outputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: true }
     },
-    toolHandler(async ({ signaturesRequired }: { signaturesRequired?: number }) => {
+    toolHandler(outputSchema, async ({ signaturesRequired }: { signaturesRequired?: number }) => {
       const { config, signer, connection } = await getMolphaContext();
       const [{ endpoint, status }, payerUsdc] = await Promise.all([
-        fetchAgentStatus(config, signaturesRequired),
+        fetchX402Status(config, signaturesRequired),
         settle("solana.readPayerUsdc", () => readPayerUsdc(connection, signer.publicKey))
       ]);
 
@@ -62,7 +100,7 @@ export function registerGetAgentStatusTool(server: ToolServer): void {
         },
         ...(pinnedAuthority && pinnedAuthority !== status.authority
           ? {
-              warning: `the gateway reports authority ${status.authority}, but GATEWAY_AUTHORITIES pins ${pinnedAuthority}; execute_agent_round will refuse to pay it`
+              warning: `the gateway reports authority ${status.authority}, but GATEWAY_AUTHORITIES pins ${pinnedAuthority}; execute_x402_round will refuse to pay it`
             }
           : {})
       };

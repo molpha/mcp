@@ -5,8 +5,38 @@ import { settle } from "../errors.js";
 import { describeValueEncoding, presentFeed } from "../feed.js";
 import { toolHandler } from "../mcp.js";
 import { readSubscriptionStatus } from "../subscription.js";
+import { chains, feedAccount, settleFailure } from "./outputs.js";
 import { apiConfigSchema, signaturesRequiredSchema, sourceIdSchema, submitterSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
+
+const outputSchema = z.object({
+  sourceId: z.string(),
+  signaturesRequired: z.number().int(),
+  submitter: z.string(),
+  feed: z
+    .union([feedAccount(), settleFailure()])
+    .nullable()
+    .describe("null until this submitter's first submit_attestation for (sourceId, signaturesRequired)."),
+  valueEncoding: z
+    .object({
+      attested: z.literal(false),
+      source: z.string(),
+      valueTransform: z.string().nullable(),
+      note: z.string()
+    })
+    .optional()
+    .describe("When apiConfig is passed: the off-chain valueTransform behind the number. Unsigned provenance."),
+  subscription: z.object({
+    active: z.boolean(),
+    owner: z.string().optional(),
+    planType: z.unknown().optional(),
+    validUntil: z.string().optional().describe("Unix seconds, decimal string."),
+    usedRounds: z.number().optional(),
+    maxRounds: z.number().optional().describe("0 means no round quota."),
+    message: z.string().optional()
+  }),
+  chains: chains()
+});
 
 export function registerDescribeFeedTool(server: ToolServer): void {
   server.registerTool(
@@ -20,9 +50,11 @@ export function registerDescribeFeedTool(server: ToolServer): void {
         apiConfig: apiConfigSchema.optional(),
         signaturesRequired: signaturesRequiredSchema,
         submitter: submitterSchema
-      }
+      },
+      outputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: true }
     },
-    toolHandler(async (
+    toolHandler(outputSchema, async (
       {
         sourceId,
         apiConfig,

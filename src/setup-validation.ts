@@ -205,7 +205,7 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
         continue;
       }
 
-      const probeRes = await fetch(`${base}/v1/agent/execute`, {
+      const probeRes = await fetch(`${base}/v1/x402/execute`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -213,11 +213,11 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
       });
       const probeText = (await probeRes.text()).trim();
       if (probeText.includes('"jsonrpc"') && probeText.includes("Method not found")) {
-        lastError = `${base} returned a Solana JSON-RPC error for POST /v1/agent/execute — this is not a Molpha gateway`;
+        lastError = `${base} returned a Solana JSON-RPC error for POST /v1/x402/execute — this is not a Molpha gateway`;
         continue;
       }
       if (probeRes.status === 404 && probeText.includes("page not found")) {
-        lastError = `${base} serves /v1/nodes but not /v1/agent/execute (signing routes missing — use https://dev-gateway.molpha.io)`;
+        lastError = `${base} serves /v1/nodes but not /v1/x402/execute (signing routes missing — use https://dev-gateway.molpha.io)`;
         continue;
       }
       if (probeRes.status === 400 || probeRes.status === 401 || probeRes.status === 402) {
@@ -228,7 +228,7 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
         };
       }
 
-      lastError = `${base} unexpected POST /v1/agent/execute response (${probeRes.status})`;
+      lastError = `${base} unexpected POST /v1/x402/execute response (${probeRes.status})`;
     } catch (error) {
       lastError = error instanceof Error ? `${base}: ${error.message}` : `${base}: unreachable`;
     }

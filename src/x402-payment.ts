@@ -1,5 +1,5 @@
 /**
- * x402 `exact` Solana payment primitives for the agent round: the protocol
+ * x402 `exact` Solana payment primitives for a paid round: the protocol
  * price and round memo this server derives on its own, verification of a
  * gateway's untrusted 402 requirements against them, the on-chain accounts the
  * payment touches, and the partially signed payment transaction.

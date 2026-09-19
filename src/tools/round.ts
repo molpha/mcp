@@ -1,18 +1,42 @@
 /**
- * What execute_subscription_round and execute_agent_round share: the round's
+ * What execute_subscription_round and execute_x402_round share: the round's
  * inputs, the sourceId guard, and the signed-artifact response (with the
  * optional Solana autoSubmit leg). Only how the round is paid for differs.
  */
 import { z } from "zod";
 import { resolveSourceId } from "../apiconfig.js";
-import { normalizeSignedResult, toDataUpdateArtifact } from "../artifacts.js";
+import { normalizeSignedResult, signedArtifactSchema, toDataUpdateArtifact } from "../artifacts.js";
 import { type MolphaConfig } from "../config.js";
 import { settle } from "../errors.js";
 import { prepareSignedResult, submitSignedResult } from "../submit.js";
 import { buildVerifierArgsForChains, type ChainTarget } from "../verifiers.js";
+import { submitFailure, submitOutcome, verifierArgs } from "./outputs.js";
 import { apiConfigSchema, signaturesRequiredSchema, sourceIdSchema } from "./schemas.js";
 
 export type RoundPayment = "subscription" | "x402";
+
+/**
+ * A round tool's response. outputSchema must be a single object, so the live
+ * response and the dryRun preview share it: on a live round the signed-artifact
+ * fields (signedArtifactSchema) are all present; on a preview, `dryRun` is.
+ */
+export function roundOutputShape<P extends RoundPayment>(payment: P) {
+  return {
+    payment: z.literal(payment),
+    dryRun: z
+      .literal(true)
+      .optional()
+      .describe("Present on a preview: nothing was signed, paid for, or submitted, and there is no signed artifact."),
+    ...signedArtifactSchema.partial().shape,
+    trustAnchor: z.string().optional(),
+    verifierArgs: verifierArgs().optional(),
+    submitted: z
+      .union([submitOutcome(), submitFailure()])
+      .optional()
+      .describe("autoSubmit's Solana submit. A failure keeps the signed artifact above for a submit_attestation retry."),
+    autoSubmit: z.string().optional().describe("Preview only: what autoSubmit would do.")
+  };
+}
 
 export const roundInputSchema = {
   apiConfig: apiConfigSchema,
