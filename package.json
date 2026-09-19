@@ -36,7 +36,8 @@
     "dist/src",
     "dist/cli",
     "README.md",
-    "docs/hosted-http.md"
+    "docs/hosted-http.md",
+    "docs/vercel.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -44,6 +45,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
+    "start": "node dist/src/server.js --http",
     "doctor": "node --import tsx cli/doctor.ts",
     "provision": "node --import tsx cli/provision.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",

@@ -138,10 +138,10 @@ Normal MCP clients perform initialization first. The server retains no initializ
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MOLPHA_HTTP_HOST` | `127.0.0.1` | Listener address; container sets `0.0.0.0` |
-| `MOLPHA_HTTP_PORT` | `8402` | `--port` takes precedence |
-| `MOLPHA_HTTP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1],mcp.molpha.io` | Exact hostnames, without ports |
-| `MOLPHA_HTTP_ALLOWED_ORIGINS` | Local HTTP origins at configured port, `https://mcp.molpha.io` | Exact origins; requests without Origin are accepted |
+| `MOLPHA_HTTP_HOST` | `127.0.0.1` | Listener address; container and Vercel set `0.0.0.0` |
+| `MOLPHA_HTTP_PORT` | `8402` | `--port` takes precedence, then `MOLPHA_HTTP_PORT`, then `PORT` |
+| `MOLPHA_HTTP_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1],mcp.molpha.io` | Exact hostnames, without ports. Vercel also merges `VERCEL_URL` / `VERCEL_BRANCH_URL` / `VERCEL_PROJECT_PRODUCTION_URL`. |
+| `MOLPHA_HTTP_ALLOWED_ORIGINS` | Local HTTP origins at configured port, `https://mcp.molpha.io` | Exact origins; requests without Origin are accepted. Vercel also merges `https://` for each injected hostname. |
 | `MOLPHA_HTTP_TRUSTED_PROXIES` | Empty | Exact immediate-proxy socket IPs, including IPv4-mapped form if applicable |
 | `MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS` | `false` | Private self-hosting opt-in |
 | `MOLPHA_HTTP_DAILY_CAPS` | `false` | Enables existing **process-wide** daily limits, unsuitable for multi-tenant budgeting |
@@ -176,6 +176,8 @@ Hosted capabilities expose only the RPC URL origin, omitting provider API keys i
 6. Only after the endpoint is verified live, add a `streamable-http` remote with URL `https://mcp.molpha.io/mcp` to `server.json` and refresh the registry metadata. This implementation deliberately leaves that metadata unchanged.
 
 Scale-out needs a shared rate limiter and revised operational limits. No durable tenant budgets, OAuth wrapper, treasury tools, or demo signer are included.
+
+For a public Vercel deployment of the same HTTP server, follow [Deploy public hosted MCP on Vercel](vercel.md). That path uses Fluid compute instead of a long-lived container; in-process rate limits are per instance, and edge limits belong in Vercel Firewall.
 
 ## Tests
 

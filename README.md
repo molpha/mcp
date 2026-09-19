@@ -336,6 +336,7 @@ No secrets are needed for either publish step; both rely on the workflow's `id-t
 - [Molpha protocol documentation](https://docs.molpha.io/)
 - [Client configuration examples](examples)
 - [MCPB manifest](manifest.json) for Claude Desktop / `.mcpb` packaging
+- [Hosted HTTP mode](docs/hosted-http.md)
 
 ## License
 
