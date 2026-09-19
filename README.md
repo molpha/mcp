@@ -340,3 +340,11 @@ No secrets are needed for either publish step; both rely on the workflow's `id-t
 ## License
 
 Released under the [MIT License](LICENSE).
+
+## Hosted HTTP mode
+
+Run `molpha-mcp --http --port 8402` to serve stateless Streamable HTTP at `/mcp`, with health checks at `/healthz`. Stdio remains the default. Unsigned clients can discover capabilities, read feeds with an explicit submitter, and obtain x402 quotes. Signed calls use request-scoped Privy or Turnkey headers; HTTP never falls back to a local signer.
+
+Hosted defaults reject `encryptSecrets`, retain the per-round price ceiling, disable shared daily budgets, and rate-limit requests per IP. Use provider spending policies for hosted budgets and local stdio/private self-hosting for private API work. Credentials are visible transiently to the hosted process but are never persisted or logged.
+
+See [hosted HTTP configuration, client examples, and deployment runbook](docs/hosted-http.md). The container is deployment-ready; public deployment and `server.json` remote registration are separate launch steps.

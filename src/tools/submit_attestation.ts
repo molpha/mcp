@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { signedAttestationSchema } from "../artifacts.js";
-import { getMolphaContext } from "../clients.js";
+import { requireSigner, assertActive, getMolphaContext, type ToolDependencies } from "../clients.js";
 import { prepareSignedResult, previewSubmit, submitSignedResult } from "../submit.js";
 import { toolHandler } from "../mcp.js";
 import { submitOutcome } from "./outputs.js";
@@ -45,7 +45,7 @@ const outputSchema = z.object({
     .describe("Preview only: the write a live call would make. A live call returns the submit outcome fields instead.")
 });
 
-export function registerSubmitAttestationTool(server: ToolServer): void {
+export function registerSubmitAttestationTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "submit_attestation",
     {
@@ -70,7 +70,9 @@ export function registerSubmitAttestationTool(server: ToolServer): void {
         dryRun?: boolean;
       }
     ) => {
-      const { config, signer } = await getMolphaContext();
+      const context = await (dependencies.getContext ?? getMolphaContext)();
+      requireSigner(context);
+      const { config, signer } = context;
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
       const prepared = prepareSignedResult(result);
 
@@ -78,7 +80,7 @@ export function registerSubmitAttestationTool(server: ToolServer): void {
         return previewSubmit("submit_attestation", prepared, String(signer.publicKey));
       }
 
-      return submitSignedResult(prepared);
+      return submitSignedResult(prepared, context);
     })
   );
 }

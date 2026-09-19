@@ -40,6 +40,7 @@ export function resetGuardrailCounters(): void {
 }
 
 export function enforceExecuteCap(config: GuardrailConfig): void {
+  if (config.dailyCapsEnabled === false) return;
   bump(executes, config.maxExecutesPerDay, "execute");
 }
 

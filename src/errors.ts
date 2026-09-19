@@ -20,6 +20,10 @@ export async function settle<T>(label: string, run: () => Promise<T>): Promise<S
 }
 
 export function normalizeError(error: unknown): NormalizedToolError {
+  const ownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  if (ownCode === "authentication_required" || ownCode === "submitter_required") {
+    return { code: ownCode, message: error instanceof Error ? error.message : "Invalid request" };
+  }
   const status = getStatus(error);
   const message = error instanceof Error ? error.message : String(error);
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { resolveSourceId } from "../apiconfig.js";
-import { getMolphaContext, requireMethod } from "../clients.js";
+import { getMolphaContext, requireMethod, type ToolDependencies } from "../clients.js";
 import { settle } from "../errors.js";
 import { describeValueEncoding, presentFeed } from "../feed.js";
 import { toolHandler } from "../mcp.js";
@@ -26,6 +26,7 @@ const outputSchema = z.object({
     })
     .optional()
     .describe("When apiConfig is passed: the off-chain valueTransform behind the number. Unsigned provenance."),
+  note: z.string().optional(),
   subscription: z.object({
     active: z.boolean(),
     owner: z.string().optional(),
@@ -34,11 +35,11 @@ const outputSchema = z.object({
     usedRounds: z.number().optional(),
     maxRounds: z.number().optional().describe("0 means no round quota."),
     message: z.string().optional()
-  }),
+  }).optional(),
   chains: chains()
 });
 
-export function registerDescribeFeedTool(server: ToolServer): void {
+export function registerDescribeFeedTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "describe_feed",
     {
@@ -67,9 +68,10 @@ export function registerDescribeFeedTool(server: ToolServer): void {
         submitter?: string;
       }
     ) => {
-      const { config, solana, signer } = await getMolphaContext();
+      const { config, solana, signer, hosted } = await (dependencies.getContext ?? getMolphaContext)();
       const resolvedSourceId = resolveSourceId(sourceId, apiConfig);
-      const feedSubmitter = submitter ?? String(signer.publicKey);
+      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly for unsigned hosted feed reads."), { code: "submitter_required" });
+      const feedSubmitter = submitter ?? String(signer!.publicKey);
 
       const [onChainFeed, subscription] = await Promise.all([
         settle("solana.readFeed", async () =>
@@ -79,7 +81,7 @@ export function registerDescribeFeedTool(server: ToolServer): void {
             feedSubmitter
           )
         ),
-        readSubscriptionStatus(solana)
+        signer ? readSubscriptionStatus(solana, hosted) : Promise.resolve(undefined)
       ]);
 
       return {
@@ -88,7 +90,7 @@ export function registerDescribeFeedTool(server: ToolServer): void {
         submitter: feedSubmitter,
         feed: onChainFeed.ok ? presentFeed(onChainFeed.value) : onChainFeed,
         ...(apiConfig ? { valueEncoding: describeValueEncoding(apiConfig.valueTransform) } : {}),
-        subscription,
+        ...(subscription ? { subscription } : { note: "Signer subscription status is unavailable without managed-signer headers." }),
         chains: {
           solana: "devnet (canonical state)",
           evm: config.evmNetworks,

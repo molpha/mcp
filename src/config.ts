@@ -8,11 +8,13 @@ const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
 const FALLBACK_GATEWAY_ENDPOINT = "https://dev-gateway.molpha.io";
 
 export interface GuardrailConfig {
+  dailyCapsEnabled?: boolean;
   maxExecutesPerDay: number;
   dryRunDefault: boolean;
 }
 
 export interface X402Config {
+  dailyCapsEnabled?: boolean;
   /** Per-round cap in USDC base units (6 decimals). Refuse to pay above this. */
   maxPriceUsdcAtomic: bigint;
   /** Daily cumulative spend cap in USDC base units. */

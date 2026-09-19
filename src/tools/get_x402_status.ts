@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getMolphaContext } from "../clients.js";
+import { getMolphaContext, type ToolDependencies } from "../clients.js";
 import { settle } from "../errors.js";
 import { x402SpentToday } from "../guardrails.js";
 import { toolHandler } from "../mcp.js";
@@ -27,23 +27,26 @@ const outputSchema = z.object({
       unsettledRounds: z.number().int()
     })
     .describe("The gateway's working capital for protocol settlement — not a per-payer balance."),
-  payer: z.string(),
+  note: z.string().optional(),
+  payer: z.string().optional(),
   payerUsdc: z
     .union([
       z.object({ usdcMint: z.string(), ata: z.string(), exists: z.boolean(), balanceAtomicUsdc: z.string() }),
       settleFailure()
     ])
+    .optional()
     .describe("The signer's USDC, which pays each round."),
   caps: z.object({
+    dailyCapsEnabled: z.boolean().optional(),
     maxPriceUsdcAtomic: z.string(),
-    maxSpendPerDayUsdcAtomic: z.string(),
-    spentTodayUsdcAtomic: z.string(),
-    remainingTodayUsdcAtomic: z.string()
+    maxSpendPerDayUsdcAtomic: z.string().optional(),
+    spentTodayUsdcAtomic: z.string().optional(),
+    remainingTodayUsdcAtomic: z.string().optional()
   }),
   warning: z.string().optional()
 });
 
-export function registerGetX402StatusTool(server: ToolServer): void {
+export function registerGetX402StatusTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "get_x402_status",
     {
@@ -59,10 +62,10 @@ export function registerGetX402StatusTool(server: ToolServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true }
     },
     toolHandler(outputSchema, async ({ signaturesRequired }: { signaturesRequired?: number }) => {
-      const { config, signer, connection } = await getMolphaContext();
+      const { config, signer, connection, lifecycle } = await (dependencies.getContext ?? getMolphaContext)();
       const [{ endpoint, status }, payerUsdc] = await Promise.all([
-        fetchX402Status(config, signaturesRequired),
-        settle("solana.readPayerUsdc", () => readPayerUsdc(connection, signer.publicKey))
+        fetchX402Status(config, signaturesRequired, lifecycle?.signal),
+        signer ? settle("solana.readPayerUsdc", () => readPayerUsdc(connection, signer.publicKey)) : Promise.resolve(undefined)
       ]);
 
       const price = BigInt(status.quotedNextPrice);
@@ -87,16 +90,18 @@ export function registerGetX402StatusTool(server: ToolServer): void {
           coversNextRound: floatAvailable >= price,
           unsettledRounds: status.unsettledRounds
         },
-        payer: signer.publicKey,
-        payerUsdc: payerUsdc.ok ? payerUsdc.value : payerUsdc,
+        ...(signer && payerUsdc ? { payer: signer.publicKey, payerUsdc: payerUsdc.ok ? payerUsdc.value : payerUsdc }
+          : { note: "Payer details omitted: supply managed-signer headers for payer balances." }),
         caps: {
           maxPriceUsdcAtomic: maxPriceUsdcAtomic.toString(),
-          maxSpendPerDayUsdcAtomic: maxSpendPerDayUsdcAtomic.toString(),
-          spentTodayUsdcAtomic: spentToday.toString(),
-          remainingTodayUsdcAtomic: (spentToday < maxSpendPerDayUsdcAtomic
-            ? maxSpendPerDayUsdcAtomic - spentToday
-            : 0n
-          ).toString()
+          ...(config.x402.dailyCapsEnabled === false ? { dailyCapsEnabled: false } : {
+            maxSpendPerDayUsdcAtomic: maxSpendPerDayUsdcAtomic.toString(),
+            spentTodayUsdcAtomic: spentToday.toString(),
+            remainingTodayUsdcAtomic: (spentToday < maxSpendPerDayUsdcAtomic
+              ? maxSpendPerDayUsdcAtomic - spentToday
+              : 0n
+            ).toString()
+          })
         },
         ...(pinnedAuthority && pinnedAuthority !== status.authority
           ? {

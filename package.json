@@ -35,7 +35,8 @@
   "files": [
     "dist/src",
     "dist/cli",
-    "README.md"
+    "README.md",
+    "docs/hosted-http.md"
   ],
   "publishConfig": {
     "access": "public"

@@ -4,6 +4,7 @@
  * optional Solana autoSubmit leg). Only how the round is paid for differs.
  */
 import { z } from "zod";
+import type { RequestContext } from "../clients.js";
 import { resolveSourceId } from "../apiconfig.js";
 import { normalizeSignedResult, signedArtifactSchema, toDataUpdateArtifact } from "../artifacts.js";
 import { type MolphaConfig } from "../config.js";
@@ -83,7 +84,8 @@ export async function buildRoundResult(
   chains: ChainTarget[],
   config: MolphaConfig,
   payment: RoundPayment,
-  autoSubmit: boolean
+  autoSubmit: boolean,
+  context?: RequestContext
 ): Promise<Record<string, unknown>> {
   // Canonicalize once: the gateway emits minimal hex (a one-signer bitmap comes
   // back as "4"), which both the verifier-arg builders and submit_attestation
@@ -103,7 +105,7 @@ export async function buildRoundResult(
     // A failed submit must not discard the signed artifact — the caller can
     // retry submit_attestation with the payload it is already holding.
     const submitted = await settle("solana.submitAttestation", async () =>
-      submitSignedResult(prepareSignedResult(normalized))
+      submitSignedResult(prepareSignedResult(normalized), context)
     );
     out.submitted = submitted.ok
       ? submitted.value

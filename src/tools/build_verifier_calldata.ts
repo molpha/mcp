@@ -1,3 +1,4 @@
+import type { ToolDependencies } from "../clients.js";
 import { z } from "zod";
 import { signedDataUpdateSchema, signedSignatureSchema, toSignedResult } from "../artifacts.js";
 import { loadConfig } from "../config.js";
@@ -15,7 +16,7 @@ const outputSchema = z.object({
   verifiers: verifierMetadata()
 });
 
-export function registerBuildVerifierCalldataTool(server: ToolServer): void {
+export function registerBuildVerifierCalldataTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
   server.registerTool(
     "build_verifier_calldata",
     {
@@ -44,7 +45,7 @@ export function registerBuildVerifierCalldataTool(server: ToolServer): void {
         includeAbi?: boolean;
       }
     ) => {
-      const config = loadConfig();
+      const config = dependencies.config ?? loadConfig();
       const result = toSignedResult({ dataUpdate, signature });
 
       return {
