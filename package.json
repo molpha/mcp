@@ -89,6 +89,9 @@
   "overrides": {
     "@privy-io/node": {
       "@solana/kit": "$@solana/kit"
+    },
+    "rpc-websockets": {
+      "uuid": "8.3.2"
     }
   },
   "devDependencies": {
