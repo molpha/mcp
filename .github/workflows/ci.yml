@@ -23,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -37,3 +37,28 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  container:
+    name: Build and smoke-test hosted container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t molpha-mcp-http:ci .
+      - name: Check provider dependencies and HTTP health
+        shell: bash
+        run: |
+          docker run --rm --entrypoint node molpha-mcp-http:ci -e "for (const name of ['@privy-io/node', '@turnkey/sdk-server', '@turnkey/solana']) require.resolve(name)"
+          docker run -d --name molpha-http -p 127.0.0.1:8402:8402 molpha-mcp-http:ci
+          trap 'docker rm -f molpha-http' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8402/healthz; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8402/healthz
+          curl --fail --silent http://127.0.0.1:8402/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' > /tmp/molpha-tools.json
+          node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/molpha-tools.json'));if(r.result?.tools?.length!==9)process.exit(1)"

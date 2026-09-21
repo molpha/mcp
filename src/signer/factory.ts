@@ -5,14 +5,14 @@ import { PrivySigner } from "./backends/privy.js";
 import { TurnkeySigner } from "./backends/turnkey.js";
 import type { MolphaSigner } from "./types.js";
 
-export function createSigner(config: MolphaConfig): MolphaSigner {
+export async function createSigner(config: MolphaConfig): Promise<MolphaSigner> {
   const backend = process.env["SIGNER_BACKEND"] ?? "memory";
 
   if (backend === "keychain") {
     return createKeychainSigner();
   }
 
-  return new MemorySigner(loadOwnerKeypair(config));
+  return MemorySigner.fromSecretKey(loadOwnerKeypair(config));
 }
 
 function createKeychainSigner(): MolphaSigner {

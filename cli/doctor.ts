@@ -4,6 +4,7 @@ import {
   buildCodexTomlSnippet,
   buildMcpJsonSnippet,
   checkBuildArtifact,
+  checkGatewayEndpoints,
   checkSignerAvailability,
   checkSolanaRpc,
   validateSignerEnv,
@@ -11,11 +12,13 @@ import {
 } from "../src/setup-validation.js";
 import { loadConfig } from "../src/config.js";
 
+const config = loadConfig();
 const checks: SetupCheck[] = [
   checkBuildArtifact(),
   ...validateSignerEnv(),
   await checkSignerAvailability(),
-  await checkSolanaRpc(loadConfig().solanaRpc)
+  await checkSolanaRpc(config.solanaRpc),
+  await checkGatewayEndpoints(config.gatewayEndpoints)
 ];
 
 const failed = checks.filter((check) => !check.ok);
@@ -38,5 +41,5 @@ console.log("Suggested Codex config.toml snippet:\n");
 console.log(buildCodexTomlSnippet());
 
 console.log(
-  "Next: add the JSON to ~/.cursor/mcp.json or Claude Desktop config, restart the client, and call molpha_get_capabilities."
+  "Next: add the JSON to ~/.cursor/mcp.json or Claude Desktop config, restart the client, and call get_capabilities."
 );

@@ -1,0 +1,10 @@
+# Allowlist: never send local keys, .env files, .git, bundles, or artifacts.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/
+!src/**
+!cli/
+!cli/**

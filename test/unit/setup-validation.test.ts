@@ -42,6 +42,21 @@ describe("validateSignerEnv", () => {
     expect(checks.find((check) => check.name === "privy_app_secret")?.ok).toBe(false);
   });
 
+  it("rejects invalid turnkey wallet addresses", () => {
+    const checks = validateSignerEnv({
+      SIGNER_BACKEND: "keychain",
+      KEYCHAIN_BACKEND: "turnkey",
+      TURNKEY_API_PUBLIC_KEY: "pub",
+      TURNKEY_API_PRIVATE_KEY: "priv",
+      TURNKEY_ORGANIZATION_ID: "org",
+      TURNKEY_WALLET_ADDRESS: "<base58-solana-address>"
+    });
+
+    const walletCheck = checks.find((check) => check.name === "turnkey_wallet_address");
+    expect(walletCheck?.ok).toBe(false);
+    expect(walletCheck?.message).toContain("TURNKEY_WALLET_ADDRESS");
+  });
+
   it("builds memory env block with absolute owner keypair path", () => {
     const env = buildMcpEnvBlock({
       SIGNER_BACKEND: "memory",

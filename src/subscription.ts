@@ -4,14 +4,15 @@ export interface SubscriptionStatus {
   active: boolean;
   owner?: string;
   planType?: unknown;
-  prepaidUsdc?: string;
   validUntil?: string;
-  jobCount?: number;
+  usedRounds?: number;
+  maxRounds?: number;
   message?: string;
 }
 
 export async function readSubscriptionStatus(
-  solana: Record<string, unknown>
+  solana: Record<string, unknown>,
+  hosted = false
 ): Promise<SubscriptionStatus> {
   const readSubscription = requireMethod<[], Promise<Record<string, unknown> | null>>(solana, "readSubscription");
 
@@ -22,37 +23,36 @@ export async function readSubscriptionStatus(
       return {
         active: false,
         message:
-          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR before creating jobs."
+          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use execute_x402_round for a self-funded pay-per-request round."
       };
     }
 
     const validUntil = BigInt(String(subscription.validUntil ?? 0));
     const now = BigInt(Math.floor(Date.now() / 1000));
-    const active = validUntil > now;
+    const usedRounds = BigInt(String(subscription.usedRounds ?? 0));
+    const maxRounds = BigInt(String(subscription.maxRounds ?? 0));
+    const active = validUntil > now && (maxRounds === 0n || usedRounds < maxRounds);
 
     return {
       active,
       owner: subscription.owner?.toString?.() ?? String(subscription.owner ?? ""),
       planType: subscription.planType,
-      prepaidUsdc: String(subscription.prepaidUsdc ?? ""),
       validUntil: validUntil.toString(),
-      jobCount: Number(subscription.jobCount ?? 0),
-      ...(active ? {} : { message: "Subscription expired. Extend via the bootstrap CLI before creating jobs." })
+      usedRounds: Number(usedRounds),
+      maxRounds: Number(maxRounds),
+      ...(active
+        ? {}
+        : {
+            message:
+              validUntil <= now
+                ? "Subscription expired. Extend via the bootstrap CLI before requesting data."
+                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use execute_x402_round."
+          })
     };
   } catch (error) {
     return {
       active: false,
-      message: error instanceof Error ? error.message : String(error)
+      message: hosted ? "Subscription status unavailable." : error instanceof Error ? error.message : String(error)
     };
   }
-}
-
-export async function assertActiveSubscription(solana: Record<string, unknown>): Promise<SubscriptionStatus> {
-  const status = await readSubscriptionStatus(solana);
-
-  if (!status.active) {
-    throw new Error(status.message ?? "Subscription is inactive or missing");
-  }
-
-  return status;
 }

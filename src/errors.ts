@@ -6,9 +6,38 @@ export interface NormalizedToolError {
   remediation?: string;
 }
 
+export type SettleResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; label: string; error: NormalizedToolError };
+
+/** Runs `run()`, capturing a failure as a normalized error instead of throwing. */
+export async function settle<T>(label: string, run: () => Promise<T>): Promise<SettleResult<T>> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (error) {
+    return { ok: false, label, error: normalizeError(error) };
+  }
+}
+
 export function normalizeError(error: unknown): NormalizedToolError {
+  const ownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  if (ownCode === "authentication_required" || ownCode === "submitter_required") {
+    return { code: ownCode, message: error instanceof Error ? error.message : "Invalid request" };
+  }
   const status = getStatus(error);
   const message = error instanceof Error ? error.message : String(error);
+
+  // Checked first: a payment went out and the gateway's answer does not say
+  // whether it settled, whatever HTTP status that answer carried.
+  if (error instanceof Error && error.name === "X402PaymentOutcomeUnknownError") {
+    return {
+      code: "payment_outcome_unknown",
+      message,
+      details: (error as Error & { reconciliation?: unknown }).reconciliation,
+      remediation:
+        "Do not pay for this round again yet: the signed USDC transfer may have settled. Its blockhash expires within about two minutes; after that, look for a transfer to details.payTo carrying details.memo in the signer's USDC account before retrying."
+    };
+  }
 
   if (status === 400) {
     return withStatus("invalid_request", message, status);
@@ -17,14 +46,26 @@ export function normalizeError(error: unknown): NormalizedToolError {
   if (status === 401) {
     return {
       ...withStatus("unauthorized", message, status),
-      remediation: "Ensure OWNER_KEYPAIR matches the job owner or an authorized request signer."
+      remediation:
+        "The request signature binds the program, gateway PDA, sourceId, and quorum. Ensure OWNER_KEYPAIR is the subscription owner and GATEWAY_AUTHORITIES names each gateway's authority."
     };
   }
 
   if (status === 402) {
+    const payload = getX402Payload(error);
     return {
-      ...withStatus("subscription_inactive", message, status),
-      remediation: "Bootstrap or extend the subscription via `npm run provision -- subscribe` before requesting data."
+      ...withStatus("payment_required", message, status),
+      remediation:
+        "The gateway rejected the x402 payment (see details.error). Check the signer's USDC balance and the x402 caps with get_x402_status, then retry, or use execute_subscription_round with an active subscription.",
+      ...(payload !== undefined ? { details: payload } : {})
+    };
+  }
+
+  if (status === 403) {
+    return {
+      ...withStatus("forbidden", message, status),
+      remediation:
+        "The gateway refused this signer's subscription (missing, expired, or out of quota). Extend it via the bootstrap CLI, or use execute_x402_round for a self-funded round."
     };
   }
 
@@ -40,16 +81,59 @@ export function normalizeError(error: unknown): NormalizedToolError {
     };
   }
 
+  if (
+    message.includes("must be a valid Solana address") ||
+    message.includes("Non-base58 character")
+  ) {
+    return {
+      code: "invalid_config",
+      message,
+      remediation:
+        "Check PRIVY_WALLET_ADDRESS / TURNKEY_WALLET_ADDRESS and GATEWAY_AUTHORITIES in your MCP env. Use real Solana devnet pubkeys — not placeholders like <base58-solana-address>."
+    };
+  }
+
+  if (message.includes("GATEWAY_AUTHORITIES")) {
+    return { code: "invalid_config", message };
+  }
+
+  if (message.includes("/v1/info")) {
+    return {
+      code: "invalid_config",
+      message,
+      remediation:
+        "This gateway does not publish its identity at GET /v1/info. Set GATEWAY_AUTHORITIES to each gateway's base58 authority, in GATEWAY_ENDPOINTS order."
+    };
+  }
+
   if (message.includes("Subscription") || message.includes("subscription")) {
     return {
       code: "subscription_inactive",
       message,
-      remediation: "Run the bootstrap CLI to subscribe before creating jobs or requesting signed data."
+      remediation: "Run the bootstrap CLI to subscribe, or use execute_x402_round for a self-funded round."
     };
   }
 
   if (message.includes("cap reached")) {
     return { code: "guardrail_exceeded", message };
+  }
+
+  if (message.includes('"jsonrpc"') && message.includes("Method not found")) {
+    return {
+      code: "invalid_config",
+      message,
+      remediation:
+        "GATEWAY_ENDPOINTS is pointing at a Solana RPC URL, not a Molpha gateway. Set it to the Molpha gateway base URL (see README / npm run doctor) and keep SOLANA_RPC separate."
+    };
+  }
+
+  if (message.includes("/v1/x402/execute") && message.includes("page not found")) {
+    return {
+      code: "invalid_config",
+      message,
+      remediation:
+        "This gateway host exposes /v1/nodes but not signing routes. Use https://dev-gateway.molpha.io (run npm run doctor to verify)."
+    };
   }
 
   if (message.includes("determinism") || message.includes("live-drifting")) {
@@ -74,6 +158,14 @@ function getStatus(error: unknown): number | undefined {
   const status = record.status ?? record.statusCode ?? response?.status ?? cause?.status;
 
   return typeof status === "number" ? status : undefined;
+}
+
+function getX402Payload(error: unknown): unknown {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+
+  return (error as Record<string, unknown>).x402;
 }
 
 function isTimeout(error: unknown): boolean {

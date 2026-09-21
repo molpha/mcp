@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
-import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import type { Address } from "@solana/kit";
+import { Transaction, VersionedTransaction } from "@solana/web3.js";
+import { parseSolanaPubkey } from "../../solana-address.js";
 import type { MolphaSigner } from "../types.js";
 
 const require = createRequire(import.meta.url);
@@ -31,12 +33,12 @@ export interface TurnkeySignerConfig {
 }
 
 export class TurnkeySigner implements MolphaSigner {
-  readonly publicKey: PublicKey;
+  readonly publicKey: Address;
   private readonly address: string;
   private readonly signer: TurnkeySignerLike;
 
   constructor(config: TurnkeySignerConfig) {
-    this.publicKey = new PublicKey(config.address);
+    this.publicKey = parseSolanaPubkey(config.address, "TURNKEY_WALLET_ADDRESS");
     this.address = config.address;
 
     let TurnkeyClass: TurnkeyConstructor;

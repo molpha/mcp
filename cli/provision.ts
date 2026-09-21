@@ -22,7 +22,7 @@ if (command !== "subscribe" && command !== "extend") {
 }
 
 const config = loadConfig();
-const signer = createSigner(config);
+const signer = await createSigner(config);
 const solana = createSolanaClient(config, signer);
 
 const planName = values.plan ?? "Basic";
@@ -35,12 +35,12 @@ if (!values["dry-run"] && !maxPriceUsdc) {
 
 const summary = {
   command,
-  owner: signer.publicKey.toBase58(),
+  owner: signer.publicKey,
   plan: planName,
   maxPriceUsdc,
   gatewayEndpoints: config.gatewayEndpoints,
   solanaRpc: config.solanaRpc,
-  note: "Bootstrap only — job creation, fetch, and execute run in the MCP runtime with the same OWNER_KEYPAIR."
+  note: "Bootstrap only — rounds and submits run in the MCP runtime with the same OWNER_KEYPAIR. A subscription is optional: execute_x402_round self-funds a round over x402 when unsubscribed."
 };
 
 if (values["dry-run"]) {

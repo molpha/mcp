@@ -1,0 +1,249 @@
+{
+  "manifest_version": "0.3",
+  "name": "molpha-mcp",
+  "display_name": "Molpha MCP",
+  "version": "0.1.1",
+  "description": "Lets AI agents fetch signed Molpha oracle data, publish it on Solana, and build verifier calldata.",
+  "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.",
+  "author": {
+    "name": "Molpha",
+    "url": "https://molpha.io"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/molpha/mcp.git"
+  },
+  "homepage": "https://docs.molpha.io/",
+  "documentation": "https://docs.molpha.io/",
+  "support": "https://github.com/molpha/mcp/issues",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "molpha",
+    "oracle",
+    "solana",
+    "evm",
+    "starknet",
+    "x402"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/src/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/src/server.js"
+      ],
+      "env": {
+        "SIGNER_BACKEND": "${user_config.signer_backend}",
+        "KEYCHAIN_BACKEND": "${user_config.keychain_backend}",
+        "OWNER_KEYPAIR": "${user_config.owner_keypair}",
+        "PRIVY_APP_ID": "${user_config.privy_app_id}",
+        "PRIVY_APP_SECRET": "${user_config.privy_app_secret}",
+        "PRIVY_WALLET_ID": "${user_config.privy_wallet_id}",
+        "PRIVY_WALLET_ADDRESS": "${user_config.privy_wallet_address}",
+        "TURNKEY_API_PUBLIC_KEY": "${user_config.turnkey_api_public_key}",
+        "TURNKEY_API_PRIVATE_KEY": "${user_config.turnkey_api_private_key}",
+        "TURNKEY_ORGANIZATION_ID": "${user_config.turnkey_organization_id}",
+        "TURNKEY_WALLET_ADDRESS": "${user_config.turnkey_wallet_address}",
+        "SOLANA_RPC": "${user_config.solana_rpc}",
+        "GATEWAY_ENDPOINTS": "${user_config.gateway_endpoints}",
+        "GATEWAY_AUTHORITIES": "${user_config.gateway_authorities}",
+        "MOLPHA_EVM_NETWORKS": "${user_config.evm_networks}",
+        "MOLPHA_STARKNET_NETWORKS": "${user_config.starknet_networks}",
+        "MOLPHA_MAX_EXECUTES_PER_DAY": "${user_config.max_executes_per_day}",
+        "MOLPHA_DRY_RUN": "${user_config.dry_run}",
+        "MOLPHA_X402_MAX_PRICE_USDC": "${user_config.x402_max_price_usdc}",
+        "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "${user_config.x402_max_spend_per_day_usdc}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "get_capabilities",
+      "description": "Return the program id, registry version, node set, gateways, chains, verifier metadata, and the round tool for each payment path."
+    },
+    {
+      "name": "derive_source_id",
+      "description": "Derive a sourceId locally: keccak256 of the apiConfig's canonical JSON (fixed key order, not JCS). No transaction or wallet."
+    },
+    {
+      "name": "describe_feed",
+      "description": "Read the Solana feed for (sourceId, quorum, submitter) and the signer's subscription status."
+    },
+    {
+      "name": "get_latest_value",
+      "description": "Read the latest attested value stored in a Solana feed account."
+    },
+    {
+      "name": "get_x402_status",
+      "description": "Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget."
+    },
+    {
+      "name": "execute_subscription_round",
+      "description": "Run a subscription-paid signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
+    },
+    {
+      "name": "execute_x402_round",
+      "description": "Run an x402 pay-per-request signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
+    },
+    {
+      "name": "build_verifier_calldata",
+      "description": "Build EVM/Starknet verifier address and verify() call arguments. Calldata only: it verifies nothing — the agent executes verify() itself."
+    },
+    {
+      "name": "submit_attestation",
+      "description": "Submit a signed attestation to Solana. Accepts a round tool's output unmodified."
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=24.0.0"
+    }
+  },
+  "user_config": {
+    "signer_backend": {
+      "type": "string",
+      "title": "Signer backend",
+      "description": "memory (local keypair) or keychain (Privy / Turnkey).",
+      "default": "memory",
+      "required": true
+    },
+    "owner_keypair": {
+      "type": "file",
+      "title": "Owner keypair",
+      "description": "Solana JSON keypair file. Required when signer backend is memory.",
+      "required": false
+    },
+    "keychain_backend": {
+      "type": "string",
+      "title": "Keychain backend",
+      "description": "privy or turnkey. Required when signer backend is keychain.",
+      "required": false
+    },
+    "privy_app_id": {
+      "type": "string",
+      "title": "Privy app ID",
+      "description": "Required for KEYCHAIN_BACKEND=privy.",
+      "sensitive": true,
+      "required": false
+    },
+    "privy_app_secret": {
+      "type": "string",
+      "title": "Privy app secret",
+      "description": "Required for KEYCHAIN_BACKEND=privy.",
+      "sensitive": true,
+      "required": false
+    },
+    "privy_wallet_id": {
+      "type": "string",
+      "title": "Privy wallet ID",
+      "description": "Required for KEYCHAIN_BACKEND=privy.",
+      "sensitive": true,
+      "required": false
+    },
+    "privy_wallet_address": {
+      "type": "string",
+      "title": "Privy wallet address",
+      "description": "Solana address for the Privy wallet.",
+      "required": false
+    },
+    "turnkey_api_public_key": {
+      "type": "string",
+      "title": "Turnkey API public key",
+      "description": "Required for KEYCHAIN_BACKEND=turnkey.",
+      "sensitive": true,
+      "required": false
+    },
+    "turnkey_api_private_key": {
+      "type": "string",
+      "title": "Turnkey API private key",
+      "description": "Required for KEYCHAIN_BACKEND=turnkey.",
+      "sensitive": true,
+      "required": false
+    },
+    "turnkey_organization_id": {
+      "type": "string",
+      "title": "Turnkey organization ID",
+      "description": "Required for KEYCHAIN_BACKEND=turnkey.",
+      "sensitive": true,
+      "required": false
+    },
+    "turnkey_wallet_address": {
+      "type": "string",
+      "title": "Turnkey wallet address",
+      "description": "Solana address for the Turnkey wallet.",
+      "required": false
+    },
+    "solana_rpc": {
+      "type": "string",
+      "title": "Solana RPC",
+      "description": "Solana RPC endpoint.",
+      "default": "https://api.devnet.solana.com",
+      "required": false
+    },
+    "gateway_endpoints": {
+      "type": "string",
+      "title": "Gateway endpoints",
+      "description": "Comma-separated Molpha gateway URLs. Leave empty to use the SDK default.",
+      "default": "",
+      "required": false
+    },
+    "gateway_authorities": {
+      "type": "string",
+      "title": "Gateway authorities",
+      "description": "Comma-separated base58 gateway authorities, one per gateway endpoint in the same order. Required for gateways that do not serve GET /v1/info.",
+      "default": "",
+      "required": false
+    },
+    "evm_networks": {
+      "type": "string",
+      "title": "EVM networks",
+      "description": "Comma-separated EVM verifier networks.",
+      "default": "evm-sepolia",
+      "required": false
+    },
+    "starknet_networks": {
+      "type": "string",
+      "title": "Starknet networks",
+      "description": "Comma-separated Starknet verifier networks.",
+      "default": "starknet-sepolia",
+      "required": false
+    },
+    "dry_run": {
+      "type": "boolean",
+      "title": "Dry run",
+      "description": "Preview all write and spend operations without submitting them.",
+      "default": false,
+      "required": false
+    },
+    "max_executes_per_day": {
+      "type": "number",
+      "title": "Max executes per day",
+      "description": "Process-local daily Solana submit cap.",
+      "default": 100,
+      "min": 1,
+      "max": 10000,
+      "required": false
+    },
+    "x402_max_price_usdc": {
+      "type": "string",
+      "title": "x402 max price (USDC)",
+      "description": "Refuse to pay for an x402 round priced above this amount (decimal USDC).",
+      "default": "1",
+      "required": false
+    },
+    "x402_max_spend_per_day_usdc": {
+      "type": "string",
+      "title": "x402 max spend per day (USDC)",
+      "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
+      "default": "10",
+      "required": false
+    }
+  }
+}

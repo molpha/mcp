@@ -1,15 +1,21 @@
-import { createPrivateKey, sign as cryptoSign } from "node:crypto";
-import { Wallet } from "@coral-xyz/anchor";
-import type { Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { createKeyPairFromBytes, getAddressFromPublicKey, signBytes, type Address } from "@solana/kit";
+import { Transaction, VersionedTransaction } from "@solana/web3.js";
+import { toLegacyPublicKey } from "../../solana-compat.js";
 import type { MolphaSigner } from "../types.js";
 
 export class MemorySigner implements MolphaSigner {
-  readonly publicKey: PublicKey;
-  readonly keypair: Keypair;
+  readonly publicKey: Address;
+  private readonly keyPair: CryptoKeyPair;
 
-  constructor(keypair: Keypair) {
-    this.keypair = keypair;
-    this.publicKey = keypair.publicKey;
+  private constructor(keyPair: CryptoKeyPair, address: Address) {
+    this.keyPair = keyPair;
+    this.publicKey = address;
+  }
+
+  static async fromSecretKey(secretKey: Uint8Array): Promise<MemorySigner> {
+    const keyPair = await createKeyPairFromBytes(secretKey);
+    const address = await getAddressFromPublicKey(keyPair.publicKey);
+    return new MemorySigner(keyPair, address);
   }
 
   async isAvailable(): Promise<boolean> {
@@ -17,18 +23,28 @@ export class MemorySigner implements MolphaSigner {
   }
 
   async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {
-    return new Wallet(this.keypair).signTransaction(tx);
+    const messageBytes = tx instanceof VersionedTransaction ? tx.message.serialize() : tx.serializeMessage();
+    const signature = await signBytes(this.keyPair.privateKey, toExactUint8Array(messageBytes));
+    tx.addSignature(toLegacyPublicKey(this.publicKey), Buffer.from(signature));
+    return tx;
   }
 
   async signAllTransactions<T extends Transaction | VersionedTransaction>(txs: T[]): Promise<T[]> {
-    return new Wallet(this.keypair).signAllTransactions(txs);
+    return Promise.all(txs.map((tx) => this.signTransaction(tx)));
   }
 
   async signMessage(message: Uint8Array): Promise<Uint8Array> {
-    // Ed25519 PKCS#8 DER: wrap the 32-byte seed from the 64-byte Solana secretKey
-    const seed = this.keypair.secretKey.subarray(0, 32);
-    const header = Buffer.from("302e020100300506032b657004220420", "hex");
-    const key = createPrivateKey({ key: Buffer.concat([header, seed]), format: "der", type: "pkcs8" });
-    return new Uint8Array(cryptoSign(null, message, key));
+    return new Uint8Array(await signBytes(this.keyPair.privateKey, toExactUint8Array(message)));
   }
+}
+
+/**
+ * Node's Buffer pooling means small buffers (e.g. `Transaction.serializeMessage()`,
+ * `Buffer.concat(...)`) are frequently views into a much larger shared ArrayBuffer.
+ * WebCrypto's `subtle.sign` reads the view's backing buffer rather than respecting
+ * its byteOffset/byteLength, which silently signs the wrong bytes. Always copy into
+ * a tightly-sized Uint8Array before signing.
+ */
+function toExactUint8Array(bytes: Uint8Array): Uint8Array {
+  return bytes.byteLength === bytes.buffer.byteLength ? bytes : Uint8Array.from(bytes);
 }

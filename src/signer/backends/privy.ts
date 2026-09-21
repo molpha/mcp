@@ -1,21 +1,27 @@
 import { createRequire } from "node:module";
-import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import type { Address } from "@solana/kit";
+import { Transaction, VersionedTransaction } from "@solana/web3.js";
+import { parseSolanaPubkey } from "../../solana-address.js";
 import type { MolphaSigner } from "../types.js";
 
 const require = createRequire(import.meta.url);
 
-interface PrivyWalletApi {
-  solana: {
-    signTransaction(args: {
-      walletId: string;
-      transaction: Transaction | VersionedTransaction;
-    }): Promise<{ signedTransaction: Transaction | VersionedTransaction }>;
-    signMessage(args: { walletId: string; message: Uint8Array }): Promise<{ signature: Uint8Array }>;
-  };
-  getWallet(args: { id: string }): Promise<{ id: string; address: string }>;
+interface PrivySolanaService {
+  signTransaction(
+    walletId: string,
+    args: { transaction: Uint8Array }
+  ): Promise<{ signed_transaction: string; encoding: "base64" }>;
+  signMessage(
+    walletId: string,
+    args: { message: Uint8Array }
+  ): Promise<{ signature: string; encoding: "base64" }>;
+}
+interface PrivyWalletsService {
+  get(walletId: string): Promise<{ id: string; address: string }>;
+  solana(): PrivySolanaService;
 }
 interface PrivyClientLike {
-  walletApi: PrivyWalletApi;
+  wallets(): PrivyWalletsService;
 }
 
 export interface PrivySignerConfig {
@@ -26,31 +32,32 @@ export interface PrivySignerConfig {
 }
 
 export class PrivySigner implements MolphaSigner {
-  readonly publicKey: PublicKey;
+  readonly publicKey: Address;
   private readonly walletId: string;
-  private readonly privy: PrivyClientLike;
+  private readonly wallets: PrivyWalletsService;
 
   constructor(config: PrivySignerConfig) {
-    this.publicKey = new PublicKey(config.address);
+    this.publicKey = parseSolanaPubkey(config.address, "PRIVY_WALLET_ADDRESS");
     this.walletId = config.walletId;
-   
-    let PrivyClient: new (appId: string, appSecret: string) => PrivyClientLike;
+
+    let PrivyClient: new (opts: { appId: string; appSecret: string }) => PrivyClientLike;
     try {
-      ({ PrivyClient } = require("@privy-io/server-auth") as {
-        PrivyClient: new (appId: string, appSecret: string) => PrivyClientLike;
+      ({ PrivyClient } = require("@privy-io/node") as {
+        PrivyClient: new (opts: { appId: string; appSecret: string }) => PrivyClientLike;
       });
     } catch (error) {
       throw new Error(
-        "@privy-io/server-auth is not installed. Run `npm install @privy-io/server-auth` to use SIGNER_BACKEND=keychain with KEYCHAIN_BACKEND=privy.",
+        "@privy-io/node is not installed. Run `npm install @privy-io/node` to use SIGNER_BACKEND=keychain with KEYCHAIN_BACKEND=privy.",
         { cause: error }
       );
     }
-    this.privy = new PrivyClient(config.appId, config.appSecret);
+    const privy = new PrivyClient({ appId: config.appId, appSecret: config.appSecret });
+    this.wallets = privy.wallets();
   }
 
   async isAvailable(): Promise<boolean> {
     try {
-      await this.privy.walletApi.getWallet({ id: this.walletId });
+      await this.wallets.get(this.walletId);
       return true;
     } catch {
       return false;
@@ -58,12 +65,17 @@ export class PrivySigner implements MolphaSigner {
   }
 
   async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {
-    const { signedTransaction } = await this.privy.walletApi.solana.signTransaction({
-      walletId: this.walletId,
-      transaction: tx,
+    const transaction =
+      tx instanceof VersionedTransaction
+        ? tx.serialize()
+        : tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+
+    const { signed_transaction: signedTransaction } = await this.wallets.solana().signTransaction(this.walletId, {
+      transaction,
     });
 
-    return signedTransaction as T;
+    const decoded = Buffer.from(signedTransaction, "base64");
+    return (tx instanceof VersionedTransaction ? VersionedTransaction.deserialize(decoded) : Transaction.from(decoded)) as T;
   }
 
   async signAllTransactions<T extends Transaction | VersionedTransaction>(txs: T[]): Promise<T[]> {
@@ -71,10 +83,7 @@ export class PrivySigner implements MolphaSigner {
   }
 
   async signMessage(message: Uint8Array): Promise<Uint8Array> {
-    const { signature } = await this.privy.walletApi.solana.signMessage({
-      walletId: this.walletId,
-      message,
-    });
-    return signature instanceof Uint8Array ? signature : new Uint8Array(signature);
+    const { signature } = await this.wallets.solana().signMessage(this.walletId, { message });
+    return new Uint8Array(Buffer.from(signature, "base64"));
   }
 }

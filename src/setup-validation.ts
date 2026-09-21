@@ -1,9 +1,16 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
-import { Connection } from "@solana/web3.js";
-import { loadConfig, loadKeypair } from "./config.js";
+import { resolve } from "node:path";
+import { createSolanaRpc } from "@solana/kit";
+import {
+  formatUsdcAtomic,
+  isInlineKeypair,
+  loadConfig,
+  loadKeypair,
+  resolveEnvString,
+  resolvePath
+} from "./config.js";
 import { createSigner } from "./signer/factory.js";
+import { validateSolanaPubkey } from "./solana-address.js";
 
 export interface SetupCheck {
   name: string;
@@ -12,7 +19,7 @@ export interface SetupCheck {
 }
 
 export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCheck[] {
-  const backend = env.SIGNER_BACKEND ?? "memory";
+  const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
   const checks: SetupCheck[] = [
     {
       name: "signer_backend",
@@ -25,7 +32,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
   ];
 
   if (backend === "memory") {
-    const ownerKeypair = env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR;
+    const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR);
     if (!ownerKeypair?.trim()) {
       checks.push({
         name: "owner_keypair",
@@ -74,7 +81,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
     return checks;
   }
 
-  const provider = env.KEYCHAIN_BACKEND;
+  const provider = resolveEnvString(env.KEYCHAIN_BACKEND);
   if (provider !== "privy" && provider !== "turnkey") {
     checks.push({
       name: "keychain_backend",
@@ -100,8 +107,29 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
           "TURNKEY_WALLET_ADDRESS"
         ];
 
+  const walletAddressVar = provider === "privy" ? "PRIVY_WALLET_ADDRESS" : "TURNKEY_WALLET_ADDRESS";
+
   for (const name of required) {
-    const value = env[name];
+    const value = resolveEnvString(env[name]);
+    if (name === walletAddressVar) {
+      if (!value?.trim()) {
+        checks.push({
+          name: name.toLowerCase(),
+          ok: false,
+          message: `${name} is required for ${provider}`
+        });
+        continue;
+      }
+
+      const validation = validateSolanaPubkey(value, name);
+      checks.push({
+        name: name.toLowerCase(),
+        ok: validation.ok,
+        message: validation.ok ? `${name} is a valid Solana address` : validation.message
+      });
+      continue;
+    }
+
     checks.push({
       name: name.toLowerCase(),
       ok: Boolean(value && value.trim().length > 0),
@@ -114,13 +142,13 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
 
 export async function checkSignerAvailability(): Promise<SetupCheck> {
   try {
-    const signer = createSigner(loadConfig());
+    const signer = await createSigner(loadConfig());
     const available = await signer.isAvailable();
     return {
       name: "signer",
       ok: available,
       message: available
-        ? `signer ready for ${signer.publicKey.toBase58()}`
+        ? `signer ready for ${signer.publicKey}`
         : "signer backend is not available"
     };
   } catch (error) {
@@ -132,10 +160,90 @@ export async function checkSignerAvailability(): Promise<SetupCheck> {
   }
 }
 
+function looksLikeSolanaRpc(endpoint: string): boolean {
+  try {
+    const host = new URL(endpoint).hostname.toLowerCase();
+    return (
+      host.includes("helius") ||
+      host.includes("quicknode") ||
+      host.includes("alchemy") ||
+      host === "solana.com" ||
+      host.endsWith(".solana.com") ||
+      host.includes("rpc.")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupCheck> {
+  if (endpoints.length === 0) {
+    return {
+      name: "gateway_endpoints",
+      ok: false,
+      message: "no gateway endpoints configured"
+    };
+  }
+
+  const solanaRpcEndpoint = endpoints.find(looksLikeSolanaRpc);
+  if (solanaRpcEndpoint) {
+    return {
+      name: "gateway_endpoints",
+      ok: false,
+      message:
+        `${solanaRpcEndpoint} looks like a Solana RPC URL — set GATEWAY_ENDPOINTS to a Molpha gateway (not SOLANA_RPC)`
+    };
+  }
+
+  let lastError = "no reachable gateway";
+  for (const endpoint of endpoints) {
+    const base = endpoint.replace(/\/$/, "");
+    try {
+      const nodesRes = await fetch(`${base}/v1/nodes`, { method: "GET", signal: AbortSignal.timeout(8_000) });
+      if (!nodesRes.ok) {
+        lastError = `GET /v1/nodes failed (${nodesRes.status}) at ${base}`;
+        continue;
+      }
+
+      const probeRes = await fetch(`${base}/v1/x402/execute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+        signal: AbortSignal.timeout(8_000)
+      });
+      const probeText = (await probeRes.text()).trim();
+      if (probeText.includes('"jsonrpc"') && probeText.includes("Method not found")) {
+        lastError = `${base} returned a Solana JSON-RPC error for POST /v1/x402/execute — this is not a Molpha gateway`;
+        continue;
+      }
+      if (probeRes.status === 404 && probeText.includes("page not found")) {
+        lastError = `${base} serves /v1/nodes but not /v1/x402/execute (signing routes missing — use https://dev-gateway.molpha.io)`;
+        continue;
+      }
+      if (probeRes.status === 400 || probeRes.status === 401 || probeRes.status === 402) {
+        return {
+          name: "gateway_endpoints",
+          ok: true,
+          message: `${base} reachable (nodes + signing routes)`
+        };
+      }
+
+      lastError = `${base} unexpected POST /v1/x402/execute response (${probeRes.status})`;
+    } catch (error) {
+      lastError = error instanceof Error ? `${base}: ${error.message}` : `${base}: unreachable`;
+    }
+  }
+
+  return {
+    name: "gateway_endpoints",
+    ok: false,
+    message: lastError
+  };
+}
+
 export async function checkSolanaRpc(rpc: string): Promise<SetupCheck> {
   try {
-    const connection = new Connection(rpc, "confirmed");
-    const version = await connection.getVersion();
+    const version = await createSolanaRpc(rpc).getVersion().send();
     return {
       name: "solana_rpc",
       ok: true,
@@ -170,22 +278,26 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
   const out: Record<string, string> = {
     SOLANA_RPC: config.solanaRpc,
     GATEWAY_ENDPOINTS: config.gatewayEndpoints.join(","),
+    ...(config.gatewayAuthorities.some(Boolean)
+      ? { GATEWAY_AUTHORITIES: config.gatewayAuthorities.map((authority) => authority ?? "").join(",") }
+      : {}),
     MOLPHA_EVM_NETWORKS: config.evmNetworks.join(","),
     MOLPHA_STARKNET_NETWORKS: config.starknetNetworks.join(","),
-    MOLPHA_MAX_JOBS_PER_DAY: String(config.guardrails.maxJobsPerDay),
-    MOLPHA_MAX_EXECUTES_PER_DAY: String(config.guardrails.maxExecutesPerDay)
+    MOLPHA_MAX_EXECUTES_PER_DAY: String(config.guardrails.maxExecutesPerDay),
+    MOLPHA_X402_MAX_PRICE_USDC: formatUsdcAtomic(config.x402.maxPriceUsdcAtomic),
+    MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: formatUsdcAtomic(config.x402.maxSpendPerDayUsdcAtomic)
   };
 
-  const backend = env.SIGNER_BACKEND ?? "memory";
+  const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
   if (backend === "memory") {
     out.SIGNER_BACKEND = "memory";
-    const ownerKeypair = env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR;
+    const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR);
     if (ownerKeypair) {
       out.OWNER_KEYPAIR = resolveKeypairPath(ownerKeypair);
     }
   } else {
     out.SIGNER_BACKEND = "keychain";
-    const provider = env.KEYCHAIN_BACKEND;
+    const provider = resolveEnvString(env.KEYCHAIN_BACKEND);
     if (provider) {
       out.KEYCHAIN_BACKEND = provider;
     }
@@ -203,15 +315,11 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
           : [];
 
     for (const name of passthrough) {
-      const value = env[name];
+      const value = resolveEnvString(env[name]);
       if (value) {
         out[name] = value;
       }
     }
-  }
-
-  if (config.programId) {
-    out.PROGRAM_ID = config.programId;
   }
 
   if (config.guardrails.dryRunDefault) {
@@ -256,18 +364,6 @@ export function buildCodexTomlSnippet(repoRoot = process.cwd(), env: NodeJS.Proc
   return `${lines.join("\n")}\n`;
 }
 
-function isInlineKeypair(pathOrJson: string): boolean {
-  return pathOrJson.trim().startsWith("[");
-}
-
 function resolveKeypairPath(path: string): string {
-  if (isInlineKeypair(path)) {
-    return "<inline-json-keypair>";
-  }
-
-  if (path.startsWith("~/")) {
-    return resolve(homedir(), path.slice(2));
-  }
-
-  return isAbsolute(path) ? path : resolve(process.cwd(), path);
+  return isInlineKeypair(path) ? "<inline-json-keypair>" : resolvePath(path);
 }

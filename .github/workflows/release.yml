@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish_mcp_registry:
+        description: Force the MCP registry publish step even if npm publish was skipped (e.g. to retry after a registry-side failure for a version already on npm)
+        type: boolean
+        default: false
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Version and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # changesets pushes version commits and creates GitHub releases
+      pull-requests: write # changesets opens/updates the "Version Packages" PR
+      id-token: write # npm trusted publishing + mcp-publisher github-oidc
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Deliberately no `registry-url` here: setup-node writes a
+      # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} line into .npmrc
+      # whenever registry-url is set, even with NODE_AUTH_TOKEN unset. npm
+      # then sees a (blank) auth token configured, skips the OIDC exchange,
+      # and the registry treats the publish as anonymous -> misleading 404
+      # on scoped packages. See actions/setup-node#1551 and npm/cli#8976.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Print npm version
+        run: npm --version # must be >=11.5.1 for OIDC trusted publishing; Node 24 bundles a compatible npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create Version Packages PR or publish to npm
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: npm run ci:version
+          publish: npm run ci:publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
+
+      - name: Install mcp-publisher
+        if: steps.changesets.outputs.published == 'true' || inputs.publish_mcp_registry == true
+        run: |
+          set -euo pipefail
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz"
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/mcp-publisher
+          rm mcp-publisher.tar.gz
+
+      - name: Publish to the MCP registry
+        if: steps.changesets.outputs.published == 'true' || inputs.publish_mcp_registry == true
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish

@@ -8,11 +8,11 @@
         "SIGNER_BACKEND": "memory",
         "OWNER_KEYPAIR": "/absolute/path/to/owner-keypair.json",
         "SOLANA_RPC": "https://api.devnet.solana.com",
-        "GATEWAY_ENDPOINTS": "https://gateway.molpha.io",
         "MOLPHA_EVM_NETWORKS": "evm-sepolia",
         "MOLPHA_STARKNET_NETWORKS": "starknet-sepolia",
-        "MOLPHA_MAX_JOBS_PER_DAY": "10",
-        "MOLPHA_MAX_EXECUTES_PER_DAY": "100"
+        "MOLPHA_MAX_EXECUTES_PER_DAY": "100",
+        "MOLPHA_X402_MAX_PRICE_USDC": "1",
+        "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "10"
       }
     }
   }

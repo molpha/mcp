@@ -12,7 +12,7 @@ This project currently targets Solana Devnet and Sepolia verifier networks. Trea
 
 Do **not** open a public GitHub issue for security reports.
 
-Please use [GitHub's private vulnerability reporting](https://github.com/Molpha/mcp/security/advisories/new).
+Please use [GitHub's private vulnerability reporting](https://github.com/molpha/mcp/security/advisories/new).
 
 Include as much of the following as you can:
 

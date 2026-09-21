@@ -11,7 +11,6 @@
         "PRIVY_WALLET_ID": "<your-privy-wallet-id>",
         "PRIVY_WALLET_ADDRESS": "<base58-solana-address>",
         "SOLANA_RPC": "https://api.devnet.solana.com",
-        "GATEWAY_ENDPOINTS": "https://gateway.molpha.io",
         "MOLPHA_EVM_NETWORKS": "evm-sepolia",
         "MOLPHA_STARKNET_NETWORKS": "starknet-sepolia"
       }

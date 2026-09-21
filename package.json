@@ -1,20 +1,28 @@
 {
-  "name": "molpha-mcp",
-  "version": "0.1.0",
+  "name": "@molpha/mcp",
+  "version": "0.1.1",
+  "mcpName": "io.github.molpha/mcp",
   "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Molpha/mcp.git"
+    "url": "git+https://github.com/molpha/mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/Molpha/mcp/issues"
+    "url": "https://github.com/molpha/mcp/issues"
   },
   "homepage": "https://docs.molpha.io/",
   "keywords": [
     "mcp",
+    "ai",
+    "agents",
+    "llm",
+    "cursor",
+    "claude",
+    "codex",
+    "x402",
+    "web3",
     "model-context-protocol",
-    "molpha",
     "oracle",
     "solana"
   ],
@@ -27,33 +35,71 @@
   "files": [
     "dist/src",
     "dist/cli",
-    "README.md"
+    "README.md",
+    "docs/hosted-http.md",
+    "docs/vercel.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
+    "start": "node dist/src/server.js --http",
     "doctor": "node --import tsx cli/doctor.ts",
     "provision": "node --import tsx cli/provision.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sync-version": "node scripts/sync-version.mjs",
+    "changeset": "changeset",
+    "ci:version": "changeset version && npm run sync-version",
+    "ci:publish": "changeset publish"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.0.0"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.30.1",
+    "@anchor-lang/core": "^1.1.2",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha-oracle/sdk": "0.4.0",
-    "@privy-io/server-auth": "^1.32.5",
-    "@turnkey/sdk-server": "^6.1.1",
-    "@turnkey/solana": "^1.1.31",
-    "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0",
+    "@molpha/sdk": "0.2.0-dev-20260911175245",
+    "@noble/hashes": "^1.8.0",
+    "@solana-program/token": "^0.15.0",
+    "@solana/kit": "^7.0.0",
+    "@solana/web3.js": "^1.98.4",
     "bn.js": "^5.2.2",
     "dotenv": "^16.6.1",
     "zod": "^3.25.0"
   },
+  "peerDependencies": {
+    "@privy-io/node": "^0.26.0",
+    "@turnkey/sdk-server": "7.0.0",
+    "@turnkey/solana": "^1.1.31"
+  },
+  "peerDependenciesMeta": {
+    "@privy-io/node": {
+      "optional": true
+    },
+    "@turnkey/sdk-server": {
+      "optional": true
+    },
+    "@turnkey/solana": {
+      "optional": true
+    }
+  },
+  "overrides": {
+    "@privy-io/node": {
+      "@solana/kit": "$@solana/kit"
+    },
+    "rpc-websockets": {
+      "uuid": "8.3.2"
+    }
+  },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.1",
+    "@privy-io/node": "^0.26.0",
+    "@turnkey/sdk-server": "7.0.0",
+    "@turnkey/solana": "^1.1.31",
     "@types/bn.js": "^5.1.6",
     "@types/node": "^22.15.29",
     "tsx": "^4.19.4",
