@@ -4,7 +4,8 @@
   "installCommand": "npm ci --include=dev",
   "functions": {
     "src/server.ts": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "package.json"
     }
   },
   "headers": [
