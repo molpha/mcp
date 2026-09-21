@@ -17,7 +17,13 @@ import type { Connection } from "@solana/web3.js";
 import { canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
-import { checkX402PerRoundCap, checkX402SpendCap, recordX402Spend, x402SpentToday } from "./guardrails.js";
+import {
+  checkX402PerRoundCap,
+  checkX402SpendCap,
+  recordX402Spend,
+  withX402DailySpendSerialization,
+  x402SpentToday
+} from "./guardrails.js";
 import { normalizeSourceId } from "./hex.js";
 import type { MolphaSigner } from "./signer/types.js";
 import { parseSolanaPubkey } from "./solana-address.js";
@@ -233,17 +239,22 @@ export async function executeX402Round(ctx: X402RoundContext, opts: X402RoundOpt
   let canonicalTimestamp = nowSeconds();
 
   for (let attempt = 1; ; attempt += 1) {
-    const payment = await preparePayment(ctx, plan, canonicalTimestamp);
-    const { verified, accounts } = payment;
-    if (accounts.payerBalance < verified.amount) {
-      throw new Error(
-        `insufficient USDC for this x402 round: ${ctx.signer.publicKey} holds ${formatUsdcAtomic(accounts.payerBalance)} USDC in ${accounts.payerAta}, the round costs ${formatUsdcAtomic(verified.amount)} USDC`
-      );
-    }
+    const dailyCapsEnabled = ctx.config.x402.dailyCapsEnabled !== false;
+    const { payment, paymentHeader } = await withX402DailySpendSerialization(dailyCapsEnabled, async () => {
+      const prepared = await preparePayment(ctx, plan, canonicalTimestamp);
+      const { verified, accounts } = prepared;
+      if (accounts.payerBalance < verified.amount) {
+        throw new Error(
+          `insufficient USDC for this x402 round: ${ctx.signer.publicKey} holds ${formatUsdcAtomic(accounts.payerBalance)} USDC in ${accounts.payerAta}, the round costs ${formatUsdcAtomic(verified.amount)} USDC`
+        );
+      }
 
-    const paymentHeader = await signPayment(ctx, payment);
-    ctx.lifecycle?.signal.throwIfAborted();
-    if (ctx.config.x402.dailyCapsEnabled !== false) recordX402Spend(verified.amount);
+      const header = await signPayment(ctx, prepared);
+      ctx.lifecycle?.signal.throwIfAborted();
+      if (dailyCapsEnabled) recordX402Spend(verified.amount);
+      return { payment: prepared, paymentHeader: header };
+    });
+    const { verified } = payment;
     if (ctx.lifecycle) {
       ctx.lifecycle.effectStarted = true;
       ctx.lifecycle.reconciliation = {

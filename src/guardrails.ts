@@ -13,6 +13,9 @@ interface DailySpend {
 const executes: DailyCounter = { day: "", count: 0 };
 const x402Spend: DailySpend = { day: "", spentAtomic: 0n };
 
+/** Chains concurrent x402 spend work so cap checks cannot all pass before any is recorded. */
+let x402DailySpendTail: Promise<void> = Promise.resolve();
+
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -95,6 +98,30 @@ export function recordX402Spend(priceAtomic: bigint): void {
   }
 
   x402Spend.spentAtomic += priceAtomic;
+}
+
+/**
+ * Runs one x402 round's daily-cap check, signing, and spend recording at a time
+ * when daily caps are enabled. Without this, concurrent rounds can pass
+ * {@link checkX402SpendCap} before any {@link recordX402Spend} runs.
+ */
+export async function withX402DailySpendSerialization<T>(
+  dailyCapsEnabled: boolean,
+  fn: () => Promise<T>
+): Promise<T> {
+  if (!dailyCapsEnabled) return fn();
+
+  const previous = x402DailySpendTail;
+  let release!: () => void;
+  x402DailySpendTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 export interface WritePreview {

@@ -177,8 +177,6 @@ Hosted capabilities expose only the RPC URL origin, omitting provider API keys i
 
 Scale-out needs a shared rate limiter and revised operational limits. No durable tenant budgets, OAuth wrapper, treasury tools, or demo signer are included.
 
-For a public Vercel deployment of the same HTTP server, follow [Deploy public hosted MCP on Vercel](vercel.md). That path uses Fluid compute instead of a long-lived container; in-process rate limits are per instance, and edge limits belong in Vercel Firewall.
-
 ## Tests
 
 `npm test`, `npm run typecheck`, and `npm run build` cover the regular suite. HTTP tests start loopback servers and mock upstream services; they require no funded wallet. Canary tests capture request logs and scan for credential and argument markers, including error paths.

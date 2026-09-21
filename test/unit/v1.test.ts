@@ -5,7 +5,16 @@ import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
 import { decodeFeedValueKind, presentFeed } from "../../src/feed.js";
 import { toCanonicalHex } from "../../src/hex.js";
-import { checkX402PerRoundCap, checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
+import {
+  checkX402DailySpendCap,
+  checkX402PerRoundCap,
+  checkX402SpendCap,
+  enforceExecuteCap,
+  recordX402Spend,
+  resetGuardrailCounters,
+  withX402DailySpendSerialization,
+  x402SpentToday
+} from "../../src/guardrails.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
 
 describe("loadConfig", () => {
@@ -215,6 +224,24 @@ describe("guardrails", () => {
     resetGuardrailCounters();
     expect(() => checkX402PerRoundCap(2_000_000n, 1_000_000n)).toThrow(/cap reached/);
     expect(() => checkX402PerRoundCap(1_000_000n, 1_000_000n)).not.toThrow();
+  });
+
+  it("serializes concurrent x402 spend cap checks through signing", async () => {
+    resetGuardrailCounters();
+    const amount = 600_000n;
+    const max = 1_000_000n;
+    const run = () =>
+      withX402DailySpendSerialization(true, async () => {
+        checkX402DailySpendCap(amount, max);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        recordX402Spend(amount);
+      });
+
+    const [first, second] = await Promise.allSettled([run(), run()]);
+    const rejected = [first, second].filter((result) => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/daily spend cap reached/);
+    expect(x402SpentToday()).toBe(amount);
   });
 });
 
