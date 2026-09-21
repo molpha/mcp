@@ -3,10 +3,9 @@ import { parseSolanaPubkey } from "../solana-address.js";
 import { PrivySigner, type PrivySignerConfig } from "../signer/backends/privy.js";
 import { TurnkeySigner, type TurnkeySignerConfig } from "../signer/backends/turnkey.js";
 import type { MolphaSigner } from "../signer/types.js";
+import { HttpInputError } from "./errors.js";
 
-export class HttpInputError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
-}
+export { HttpInputError };
 export type SignerSpec = { backend: "privy"; config: PrivySignerConfig } | { backend: "turnkey"; config: TurnkeySignerConfig };
 
 export function secretShaped(value: string): boolean {

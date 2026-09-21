@@ -2,13 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHmac, randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createRequestContext, getSharedRuntime, type RequestContext, type RequestLifecycle, type SharedRuntime } from "../clients.js";
-import { registerTools } from "../tools/index.js";
-import { normalizeError } from "../errors.js";
-import { HttpInputError, parseSignerHeaders, signerFromSpec, type SignerSpec } from "./signers.js";
-import { hostedToolServer, record, safeError, safeReconciliation, type HostedTool } from "./policy.js";
+import type { RequestContext, RequestLifecycle, SharedRuntime } from "../clients.js";
+import type { SignerSpec } from "./signers.js";
+import type { HostedTool } from "./policy.js";
+import { HttpInputError } from "./errors.js";
 import { serverVersion } from "../version.js";
 
 export interface HttpConfig {
@@ -158,9 +155,36 @@ export interface HostedServerOptions {
   log?: (entry: Record<string, unknown>) => void;
 }
 
+/** Lazy MCP/Solana stack — keep createHostedHttpServer cold-start free of web3 imports. */
+async function loadMcpStack() {
+  const [
+    { McpServer },
+    { StreamableHTTPServerTransport },
+    clients,
+    { registerTools },
+    { normalizeError },
+    signers,
+    policy
+  ] = await Promise.all([
+    import("@modelcontextprotocol/sdk/server/mcp.js"),
+    import("@modelcontextprotocol/sdk/server/streamableHttp.js"),
+    import("../clients.js"),
+    import("../tools/index.js"),
+    import("../errors.js"),
+    import("./signers.js"),
+    import("./policy.js")
+  ]);
+  return { McpServer, StreamableHTTPServerTransport, clients, registerTools, normalizeError, signers, policy };
+}
+
+let mcpStackPromise: ReturnType<typeof loadMcpStack> | undefined;
+const mcpStack = () => mcpStackPromise ??= loadMcpStack();
+
 export function createHostedHttpServer(options: HostedServerOptions = {}) {
   const config = options.config ?? loadHttpConfig();
-  const runtime = options.runtime ?? getSharedRuntime();
+  // Defer SDK/RPC setup until /mcp so GET /healthz can succeed even when runtime
+  // env is incomplete (and so Vercel cold starts attach listen() before Solana work).
+  let runtime = options.runtime;
   const log = options.log ?? (entry => process.stderr.write(`${JSON.stringify(entry)}\n`));
   const limiter = new IpLimiter(config.burst, config.refillPerSecond);
   const salt = randomBytes(32);
@@ -177,8 +201,8 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
     const started = Date.now();
     const controller = new AbortController();
     const lifecycle: RequestLifecycle = { signal: controller.signal };
-    let mcp: McpServer | undefined;
-    let transport: StreamableHTTPServerTransport | undefined;
+    let mcp: { close(): Promise<void> } | undefined;
+    let transport: { close(): Promise<void>; handleRequest(req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> } | undefined;
     let id: unknown;
     let toolName = "none";
     let tier = "unsigned";
@@ -202,9 +226,13 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
     };
     const timer = setTimeout(() => {
       outcome = "timeout";
-      sendError(res, 504, lifecycle.effectStarted
-        ? "Operation timed out after a write may have started. Reconcile before retrying."
-        : "Request timed out.", id, lifecycle.reconciliation ? { code: "payment_outcome_unknown", details: safeReconciliation(lifecycle.reconciliation) } : undefined);
+      void mcpStack().then(({ policy }) => {
+        sendError(res, 504, lifecycle.effectStarted
+          ? "Operation timed out after a write may have started. Reconcile before retrying."
+          : "Request timed out.", id, lifecycle.reconciliation ? { code: "payment_outcome_unknown", details: policy.safeReconciliation(lifecycle.reconciliation) } : undefined);
+      }).catch(() => {
+        sendError(res, 504, "Request timed out.", id);
+      });
       controller.abort();
       // Stop slow request bodies without retaining request-scoped state.
       req.resume();
@@ -228,25 +256,39 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
         res.setHeader("retry-after", String(Math.ceil(1 / config.refillPerSecond)));
         throw new HttpInputError(429, "Rate limit exceeded.");
       }
-      const spec = parseSignerHeaders(req.rawHeaders);
+
+      const {
+        McpServer,
+        StreamableHTTPServerTransport,
+        clients,
+        registerTools,
+        normalizeError,
+        signers,
+        policy
+      } = await mcpStack();
+      const getRuntime = () => runtime ??= clients.getSharedRuntime();
+
+      const spec = signers.parseSignerHeaders(req.rawHeaders);
       tier = spec?.backend ?? "unsigned";
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] ?? "")) throw new HttpInputError(415, "Content-Type must be application/json.");
       const body = await readBody(req, config.bodyLimit, controller.signal);
-      const message = record(body);
+      const message = policy.record(body);
       if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") throw new HttpInputError(400, "Invalid JSON-RPC request.");
       id = message.id;
-      const params = record(message.params);
-      const args = record(params?.arguments) ?? {};
+      const params = policy.record(message.params);
+      const args = policy.record(params?.arguments) ?? {};
       if (!config.allowEncryptSecrets && Object.hasOwn(args, "encryptSecrets")) throw new HttpInputError(400, "encryptSecrets is disabled on hosted HTTP. Use npx @molpha/mcp locally or explicitly configure a private self-hosted server.");
-      mcp = new McpServer({ name: "molpha-mcp", version: serverVersion });
+      const shared = getRuntime();
+      const serverInstance = new McpServer({ name: "molpha-mcp", version: serverVersion });
+      mcp = serverInstance;
       const catalog = new Map<string, HostedTool>();
       let context: Promise<RequestContext> | undefined;
       const getContext = () => context ??= Promise.resolve().then(() => {
         controller.signal.throwIfAborted();
-        return options.contextFactory ? options.contextFactory(runtime, spec, lifecycle)
-          : createRequestContext(runtime, signerFromSpec(spec), lifecycle);
+        return options.contextFactory ? options.contextFactory(shared, spec, lifecycle)
+          : clients.createRequestContext(shared, signers.signerFromSpec(spec), lifecycle);
       });
-      registerTools(hostedToolServer(mcp, catalog, (_name, result) => { outcome = result.isError ? "error" : "ok"; }, lifecycle), { getContext, config: runtime.config });
+      registerTools(policy.hostedToolServer(serverInstance, catalog, (_name, result) => { outcome = result.isError ? "error" : "ok"; }, lifecycle), { getContext, config: shared.config });
       if (message.method === "tools/call") {
         const tool = typeof params?.name === "string" ? catalog.get(params.name) : undefined;
         if (!tool) throw new HttpInputError(400, "Unknown tool.");
@@ -254,15 +296,23 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
         if (!tool.schema.safeParse(params?.arguments ?? {}).success) throw new HttpInputError(400, "Invalid tool arguments. Check the tool input schema.");
       }
       controller.signal.throwIfAborted();
-      transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
+      const streamTransport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
+      transport = streamTransport;
       // SDK 1.x optional callback declarations conflict with exactOptionalPropertyTypes.
-      await mcp.connect(transport as Transport);
+      await serverInstance.connect(streamTransport as Transport);
       controller.signal.throwIfAborted();
-      await transport.handleRequest(req, res, body);
+      await streamTransport.handleRequest(req, res, body);
     } catch (error) {
       outcome = "error";
       if (error instanceof HttpInputError) sendError(res, error.status, error.message, id);
-      else sendError(res, 500, "Request failed.", id, safeError(normalizeError(error)));
+      else {
+        try {
+          const { normalizeError, policy } = await mcpStack();
+          sendError(res, 500, "Request failed.", id, policy.safeError(normalizeError(error)));
+        } catch {
+          sendError(res, 500, "Request failed.", id);
+        }
+      }
       req.resume();
       if (res.writableEnded || res.destroyed) cleanup();
     }
