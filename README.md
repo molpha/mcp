@@ -28,7 +28,7 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 | `derive_source_id` | Read, local | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
 | `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass `sourceId`, or `apiConfig` to derive it. |
 | `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
-| `get_x402_status` | Read | Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget. |
+| `get_x402_status` | Read | Quote the next x402 round, show where payment goes and the gateway's pending tickets, and read the signer's USDC balance and the remaining daily x402 budget. |
 | `execute_subscription_round` | Spends quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `execute_x402_round` | Spends USDC | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `build_verifier_calldata` | Read, local | Build EVM/Starknet verifier address and `verify()` call arguments. Calldata only: it verifies nothing. |
@@ -66,7 +66,28 @@ canonicalJson = compact JSON of { url, method, headers, responseParser, valueTra
                 valueTransform = "", and header names sorted
 ```
 
+Median tolerance mode adds a final `aggregation` key (see [Tolerance mode](#tolerance-mode)); exact-mode configs omit it and keep their existing `sourceId`s.
+
 The SDK, gateway, and nodes all derive it this way. It is **not** RFC 8785 (JCS): JCS sorts the top-level keys, which hashes to a different id. Call `derive_source_id` rather than hashing client-side — one differing byte (key order, whitespace, a missing default, header order) produces a `sourceId` that points at the wrong feed and fails verification. The tool returns `canonicalJson` so the preimage can be audited.
+
+### Tolerance mode
+
+By default nodes must fetch a byte-identical value to co-sign. For a live-drifting source, set `apiConfig.aggregation` to let the nodes sign the **median** of their fresh observations instead:
+
+```json
+"aggregation": {
+  "mode": "tolerance",
+  "rule": "median",
+  "maxDeviationBps": 50,
+  "maxAgeMs": 2000,
+  "numeric": { "type": "int256", "decimals": 8 }
+}
+```
+
+- `aggregation` is part of the `sourceId`, so a source's tolerance settings cannot change without changing its identity. Omit it for exact mode; `"mode": "exact"` is rejected because writing it would change the identity.
+- The round needs `signaturesRequired >= 3`; the tools refuse fewer before contacting a gateway or paying.
+- The transformed value is parsed as a decimal, scaled by `10^decimals` (round half to even) and signed as a **signed int256**: a two's-complement `bytes32`. Decode it with the same `decimals`; the feed account stores those 32 bytes verbatim. Leave `valueTransform` empty in this mode: it runs on each node before scaling, and a `multiply:` transform truncates to an integer first (`100.125` would sign as `100`).
+- Nodes exchange signed round-1 observations (up to about 5 seconds), drop values more than `maxDeviationBps` from the lower median, rank the survivors, and the first `signaturesRequired` of them sign. A round fails when too few survivors remain.
 
 ## Quick start
 
@@ -101,7 +122,7 @@ GATEWAY_AUTHORITIES=
 
 The same wallet owns feeds, pays for x402 rounds from its USDC account, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
 
-Gateway request signatures bind the gateway's on-chain PDA, so the server needs each gateway's authority. Set `GATEWAY_AUTHORITIES` to the base58 authority of each `GATEWAY_ENDPOINTS` entry, in the same order. An empty entry makes the SDK discover the authority from the gateway's `GET /v1/info`, which not every gateway serves. The authority is also the only address x402 payments go to (see [x402 pay-per-request](#x402-pay-per-request)).
+Gateway request signatures bind the gateway's on-chain PDA, so the server needs each gateway's authority. Set `GATEWAY_AUTHORITIES` to the base58 authority of each `GATEWAY_ENDPOINTS` entry, in the same order. An empty entry makes the SDK discover the authority from the gateway's `GET /v1/info`, which not every gateway serves. The authority must also own an Active on-chain `Gateway` account before this server pays for an x402 round (see [x402 pay-per-request](#x402-pay-per-request)).
 
 Other supported signer configurations:
 
@@ -215,7 +236,7 @@ Replace the example URL with a public endpoint that returns stable, independentl
 
 ### Check x402 spend before paying
 
-> Call `get_x402_status` for 3 required signatures. Tell me the quoted next price, whether the gateway's float covers it, and my USDC balance before I authorize an `execute_x402_round`.
+> Call `get_x402_status` for 3 required signatures. Tell me the quoted next price, where the payment goes, and my USDC balance before I authorize an `execute_x402_round`.
 
 ### Publish with an approval checkpoint
 
@@ -279,13 +300,13 @@ The daily counters are process-local and reset when the server restarts. They ar
 Each way of paying for a round has its own tool:
 
 - `execute_subscription_round` — use the signer's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
-- `execute_x402_round` — pay for the round itself with an [x402](https://github.com/x402-foundation/x402) `exact` payment on Solana, with no subscription required. The signer transfers the round price in USDC to the gateway authority; the gateway's facilitator pays the network fee.
+- `execute_x402_round` — pay for the round itself with an [x402](https://github.com/x402-foundation/x402) `exact` payment on Solana, with no subscription required. The signer transfers the round price in USDC to the protocol treasury (the USDC account of the `ProtocolConfig` PDA); the gateway's facilitator pays the network fee.
 
 A paid round works like this:
 
 1. The server requests the round without payment. The gateway answers `402 Payment Required` with its payment requirements.
 2. The server treats those requirements as untrusted and signs nothing unless every one matches what it derives itself:
-   - `payTo` is the gateway authority: the `GATEWAY_AUTHORITIES` entry for that endpoint, or the authority from `GET /v1/info`, which must also own an Active on-chain `Gateway` account.
+   - `payTo` is the protocol treasury: the `ProtocolConfig` PDA derived from the program id, never the gateway. The round's gateway is the `GATEWAY_AUTHORITIES` entry for that endpoint, or the authority from `GET /v1/info`, which must own an Active on-chain `Gateway` account.
    - `asset` is the USDC mint in the on-chain `ProtocolConfig`.
    - `amount` is the protocol price, `x402_round_base + (signaturesRequired + redundancy_buffer) × reward_per_signature`, within `MOLPHA_X402_MAX_PRICE_USDC` and the rest of today's `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC`.
    - `network` is the cluster `SOLANA_RPC` points at.
@@ -295,7 +316,7 @@ A paid round works like this:
 
 The daily cap counts every payment the server signs, whether or not its round completes, because a signed transfer can settle until its blockhash expires. When the gateway rejects a payment, the tool fails without paying again. When the gateway's answer leaves the outcome unknown (a 5xx, or a dropped connection after the payment was sent), the tool fails with `payment_outcome_unknown` and the payment's memo; look for that memo in the signer's USDC account before paying for the round again.
 
-Call `get_x402_status` before spending. It returns the quoted price for a quorum, the gateway's USDC float (its working capital for protocol settlement, not a per-payer balance; the gateway refuses rounds its float cannot cover), the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_x402_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
+Call `get_x402_status` before spending. It returns the quoted price for a quorum, where payment goes (the protocol treasury) and the gateway's pending tickets, the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_x402_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
 
 ## Development
 

@@ -53,7 +53,11 @@ export interface X402PaymentRequirements {
 export interface ExpectedPayment {
   /** CAIP-2 id of the SOLANA_RPC cluster. */
   network: string;
-  /** The configured (or discovered and on-chain registered) gateway authority. */
+  /**
+   * The protocol treasury: the ProtocolConfig PDA that owns the USDC treasury account. Income is
+   * booked from there into epoch pools, so a payment to the gateway authority would never be
+   * recognized.
+   */
   payTo: Address;
   /** ProtocolConfig `usdc_mint`. */
   asset: Address;
@@ -156,7 +160,8 @@ export async function deriveGatewayPda(authority: Address, programId: Address): 
   return pda;
 }
 
-async function deriveProtocolConfigPda(programId: Address): Promise<Address> {
+/** `["molpha_config"]`: ProtocolConfig, which owns the treasury ATA that x402 pays. */
+export async function deriveProtocolConfigPda(programId: Address): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({ programAddress: programId, seeds: [Buffer.from("molpha_config")] });
   return pda;
 }
@@ -195,7 +200,7 @@ export function verifyPaymentRequirements(required: unknown, expected: ExpectedP
   };
 
   if (accepted.payTo !== expected.payTo) {
-    throw mismatch("payTo", accepted.payTo, `the gateway authority ${expected.payTo}`);
+    throw mismatch("payTo", accepted.payTo, `the protocol treasury ${expected.payTo}`);
   }
   if (accepted.asset !== expected.asset) {
     throw mismatch("asset", accepted.asset, `the protocol USDC mint ${expected.asset}`);
@@ -294,30 +299,38 @@ export async function readPayerUsdc(
 }
 
 export interface PaymentAccounts {
+  /** The gateway authority the round is requested from (Active on-chain). */
+  authority: Address;
   gatewayPda: Address;
   decimals: number;
   payerAta: Address;
   /** 0 when the signer has no USDC account yet. */
   payerBalance: bigint;
+  /** The treasury owner (ProtocolConfig PDA): the 402's `payTo`. */
+  payTo: Address;
+  /** The treasury's USDC associated token account. */
   payToAta: Address;
 }
 
 /**
  * The accounts a payment touches, in one RPC call, addressed only from trusted
- * inputs: the gateway authority (configured, or discovered) and ProtocolConfig's
- * mint. The authority must own an Active Gateway account, so an unpinned
- * endpoint cannot direct payment to an arbitrary wallet.
+ * inputs: the program id, ProtocolConfig's mint and the gateway authority
+ * (configured, or discovered). The payment goes to the protocol treasury, never
+ * to the gateway; the authority must still own an Active Gateway account, so an
+ * unpinned endpoint cannot make this server pay for rounds from an unregistered
+ * gateway.
  */
 export async function readPaymentAccounts(
   connection: Pick<Connection, "getMultipleAccountsInfo">,
   args: { programId: Address; usdcMint: Address; payer: Address; authority: Address }
 ): Promise<PaymentAccounts> {
   const tokenProgram = TOKEN_PROGRAM_ADDRESS;
-  const [gatewayPda, [payerAta], [payToAta]] = await Promise.all([
+  const [gatewayPda, payTo, [payerAta]] = await Promise.all([
     deriveGatewayPda(args.authority, args.programId),
-    findAssociatedTokenPda({ owner: args.payer, mint: args.usdcMint, tokenProgram }),
-    findAssociatedTokenPda({ owner: args.authority, mint: args.usdcMint, tokenProgram })
+    deriveProtocolConfigPda(args.programId),
+    findAssociatedTokenPda({ owner: args.payer, mint: args.usdcMint, tokenProgram })
   ]);
+  const [payToAta] = await findAssociatedTokenPda({ owner: payTo, mint: args.usdcMint, tokenProgram });
   const [mintInfo, gatewayInfo, payerInfo, payToInfo] = await connection.getMultipleAccountsInfo(
     [args.usdcMint, gatewayPda, payerAta, payToAta].map(toLegacyPublicKey)
   );
@@ -345,15 +358,17 @@ export async function readPaymentAccounts(
     );
   }
 
-  if (readTokenAmount(payToInfo, args.usdcMint, args.authority) === undefined) {
-    throw new Error(`gateway authority ${args.authority} has no USDC account ${payToAta} to receive the payment`);
+  if (readTokenAmount(payToInfo, args.usdcMint, payTo) === undefined) {
+    throw new Error(`the protocol treasury ${payTo} has no USDC account ${payToAta} to receive the payment`);
   }
 
   return {
+    authority: args.authority,
     gatewayPda,
     decimals,
     payerAta,
     payerBalance: readTokenAmount(payerInfo, args.usdcMint, args.payer) ?? 0n,
+    payTo,
     payToAta
   };
 }

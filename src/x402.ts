@@ -7,14 +7,15 @@
  * x402 `exact` Solana requirements. Those are untrusted: payTo, asset,
  * amount, network, and memo must equal what this server derives from its own
  * config and chain reads (see x402-payment.ts) before it signs anything. It then
- * signs a USDC transfer to the gateway authority, fee-sponsored by the gateway's
- * facilitator, and repeats the request with the payment in `PAYMENT-SIGNATURE`.
+ * signs a USDC transfer to the protocol treasury (the ProtocolConfig PDA's token
+ * account), fee-sponsored by the gateway's facilitator, and repeats the request
+ * with the payment in `PAYMENT-SIGNATURE`.
  * The gateway verifies the payment before dispatch and settles it before it
  * returns data.
  */
 import { address, type Address } from "@solana/kit";
 import type { Connection } from "@solana/web3.js";
-import { canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
+import { assertToleranceQuorum, canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
 import {
@@ -119,23 +120,26 @@ export class X402PaymentOutcomeUnknownError extends Error {
   }
 }
 
-/** The gateway's advisory `GET /v1/x402/status`: its USDC float, not a per-payer balance. */
-export interface GatewayFloatStatus {
+/**
+ * The gateway's advisory `GET /v1/x402/status`. Payments go to the protocol
+ * treasury (`payTo`, the ProtocolConfig PDA; `treasuryAta` is its USDC account),
+ * not to the gateway, so the gateway holds no float for callers to cover.
+ */
+export interface X402GatewayStatus {
   gateway: string;
   authority: string;
-  ataAddress: string;
-  ataExists: boolean;
-  ataBalance: string;
-  committedAmount: string;
+  payTo: string;
+  treasuryAta: string;
   quotedNextPrice: string;
-  unsettledRounds: number;
+  /** Rounds the gateway still owes an on-chain `submit_ticket` for. */
+  pendingTickets: number;
 }
 
 export async function fetchX402Status(
   config: MolphaConfig,
   signaturesRequired?: number,
   signal?: AbortSignal
-): Promise<{ endpoint: string; status: GatewayFloatStatus }> {
+): Promise<{ endpoint: string; status: X402GatewayStatus }> {
   const query = signaturesRequired === undefined ? "" : `?signatures_required=${signaturesRequired}`;
   let lastError = "no gateway endpoint configured";
 
@@ -148,7 +152,7 @@ export async function fetchX402Status(
       continue;
     }
     if (res.ok) {
-      return { endpoint, status: parseFloatStatus(await res.json()) };
+      return { endpoint, status: parseGatewayStatus(await res.json()) };
     }
     const message = await readErrorMessage(res);
     if (res.status === 400) {
@@ -214,7 +218,8 @@ export async function previewX402Round(
     dryRun: true,
     action: "execute_x402_round",
     sourceId: `0x${plan.sourceId}`,
-    gateway: { endpoint, authority: verified.payTo, pda: accounts.gatewayPda },
+    gateway: { endpoint, authority: accounts.authority, pda: accounts.gatewayPda },
+    payTo: verified.payTo,
     network: plan.network,
     asset: verified.asset,
     priceAtomicUsdc: verified.amount.toString(),
@@ -228,7 +233,7 @@ export async function previewX402Round(
     note:
       shortfall > 0n
         ? "The signer's USDC balance does not cover this round; a live call would refuse before signing."
-        : "A live call would sign a USDC transfer of priceAtomicUsdc to the gateway authority (network fee paid by feePayer) and then request the round."
+        : "A live call would sign a USDC transfer of priceAtomicUsdc to the protocol treasury (network fee paid by feePayer) and then request the round."
   };
 }
 
@@ -290,6 +295,7 @@ interface RoundPlan {
 }
 
 async function planRound(ctx: Omit<X402RoundContext, "signer">, opts: X402RoundOptions): Promise<RoundPlan> {
+  assertToleranceQuorum(opts.apiConfig, opts.signaturesRequired);
   const sourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
   if (opts.sourceId !== undefined && normalizeSourceId(opts.sourceId) !== sourceId) {
     throw new Error(`sourceId does not match apiConfig: expected ${sourceId}, got ${opts.sourceId}`);
@@ -356,7 +362,7 @@ async function preparePayment(
 
   const verified = verifyPaymentRequirements(required, {
     network: plan.network,
-    payTo: authority,
+    payTo: accounts.payTo,
     asset: plan.pricing.usdcMint,
     amount: plan.priceAtomic,
     payer: ctx.signer.publicKey,
@@ -657,25 +663,31 @@ function describedResource(required: unknown): Record<string, string> | undefine
   return out;
 }
 
-function parseFloatStatus(raw: unknown): GatewayFloatStatus {
+function parseGatewayStatus(raw: unknown): X402GatewayStatus {
   const record = asRecord(raw) ?? {};
-  const amount = (field: string): string => {
+  const text = (field: string): string => {
     const value = record[field];
-    if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    if (typeof value !== "string" || value.length === 0) {
       throw new Error(`GET /v1/x402/status returned a malformed ${field}`);
     }
     return value;
   };
+  const quotedNextPrice = text("quotedNextPrice");
+  if (!/^\d+$/.test(quotedNextPrice)) {
+    throw new Error("GET /v1/x402/status returned a malformed quotedNextPrice");
+  }
+  const pendingTickets = record.pendingTickets;
+  if (typeof pendingTickets !== "number" || !Number.isInteger(pendingTickets) || pendingTickets < 0) {
+    throw new Error("GET /v1/x402/status returned a malformed pendingTickets");
+  }
 
   return {
-    gateway: String(record.gateway ?? ""),
-    authority: String(record.authority ?? ""),
-    ataAddress: String(record.ataAddress ?? ""),
-    ataExists: record.ataExists === true,
-    ataBalance: amount("ataBalance"),
-    committedAmount: amount("committedAmount"),
-    quotedNextPrice: amount("quotedNextPrice"),
-    unsettledRounds: Number(record.unsettledRounds ?? 0)
+    gateway: text("gateway"),
+    authority: text("authority"),
+    payTo: text("payTo"),
+    treasuryAta: text("treasuryAta"),
+    quotedNextPrice,
+    pendingTickets
   };
 }
 

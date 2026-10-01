@@ -27,6 +27,7 @@ import {
 import {
   computeX402Price,
   deriveGatewayPda,
+  deriveProtocolConfigPda,
   verifyPaymentRequirements,
   x402RoundMemo,
   type ExpectedPayment
@@ -116,6 +117,7 @@ interface Env {
   payer: Address;
   payerAta: Address;
   payToAta: Address;
+  treasuryOwner: Address;
   gatewayPda: Address;
   fetch: ReturnType<typeof vi.fn>;
   connection: {
@@ -151,7 +153,8 @@ async function setup(
   const feePayer = randomAddress();
   const gatewayPda = await deriveGatewayPda(authority, programId);
   const [payerAta] = await findAssociatedTokenPda({ owner: payer, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS });
-  const [payToAta] = await findAssociatedTokenPda({ owner: authority, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS });
+  const treasuryOwner = await deriveProtocolConfigPda(programId);
+  const [payToAta] = await findAssociatedTokenPda({ owner: treasuryOwner, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS });
 
   const accounts = new Map<string, AccountInfo<Buffer>>();
   accounts.set(
@@ -161,15 +164,20 @@ async function setup(
       usdc_mint: new PublicKey(mint),
       reward_per_signature: new BN(5),
       max_settlement_delay_seconds: new BN(300),
-      dispute_window_slots: new BN(100),
-      gateway_bond_min: new BN(1),
       challenger_bounty_bps: 100,
       minimum_node_deposit: new BN(1),
       withdrawal_cooldown_slots: new BN(1),
-      liveliness_freeze_threshold: 3,
       x402_round_base: new BN(50_000),
       reward_liability: new BN(0),
       min_signers: 2,
+      epoch_len_seconds: new BN(3600),
+      ticket_grace_seconds: new BN(600),
+      target_tickets_per_epoch: 2000,
+      min_availability_bps: 8000,
+      min_availability_samples: 50,
+      protocol_fee_bps: 1000,
+      pool_liability: new BN(0),
+      protocol_reserved: new BN(0),
       bump: 255
     })
   );
@@ -188,12 +196,11 @@ async function setup(
         port: 8080,
         status: { [gatewayStatus]: {} },
         registered_at: new BN(1),
-        withdrawable_slot: new BN(0),
         bump: 255
       })
     );
   }
-  accounts.set(payToAta, usdcAccount(mint, authority, 1_000_000n));
+  accounts.set(payToAta, usdcAccount(mint, treasuryOwner, 1_000_000n));
   accounts.set(payerAta, usdcAccount(mint, payer, payerBalance));
 
   const connection = {
@@ -223,12 +230,10 @@ async function setup(
       return jsonResponse(200, {
         gateway: gatewayPda,
         authority,
-        ataAddress: payToAta,
-        ataExists: true,
-        ataBalance: "1000000",
-        committedAmount: "0",
+        payTo: treasuryOwner,
+        treasuryAta: payToAta,
         quotedNextPrice: String(PRICE),
-        unsettledRounds: 0
+        pendingTickets: 0
       });
     }
     expect(href).toBe(`${endpoint}/v1/x402/execute`);
@@ -240,7 +245,7 @@ async function setup(
       network: NETWORK,
       amount: String(PRICE),
       asset: mint,
-      payTo: authority,
+      payTo: treasuryOwner,
       maxTimeoutSeconds: 60,
       extra: { feePayer, memo: memoFor(body.canonical_timestamp as number) }
     };
@@ -322,6 +327,7 @@ async function setup(
     payer,
     payerAta,
     payToAta,
+    treasuryOwner,
     gatewayPda,
     fetch: fetchMock,
     connection,
@@ -468,7 +474,7 @@ describe("executeX402Round", () => {
       endpoint: env.endpoint,
       network: NETWORK,
       payer: env.payer,
-      payTo: env.authority,
+      payTo: env.treasuryOwner,
       asset: env.mint,
       amountAtomicUsdc: String(PRICE),
       feePayer: env.feePayer,
@@ -527,7 +533,7 @@ describe("executeX402Round", () => {
   });
 
   it.each<[string, (offer: Record<string, unknown>) => void, RegExp]>([
-    ["a payTo other than the pinned authority", (offer) => (offer.payTo = randomAddress()), /payTo mismatch/],
+    ["a payTo other than the protocol treasury (e.g. the gateway authority)", (offer) => (offer.payTo = randomAddress()), /payTo mismatch/],
     ["another asset", (offer) => (offer.asset = randomAddress()), /asset mismatch/],
     ["a price above the protocol price", (offer) => (offer.amount = String(PRICE + 1n)), /amount mismatch/],
     ["another network", (offer) => (offer.network = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"), /no "exact" payment/],
@@ -619,7 +625,7 @@ describe("executeX402Round", () => {
     const reconciliation = (error as X402PaymentOutcomeUnknownError).reconciliation;
     expect(reconciliation).toMatchObject({
       endpoint: env.endpoint,
-      payTo: env.authority,
+      payTo: env.treasuryOwner,
       amountAtomicUsdc: String(PRICE),
       memo: env.memoFor(env.quotes[0]!.canonical_timestamp as number),
       httpStatus: 503
@@ -679,6 +685,7 @@ describe("previewX402Round", () => {
       dryRun: true,
       sourceId: `0x${sourceId}`,
       gateway: { endpoint: env.endpoint, authority: env.authority, pda: env.gatewayPda },
+      payTo: env.treasuryOwner,
       network: NETWORK,
       asset: env.mint,
       priceAtomicUsdc: String(PRICE),
@@ -713,12 +720,10 @@ describe("fetchX402Status", () => {
   const floatStatus = {
     gateway: randomAddress(),
     authority: randomAddress(),
-    ataAddress: randomAddress(),
-    ataExists: true,
-    ataBalance: "1000000",
-    committedAmount: "1030",
+    payTo: randomAddress(),
+    treasuryAta: randomAddress(),
     quotedNextPrice: "1030",
-    unsettledRounds: 1
+    pendingTickets: 1
   };
   const config = (endpoints: string[]): MolphaConfig => ({
     gatewayEndpoints: endpoints,
@@ -731,7 +736,7 @@ describe("fetchX402Status", () => {
     x402: { maxPriceUsdcAtomic: 1_000_000n, maxSpendPerDayUsdcAtomic: 10_000_000n }
   });
 
-  it("reads the gateway float, quoting the protocol minimum unless a quorum is given", async () => {
+  it("reads the gateway status, quoting the protocol minimum unless a quorum is given", async () => {
     const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -782,12 +787,12 @@ describe("execute_x402_round and get_x402_status tools", () => {
       value: "42",
       dataUpdate: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 },
       verifierArgs: { evm: { args: {} } },
-      paymentReceipt: { payTo: env.authority, amountAtomicUsdc: String(PRICE), transaction: SETTLEMENT_TX }
+      paymentReceipt: { payTo: env.treasuryOwner, amountAtomicUsdc: String(PRICE), transaction: SETTLEMENT_TX }
     });
     expect(env.payments).toHaveLength(1);
   });
 
-  it("get_x402_status reports the quote, the gateway float, the signer's USDC, and the budget", async () => {
+  it("get_x402_status reports the quote, the treasury, the signer's USDC, and the budget", async () => {
     const env = await setup();
     vi.mocked(getMolphaContext).mockResolvedValue(env.ctx as unknown as MolphaContext);
 
@@ -796,7 +801,7 @@ describe("execute_x402_round and get_x402_status tools", () => {
       signaturesRequired: 2,
       quotedNextPriceAtomicUsdc: String(PRICE),
       withinPerRoundCap: true,
-      gatewayFloat: { authority: env.authority, coversNextRound: true },
+      gateway: { authority: env.authority, payTo: env.treasuryOwner, treasuryAta: env.payToAta, pendingTickets: 0 },
       payer: env.payer,
       payerUsdc: { ata: env.payerAta, exists: true, balanceAtomicUsdc: "5000000" },
       caps: { spentTodayUsdcAtomic: "0", remainingTodayUsdcAtomic: "10000000" }
@@ -813,7 +818,7 @@ describe("hosted x402 policies", () => {
     const sign = vi.spyOn(signer, "signTransaction");
     const result = await quoteX402Round(unsigned, { apiConfig, signaturesRequired: 2 });
     expect(result).toMatchObject({ payment: "x402", quoteOnly: true, dryRun: true,
-      paymentRequired: { x402Version: 2, accepts: [{ amount: String(PRICE), payTo: env.authority }] } });
+      paymentRequired: { x402Version: 2, accepts: [{ amount: String(PRICE), payTo: env.treasuryOwner }] } });
     expect(env.payments).toHaveLength(0);
     expect(env.connection.getMultipleAccountsInfo).not.toHaveBeenCalled();
     expect(sign).not.toHaveBeenCalled();

@@ -213,7 +213,10 @@ describe("build_verifier_calldata", () => {
       }
     });
     expect((evm.verifierArgs as Record<string, unknown>).errors).toBeUndefined();
-    expect(starknet).toMatchObject({ chain: "starknet", verifierArgs: { starknet: { args: { dataUpdate: { registry_version: 7 } } } } });
+    expect(starknet).toMatchObject({ chain: "starknet", verifierArgs: { starknet: { args: { attestation: { payload: { registry_version: 7 } }, maxAge: 0 } } } });
+    const bounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "starknet", maxAge: 300 });
+    expect(bounded).toMatchObject({ verifierArgs: { starknet: { args: { maxAge: 300 } } } });
+    expect(String(bounded.note)).not.toContain("no freshness check");
   });
 
   it("takes the canonical attestation shape as input", () => {

@@ -77,7 +77,7 @@ export function registerExecuteX402RoundTool(server: ToolServer, dependencies: T
 
       const { result, payment } = await executeX402Round(context, round);
       return {
-        ...(await buildRoundResult(result, chains, context.config, "x402", autoSubmit, context)),
+        ...(await buildRoundResult(result, chains, context.config, "x402", autoSubmit, context, maxAge)),
         paymentReceipt: payment
       };
     })

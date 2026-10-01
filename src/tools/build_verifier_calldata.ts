@@ -27,7 +27,13 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
         dataUpdate: signedDataUpdateSchema.passthrough(),
         signature: signedSignatureSchema.passthrough(),
         chain: chainSchema,
-        includeAbi: z.boolean().optional()
+        includeAbi: z.boolean().optional(),
+        maxAge: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Starknet verify() max_age in seconds; omit or 0 for no freshness check. Set your own freshness policy.")
       },
       outputSchema,
       annotations: { readOnlyHint: true, openWorldHint: false }
@@ -37,12 +43,14 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
         dataUpdate,
         signature,
         chain,
-        includeAbi = false
+        includeAbi = false,
+        maxAge
       }: {
         dataUpdate: Record<string, unknown>;
         signature: Record<string, unknown>;
         chain: ChainTarget;
         includeAbi?: boolean;
+        maxAge?: number;
       }
     ) => {
       const config = dependencies.config ?? loadConfig();
@@ -50,8 +58,12 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
 
       return {
         chain,
-        verifierArgs: buildVerifierArgsForChains(result, [chain], config),
-        note: "Calldata only. Execute verify() on-chain with these args; the MCP server does not assert validity.",
+        verifierArgs: buildVerifierArgsForChains(result, [chain], config, { maxAge }),
+        note:
+          "Calldata only. Execute verify() on-chain with these args; the MCP server does not assert validity." +
+          (chain === "starknet" && !maxAge
+            ? " Starknet max_age is 0, so verify() applies no freshness check; pass maxAge, or enforce freshness in the consuming contract."
+            : ""),
         verifiers: getVerifierMetadata(config, includeAbi)
       };
     })

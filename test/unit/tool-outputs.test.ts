@@ -52,7 +52,6 @@ function fakeContext() {
       owner: new PublicKey(signer),
       planType: { basic: {} },
       validUntil: BigInt(Math.floor(Date.now() / 1000) + 3600),
-      usedRounds: 2n,
       maxRounds: 100n
     })),
     submitAttestation: vi.fn(async () => ({ signature: "5".repeat(88), feed: new PublicKey(feedPda) }))
@@ -116,7 +115,7 @@ describe("feed reads", () => {
     expect(await callTool("describe_feed", { apiConfig, signaturesRequired: 1 })).toMatchObject({
       feed: { valueKind: "value" },
       valueEncoding: { attested: false, valueTransform: "mul(1e8)" },
-      subscription: { active: true, usedRounds: 2, maxRounds: 100 }
+      subscription: { active: true, maxRounds: 100 }
     });
 
     solana.readFeed.mockRejectedValueOnce(new Error("rpc down"));

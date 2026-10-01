@@ -3,7 +3,7 @@ import { z } from "zod";
 import { deriveSourceId } from "../apiconfig.js";
 import { checkApiConfigDeterminism } from "../determinism.js";
 import { toolHandler } from "../mcp.js";
-import { apiConfigSchema } from "./schemas.js";
+import { aggregationSchema, apiConfigSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
 const outputSchema = z.object({
@@ -13,7 +13,8 @@ const outputSchema = z.object({
     method: z.string(),
     headers: z.record(z.string()),
     responseParser: z.string(),
-    valueTransform: z.string()
+    valueTransform: z.string(),
+    aggregation: aggregationSchema.optional()
   }),
   canonicalJson: z.string().describe("The exact UTF-8 preimage hashed into sourceId."),
   determinismWarnings: z.array(z.string()).optional(),
@@ -26,7 +27,7 @@ export function registerDeriveSourceIdTool(server: ToolServer, dependencies: Too
     {
       title: "Derive Molpha sourceId",
       description:
-        "Derive the sourceId for an apiConfig locally: no transaction, no wallet, no subscription. sourceId = keccak256(canonicalJson), where canonicalJson is the apiConfig with defaults filled in (method \"GET\", headers {}, valueTransform \"\") and header names sorted, serialized as compact JSON with keys in the fixed order url, method, headers, responseParser, valueTransform — the derivation the SDK, gateway, and every node share. It is not RFC 8785 (JCS): JCS sorts the top-level keys and yields a different id. Call this tool instead of hashing client-side: one differing byte (key order, whitespace, a missing default, header order) gives a different sourceId, which silently points at the wrong feed and fails verification. sourceId depends on apiConfig alone — not on signaturesRequired or the signer — and identifies the source on Solana, EVM, and Starknet. canonicalJson is returned so the preimage can be audited. Prefer settled/finalized data: independent nodes must converge on a byte-identical value to co-sign.",
+        "Derive the sourceId for an apiConfig locally: no transaction, no wallet, no subscription. sourceId = keccak256(canonicalJson), where canonicalJson is the apiConfig with defaults filled in (method \"GET\", headers {}, valueTransform \"\") and header names sorted, serialized as compact JSON with keys in the fixed order url, method, headers, responseParser, valueTransform and, only for median tolerance mode, aggregation (mode, rule, maxDeviationBps, maxAgeMs, numeric{type, decimals}) — the derivation the SDK, gateway, and every node share. It is not RFC 8785 (JCS): JCS sorts the top-level keys and yields a different id. Call this tool instead of hashing client-side: one differing byte (key order, whitespace, a missing default, header order) gives a different sourceId, which silently points at the wrong feed and fails verification. sourceId depends on apiConfig alone — not on signaturesRequired or the signer — and identifies the source on Solana, EVM, and Starknet. canonicalJson is returned so the preimage can be audited. In exact mode (no aggregation), prefer settled/finalized data: independent nodes must converge on a byte-identical value to co-sign. For live-drifting sources, set aggregation (median tolerance mode, signaturesRequired >= 3): it is part of the sourceId and the signed value becomes a signed int256 scaled by 10^numeric.decimals.",
       inputSchema: {
         apiConfig: apiConfigSchema,
         rejectNonDeterministic: z.boolean().optional()
