@@ -5,7 +5,7 @@ export interface SubscriptionStatus {
   owner?: string;
   planType?: unknown;
   validUntil?: string;
-  usedRounds?: number;
+  /** The plan's round quota. The program no longer counts rounds; the gateway's outbox does. */
   maxRounds?: number;
   message?: string;
 }
@@ -29,25 +29,19 @@ export async function readSubscriptionStatus(
 
     const validUntil = BigInt(String(subscription.validUntil ?? 0));
     const now = BigInt(Math.floor(Date.now() / 1000));
-    const usedRounds = BigInt(String(subscription.usedRounds ?? 0));
     const maxRounds = BigInt(String(subscription.maxRounds ?? 0));
-    const active = validUntil > now && (maxRounds === 0n || usedRounds < maxRounds);
+    // Rounds used are no longer on-chain, so only expiry can be judged here; the gateway enforces the quota.
+    const active = validUntil > now;
 
     return {
       active,
       owner: subscription.owner?.toString?.() ?? String(subscription.owner ?? ""),
       planType: subscription.planType,
       validUntil: validUntil.toString(),
-      usedRounds: Number(usedRounds),
       maxRounds: Number(maxRounds),
       ...(active
         ? {}
-        : {
-            message:
-              validUntil <= now
-                ? "Subscription expired. Extend via the bootstrap CLI before requesting data."
-                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use execute_x402_round."
-          })
+        : { message: "Subscription expired. Extend via the bootstrap CLI before requesting data." })
     };
   } catch (error) {
     return {

@@ -15,7 +15,7 @@ import { fetchX402Status, quoteX402Round } from "../../src/x402.js";
 
 vi.mock("../../src/x402.js", async original => ({
   ...await original<typeof import("../../src/x402.js")>(),
-  fetchX402Status: vi.fn(async () => ({ endpoint: "https://gateway.test", status: { gateway: "g", authority: "a", ataAddress: "ata", ataExists: true, ataBalance: "100", committedAmount: "0", quotedNextPrice: "1", unsettledRounds: 0 } })),
+  fetchX402Status: vi.fn(async () => ({ endpoint: "https://gateway.test", status: { gateway: "g", authority: "a", payTo: "t", treasuryAta: "ata", quotedNextPrice: "1", pendingTickets: 0 } })),
   quoteX402Round: vi.fn(async () => ({ payment: "x402", dryRun: true, quoteOnly: true, paymentRequired: { x402Version: 2, accepts: [{}] }, note: "Unsigned quote" }))
 }));
 const flatResult = { sourceId: "1".repeat(64), value: "42", valuePacked: "2".repeat(64), timestamp: 1714300000, registryVersion: 7, signaturesRequired: 1, signersBitmap: "4", s: "3".repeat(64), commitmentAddr: "4".repeat(40), fresh: true };
@@ -150,7 +150,7 @@ describe("tier behavior and isolation", () => {
   it("unsigned x402 status omits payer and daily budgets, and execution only quotes", async () => {
     const app = await start();
     const status = (await app.call("get_x402_status")).body.result.structuredContent;
-    expect(status.gatewayFloat).toBeDefined();
+    expect(status.gateway).toBeDefined();
     expect(status.payer).toBeUndefined();
     expect(status.caps.dailyCapsEnabled).toBe(false);
     expect(fetchX402Status).toHaveBeenCalled();

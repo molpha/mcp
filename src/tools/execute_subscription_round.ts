@@ -63,7 +63,7 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
         ...(encryptSecrets ? { encrypt: { secrets: encryptSecrets } } : {})
       });
 
-      return buildRoundResult(result, chains, config, "subscription", autoSubmit, context);
+      return buildRoundResult(result, chains, config, "subscription", autoSubmit, context, maxAge);
     })
   );
 }

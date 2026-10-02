@@ -14,19 +14,15 @@ const outputSchema = z.object({
   signaturesRequired: z.union([z.number().int(), z.literal("protocol minimum")]),
   quotedNextPriceAtomicUsdc: z.string(),
   withinPerRoundCap: z.boolean().describe("Whether the quote is within MOLPHA_X402_MAX_PRICE_USDC."),
-  gatewayFloat: z
+  gateway: z
     .object({
-      gateway: z.string(),
+      gateway: z.string().describe("The Gateway account PDA."),
       authority: z.string(),
-      ataAddress: z.string(),
-      ataExists: z.boolean(),
-      ataBalance: z.string(),
-      committedAmount: z.string().describe("USDC unsettled rounds have committed."),
-      availableAtomicUsdc: z.string(),
-      coversNextRound: z.boolean(),
-      unsettledRounds: z.number().int()
+      payTo: z.string().describe("Where payment goes: the protocol treasury owner (ProtocolConfig PDA), not the gateway."),
+      treasuryAta: z.string().describe("The treasury's USDC token account."),
+      pendingTickets: z.number().int().describe("Rounds the gateway still owes an on-chain submit_ticket for.")
     })
-    .describe("The gateway's working capital for protocol settlement — not a per-payer balance."),
+    .describe("The gateway and the protocol treasury it quotes for. Callers do not fund the gateway; the payment is the whole cost of a round."),
   note: z.string().optional(),
   payer: z.string().optional(),
   payerUsdc: z
@@ -52,7 +48,7 @@ export function registerGetX402StatusTool(server: ToolServer, dependencies: Tool
     {
       title: "Get x402 gateway status",
       description:
-        "Advisory read before execute_x402_round: the next x402 round's quoted price for a quorum; the gateway's USDC float (its authority's token balance minus what unsettled rounds have committed — the gateway's working capital for protocol settlement, not a per-payer balance; a round is refused while the float cannot cover it); the signer's own USDC balance, which pays each round; and the remaining MOLPHA_X402_MAX_SPEND_PER_DAY_USDC budget. Signs and spends nothing.",
+        "Advisory read before execute_x402_round: the next x402 round's quoted price for a quorum; where payment goes (the protocol treasury, which the gateway does not control) and the rounds the gateway still has to submit tickets for; the signer's own USDC balance, which pays each round; and the remaining MOLPHA_X402_MAX_SPEND_PER_DAY_USDC budget. Signs and spends nothing.",
       inputSchema: {
         signaturesRequired: signaturesRequiredSchema
           .optional()
@@ -69,7 +65,6 @@ export function registerGetX402StatusTool(server: ToolServer, dependencies: Tool
       ]);
 
       const price = BigInt(status.quotedNextPrice);
-      const floatAvailable = BigInt(status.ataBalance) - BigInt(status.committedAmount);
       const { maxPriceUsdcAtomic, maxSpendPerDayUsdcAtomic } = config.x402;
       const spentToday = x402SpentToday();
       const pinnedAuthority = config.gatewayAuthorities[config.gatewayEndpoints.indexOf(endpoint)];
@@ -79,16 +74,12 @@ export function registerGetX402StatusTool(server: ToolServer, dependencies: Tool
         signaturesRequired: signaturesRequired ?? "protocol minimum",
         quotedNextPriceAtomicUsdc: status.quotedNextPrice,
         withinPerRoundCap: price <= maxPriceUsdcAtomic,
-        gatewayFloat: {
+        gateway: {
           gateway: status.gateway,
           authority: status.authority,
-          ataAddress: status.ataAddress,
-          ataExists: status.ataExists,
-          ataBalance: status.ataBalance,
-          committedAmount: status.committedAmount,
-          availableAtomicUsdc: (floatAvailable > 0n ? floatAvailable : 0n).toString(),
-          coversNextRound: floatAvailable >= price,
-          unsettledRounds: status.unsettledRounds
+          payTo: status.payTo,
+          treasuryAta: status.treasuryAta,
+          pendingTickets: status.pendingTickets
         },
         ...(signer && payerUsdc ? { payer: signer.publicKey, payerUsdc: payerUsdc.ok ? payerUsdc.value : payerUsdc }
           : { note: "Payer details omitted: supply managed-signer headers for payer balances." }),

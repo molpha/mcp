@@ -6,6 +6,8 @@
  * tool output. Flatten it to a string and say what it means.
  */
 
+import { requireSdkExport } from "./sdk.js";
+
 export type FeedValueKind = "value" | "hash";
 
 const VALUE_KIND_MEANING: Record<FeedValueKind, string> = {
@@ -61,12 +63,31 @@ export function presentFeed(
 
 /**
  * Molpha attests *which encoding* the stored bytes use (`FeedValueKind` is only
- * `value | hash`) but not their scale: there is no decimals field on the Feed
- * account or in the signed attestation. Any scale a consumer applies comes from
- * the off-chain apiConfig that produced the number, so report it as unsigned
- * provenance — verbatim, never parsed into a decimals count we cannot attest.
+ * `value | hash`) but, in exact mode, not their scale: there is no decimals field
+ * on the Feed account or in the signed attestation. Any scale a consumer applies
+ * comes from the off-chain apiConfig that produced the number, so report it as
+ * unsigned provenance — verbatim, never parsed into a decimals count we cannot attest.
+ *
+ * Median tolerance mode is different: `aggregation` is part of the sourceId, which every
+ * signature commits to, so `numeric.decimals` is attested and the 32 stored bytes are a
+ * signed int256 (two's complement) scaled by 10^decimals.
  */
-export function describeValueEncoding(valueTransform: string | undefined): Record<string, unknown> {
+export function describeValueEncoding(
+  valueTransform: string | undefined,
+  aggregation?: { numeric: { type: string; decimals: number } } | undefined
+): Record<string, unknown> {
+  if (aggregation) {
+    return {
+      attested: true,
+      source: "apiConfig.aggregation.numeric (committed by the sourceId, which the signatures cover)",
+      valueTransform: valueTransform ?? null,
+      encoding: aggregation.numeric.type,
+      decimals: aggregation.numeric.decimals,
+      note:
+        "Median tolerance mode: the stored 32 bytes are a signed int256 (two's complement) equal to the median observation scaled by 10^decimals. Leave valueTransform empty: it runs on each node before scaling, and a multiply: transform truncates to an integer first."
+    };
+  }
+
   return {
     attested: false,
     source: "apiConfig.valueTransform (off-chain; not part of the signed payload)",
@@ -74,6 +95,14 @@ export function describeValueEncoding(valueTransform: string | undefined): Recor
     note:
       "Molpha does not attest scale/decimals on-chain — FeedValueKind is only value|hash. A verifier contract must be configured with this feed's scale out of band; do not infer it from the integer alone."
   };
+}
+
+/** Renders a tolerance-mode feed's `0x` hex value as a decimal string at `decimals`; undefined if not 32 bytes. */
+export function decodeToleranceValue(valueHex: unknown, decimals: number): string | undefined {
+  if (typeof valueHex !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(valueHex)) {
+    return undefined;
+  }
+  return requireSdkExport<(value: string, decimals: number) => string>("formatInt256Decimal")(valueHex, decimals);
 }
 
 function asByteArray(value: unknown): Uint8Array | undefined {
