@@ -61,10 +61,65 @@ const HEX_WIDTHS: Record<string, number> = {
 };
 
 /**
- * Canonicalize every fixed-width hex field on a flat signed result. `value` is a
- * decimal string, not hex, and the numeric fields are left alone.
+ * Flattens the two nested shapes a round can arrive in into the flat signed result this
+ * server works with internally; a flat input is returned unchanged.
+ *
+ * - the SDK's `Attestation`: `{ payload: { value (packed), sourceId, ... canonicalTimestamp },
+ *   signature: { s, commitmentAddr, signersBitmap }, value (decimal), fresh }`
+ * - the gateway's `data` body: `{ attestation: { payload, signature: { signature, commitment,
+ *   signersBitmap } }, value (decimal), fresh, configHash, aggregation? }`
  */
-export function normalizeSignedResult(raw: Record<string, unknown>): Record<string, unknown> {
+export function flattenAttestation(input: Record<string, unknown>): Record<string, unknown> {
+  const nested = asRecord(input.attestation) ?? (asRecord(input.payload) ? input : undefined);
+  const payload = asRecord(nested?.payload);
+  if (!nested || !payload) {
+    return input;
+  }
+  const signature = asRecord(nested.signature) ?? {};
+
+  return {
+    sourceId: payload.sourceId,
+    value: input.value,
+    valuePacked: payload.value,
+    timestamp: payload.canonicalTimestamp,
+    registryVersion: payload.registryVersion,
+    signaturesRequired: payload.signaturesRequired,
+    signersBitmap: signature.signersBitmap,
+    s: signature.s ?? signature.signature,
+    commitmentAddr: signature.commitmentAddr ?? signature.commitment,
+    fresh: input.fresh ?? true,
+    ...(input.configHash !== undefined ? { configHash: input.configHash } : {}),
+    ...(input.aggregation !== undefined ? { aggregation: input.aggregation } : {})
+  };
+}
+
+/** The flat signed result as the SDK's `Attestation` (`submitAttestation`, the verifier-arg builders). */
+export function toSdkAttestation(flat: Record<string, unknown>): Record<string, unknown> {
+  return {
+    payload: {
+      value: flat.valuePacked,
+      sourceId: flat.sourceId,
+      registryVersion: Number(flat.registryVersion),
+      signaturesRequired: Number(flat.signaturesRequired),
+      canonicalTimestamp: Number(flat.timestamp)
+    },
+    signature: {
+      s: flat.s,
+      commitmentAddr: flat.commitmentAddr,
+      signersBitmap: flat.signersBitmap
+    },
+    value: String(flat.value ?? ""),
+    fresh: Boolean(flat.fresh ?? true)
+  };
+}
+
+/**
+ * Canonicalize every fixed-width hex field on a signed result (flat, or nested as
+ * {@link flattenAttestation} describes). `value` is a decimal string, not hex, and the
+ * numeric fields are left alone.
+ */
+export function normalizeSignedResult(input: Record<string, unknown>): Record<string, unknown> {
+  const raw = flattenAttestation(input);
   const out: Record<string, unknown> = { ...raw };
 
   for (const [field, bytes] of Object.entries(HEX_WIDTHS)) {

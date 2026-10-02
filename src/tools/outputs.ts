@@ -49,15 +49,24 @@ export const verifierArgs = () =>
         verifier: z.array(z.object({ network: z.string(), address: z.string().optional() })),
         chainIds: z.array(z.number().int()),
         args: z.object({
-          dataUpdate: z
-            .array(z.union([z.string(), z.number()]))
+          attestation: z.object({
+            payload: z.object({
+              value: z.string().describe("bytes32 packed value, 0x hex (a signed int256 in tolerance mode)."),
+              sourceId: z.string().describe("bytes32, 0x hex."),
+              registryVersion: z.number().int(),
+              signaturesRequired: z.number().int(),
+              canonicalTimestamp: z.string().describe("uint64, decimal string.")
+            }),
+            signature: z.object({
+              signature: z.string().describe("bytes32 Schnorr scalar s, 0x hex."),
+              commitment: z.string().describe("address of the nonce point R."),
+              signersBitmap: z.string().describe("uint256, decimal string.")
+            })
+          }),
+          maxAge: z
+            .string()
             .describe(
-              "DataUpdate tuple, in order: (bytes32 sourceId, uint32 registryVersion, uint32 signaturesRequired, bytes32 valuePacked, uint64 timestamp)."
-            ),
-          signature: z
-            .array(z.string())
-            .describe(
-              "SchnorrSignature tuple, in order: (bytes32 s, address commitment, uint256 signersBitmap as a decimal string)."
+              "verify(attestation, maxAge) freshness window in seconds (uint64, decimal string). 0 disables the check: the stateless verifier then accepts a correctly signed attestation forever, so enforce freshness or ordering in the consumer."
             )
         })
       })

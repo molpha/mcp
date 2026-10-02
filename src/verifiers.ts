@@ -1,3 +1,4 @@
+import { toSdkAttestation } from "./artifacts.js";
 import { type MolphaConfig } from "./config.js";
 import { getSdkExport } from "./sdk.js";
 
@@ -28,8 +29,8 @@ export function getVerifierMetadata(config: MolphaConfig, includeAbi = false): V
 
 export interface VerifierArgOptions {
   /**
-   * Starknet `verify(attestation, max_age)` freshness bound in seconds; 0 disables it. A valid
-   * signature does not replace the consumer's own freshness policy, so callers should set one.
+   * `verify(attestation, maxAge)` freshness bound in seconds, for EVM and Starknet; 0 disables it.
+   * A valid signature does not replace the consumer's own freshness policy, so callers should set one.
    */
   maxAge?: number | undefined;
 }
@@ -40,8 +41,10 @@ export function buildVerifierArgs(result: unknown, options: VerifierArgOptions =
   errors: Array<{ target: string; message: string }>;
 } {
   const errors: Array<{ target: string; message: string }> = [];
-  const evm = callBuilder("buildEvmVerifierArgs", result, errors);
-  const starknet = callBuilder("buildStarknetVerifierArgs", result, errors, { maxAge: options.maxAge ?? 0 });
+  const attestation = toSdkAttestation(result as Record<string, unknown>);
+  const bound = { maxAge: options.maxAge ?? 0 };
+  const evm = callBuilder("buildEvmVerifierArgs", attestation, errors, bound);
+  const starknet = callBuilder("buildStarknetVerifierArgs", attestation, errors, bound);
 
   return {
     ...(evm !== undefined ? { evm } : {}),

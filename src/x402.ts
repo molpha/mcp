@@ -15,6 +15,7 @@
  */
 import { address, type Address } from "@solana/kit";
 import type { Connection } from "@solana/web3.js";
+import { flattenAttestation } from "./artifacts.js";
 import { assertToleranceQuorum, canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
@@ -515,7 +516,8 @@ function completeRound(
     ...(typeof transaction === "string" && transaction ? { transaction } : {})
   };
 
-  const data = asRecord(outcome.body.data) ?? {};
+  // The gateway nests the signed result as `data.attestation`; work with the flat form from here.
+  const data = flattenAttestation(asRecord(outcome.body.data) ?? {});
   const sameRound =
     normalizeSourceId(String(data.sourceId ?? "")) === plan.sourceId &&
     Number(data.timestamp) === payment.canonicalTimestamp &&

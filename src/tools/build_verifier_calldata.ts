@@ -33,7 +33,7 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
           .int()
           .nonnegative()
           .optional()
-          .describe("Starknet verify() max_age in seconds; omit or 0 for no freshness check. Set your own freshness policy.")
+          .describe("verify() maxAge in seconds (EVM and Starknet); omit or 0 for no freshness check. Set your own freshness policy.")
       },
       outputSchema,
       annotations: { readOnlyHint: true, openWorldHint: false }
@@ -61,8 +61,8 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
         verifierArgs: buildVerifierArgsForChains(result, [chain], config, { maxAge }),
         note:
           "Calldata only. Execute verify() on-chain with these args; the MCP server does not assert validity." +
-          (chain === "starknet" && !maxAge
-            ? " Starknet max_age is 0, so verify() applies no freshness check; pass maxAge, or enforce freshness in the consuming contract."
+          (!maxAge
+            ? " maxAge is 0, so verify() applies no freshness check; pass maxAge, or enforce freshness in the consuming contract."
             : ""),
         verifiers: getVerifierMetadata(config, includeAbi)
       };

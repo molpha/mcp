@@ -104,7 +104,7 @@ interface FakeGatewayOptions {
   quote?: () => Response;
   /** Overrides the answer to the Nth paid request. */
   onPaid?: (attempt: number) => Response | undefined;
-  /** Overrides fields of the returned aggregate. */
+  /** Overrides fields of the returned attestation payload. */
   data?: Record<string, unknown>;
 }
 
@@ -278,19 +278,22 @@ async function setup(
       200,
       {
         status: "completed",
+        // The gateway's AttestationData: the signed struct is nested under `attestation`.
         data: {
-          sourceId,
+          attestation: {
+            payload: {
+              value: "ab".repeat(32),
+              sourceId,
+              registryVersion: body.registry_version,
+              signaturesRequired: body.signatures_required,
+              canonicalTimestamp: body.canonical_timestamp,
+              ...gw.data
+            },
+            signature: { signature: "11".repeat(32), commitment: "22".repeat(20), signersBitmap: "3" }
+          },
           value: "42",
-          valuePacked: "ab".repeat(32),
-          timestamp: body.canonical_timestamp,
-          registryVersion: body.registry_version,
-          signaturesRequired: body.signatures_required,
-          configHash: sourceId,
-          signersBitmap: "3",
-          s: "11".repeat(32),
-          commitmentAddr: "22".repeat(20),
           fresh: true,
-          ...gw.data
+          configHash: sourceId
         }
       },
       { "PAYMENT-RESPONSE": b64({ success: true, transaction: SETTLEMENT_TX, network: NETWORK, payer }) }
@@ -358,12 +361,14 @@ describe("x402RoundMemo", () => {
       responseParser: ""
     });
     expect(fixtureSourceId).toBe("0b3212de6506ecfabafe4ae5ab26a542b2503f41d88d599dc4cb28d08cab41a3");
-    const gatewayPda = await deriveGatewayPda(address("GcdayuLaLyrdmUu324nahyv33G5poQdLUEZ1nEytDeP"), programId);
+    // The gateway's fake chain program id; independent of the SDK's default program address.
+    const fixtureProgramId = address("MoLFnEbuMS5gWnXNfUMLAYSqRM3eQZKWRzjeMQfqbT3");
+    const gatewayPda = await deriveGatewayPda(address("GcdayuLaLyrdmUu324nahyv33G5poQdLUEZ1nEytDeP"), fixtureProgramId);
     expect(gatewayPda).toBe("H6DDMmWivXh8GdBaxwsZQbwWXwKwPSx3SdmSyJV24yXd");
 
     expect(
       x402RoundMemo({
-        programId,
+        programId: fixtureProgramId,
         gatewayPda,
         sourceId: Buffer.from(fixtureSourceId, "hex"),
         signaturesRequired: 2,

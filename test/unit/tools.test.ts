@@ -209,9 +209,26 @@ describe("build_verifier_calldata", () => {
     expect(evm).toMatchObject({
       chain: "evm",
       verifierArgs: {
-        evm: { args: { dataUpdate: [flatResult.sourceId, 7, 1, flatResult.valuePacked, flatResult.timestamp] } }
+        evm: {
+          args: {
+            attestation: {
+              payload: {
+                value: flatResult.valuePacked,
+                sourceId: flatResult.sourceId,
+                registryVersion: 7,
+                signaturesRequired: 1,
+                canonicalTimestamp: String(flatResult.timestamp)
+              },
+              signature: { signersBitmap: "4" }
+            },
+            maxAge: "0"
+          }
+        }
       }
     });
+    expect(String(evm.note)).toContain("no freshness check");
+    const evmBounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "evm", maxAge: 300 });
+    expect(evmBounded).toMatchObject({ verifierArgs: { evm: { args: { maxAge: "300" } } } });
     expect((evm.verifierArgs as Record<string, unknown>).errors).toBeUndefined();
     expect(starknet).toMatchObject({ chain: "starknet", verifierArgs: { starknet: { args: { attestation: { payload: { registry_version: 7 } }, maxAge: 0 } } } });
     const bounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "starknet", maxAge: 300 });
