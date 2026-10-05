@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 import type { RequestContext } from "../clients.js";
-import { resolveSourceId } from "../apiconfig.js";
+import { assertToleranceQuorum, resolveSourceId } from "../apiconfig.js";
 import { normalizeSignedResult, signedArtifactSchema, toDataUpdateArtifact } from "../artifacts.js";
 import { type MolphaConfig } from "../config.js";
 import { settle } from "../errors.js";
@@ -67,8 +67,9 @@ export interface RoundArgs {
 }
 
 /** Derives the round's sourceId (checking the caller's guard) and validates autoSubmit. */
-export function prepareRound({ apiConfig, sourceId, chains, autoSubmit = false }: RoundArgs): string {
+export function prepareRound({ apiConfig, signaturesRequired, sourceId, chains, autoSubmit = false }: RoundArgs): string {
   const resolvedSourceId = resolveSourceId(sourceId, apiConfig);
+  assertToleranceQuorum(apiConfig, signaturesRequired);
 
   if (autoSubmit && !chains.includes("solana")) {
     throw new Error(
@@ -85,7 +86,8 @@ export async function buildRoundResult(
   config: MolphaConfig,
   payment: RoundPayment,
   autoSubmit: boolean,
-  context?: RequestContext
+  context?: RequestContext,
+  maxAge?: number
 ): Promise<Record<string, unknown>> {
   // Canonicalize once: the gateway emits minimal hex (a one-signer bitmap comes
   // back as "4"), which both the verifier-arg builders and submit_attestation
@@ -98,7 +100,7 @@ export async function buildRoundResult(
     ...artifact,
     trustAnchor:
       "Consume the signed dataUpdate + signature (and verify or forward). Do not trust `value` alone.",
-    verifierArgs: buildVerifierArgsForChains(normalized, chains, config)
+    verifierArgs: buildVerifierArgsForChains(normalized, chains, config, { maxAge })
   };
 
   if (autoSubmit) {

@@ -10,7 +10,7 @@ The intended public endpoint is `https://mcp.molpha.io/mcp`. This repository cha
 |---|---|---|
 | `get_capabilities`, `derive_source_id`, `build_verifier_calldata` | Full | Full |
 | `describe_feed`, `get_latest_value` | Explicit `submitter` required | Defaults to signer |
-| `get_x402_status` | Quote and gateway float; payer omitted | Includes payer |
+| `get_x402_status` | Quote and treasury; payer omitted | Includes payer |
 | `execute_x402_round` | Parsed 402 quote, no signing or payment | Verified payment and round |
 | `execute_subscription_round`, `submit_attestation` | Authentication-required error | Full |
 

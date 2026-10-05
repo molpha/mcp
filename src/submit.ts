@@ -4,7 +4,7 @@
  * place that knows what the program's `submit_attestation` requires.
  */
 
-import { toSignedResult } from "./artifacts.js";
+import { toSdkAttestation, toSignedResult } from "./artifacts.js";
 import { getMolphaContext, requireMethod, requireSigner, assertActive, type RequestContext } from "./clients.js";
 import { enforceExecuteCap, previewWrite } from "./guardrails.js";
 
@@ -21,8 +21,8 @@ export interface SubmitOutcome {
 }
 
 /**
- * Accepts a round tool's artifact or the flat signed result, and returns the
- * flat shape `submitAttestation` expects.
+ * Accepts a round tool's artifact or the flat signed result, and returns the flat shape
+ * this server works with; it is converted to the SDK's `Attestation` at the submit call.
  */
 export function prepareSignedResult(input: Record<string, unknown>): Record<string, unknown> {
   const result = toSignedResult(input);
@@ -71,7 +71,7 @@ export async function submitSignedResult(result: Record<string, unknown>, contex
 
   assertActive(ctx);
   if (ctx.lifecycle) ctx.lifecycle.effectStarted = true;
-  const tx = await submitAttestation(result);
+  const tx = await submitAttestation(toSdkAttestation(result));
 
   return {
     chain: "solana",

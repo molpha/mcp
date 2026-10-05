@@ -32,6 +32,20 @@ const flatResult = {
   fresh: true
 };
 
+/** What `requestSignedData` returns: the SDK's nested `Attestation`. */
+const sdkAttestation = {
+  payload: {
+    value: flatResult.valuePacked,
+    sourceId: flatResult.sourceId,
+    registryVersion: flatResult.registryVersion,
+    signaturesRequired: flatResult.signaturesRequired,
+    canonicalTimestamp: flatResult.timestamp
+  },
+  signature: { s: flatResult.s, commitmentAddr: flatResult.commitmentAddr, signersBitmap: flatResult.signersBitmap },
+  value: flatResult.value,
+  fresh: true
+};
+
 /** A feed account as the SDK's Anchor decoder returns it. */
 const feedAccount = {
   sourceId: Array(32).fill(0x11),
@@ -52,7 +66,6 @@ function fakeContext() {
       owner: new PublicKey(signer),
       planType: { basic: {} },
       validUntil: BigInt(Math.floor(Date.now() / 1000) + 3600),
-      usedRounds: 2n,
       maxRounds: 100n
     })),
     submitAttestation: vi.fn(async () => ({ signature: "5".repeat(88), feed: new PublicKey(feedPda) }))
@@ -61,7 +74,7 @@ function fakeContext() {
     getNodes: vi.fn(async (): Promise<unknown> => [
       { index: 0, peerId: "12D3KooW", address: "0x1234", signingKey: "02ab" }
     ]),
-    requestSignedData: vi.fn(async () => flatResult)
+    requestSignedData: vi.fn(async () => sdkAttestation)
   };
   const context = {
     config: loadConfig({ GATEWAY_ENDPOINTS: "http://gateway.test", SOLANA_RPC: "http://solana.test" }),
@@ -116,7 +129,7 @@ describe("feed reads", () => {
     expect(await callTool("describe_feed", { apiConfig, signaturesRequired: 1 })).toMatchObject({
       feed: { valueKind: "value" },
       valueEncoding: { attested: false, valueTransform: "mul(1e8)" },
-      subscription: { active: true, usedRounds: 2, maxRounds: 100 }
+      subscription: { active: true, maxRounds: 100 }
     });
 
     solana.readFeed.mockRejectedValueOnce(new Error("rpc down"));
@@ -155,6 +168,17 @@ describe("execute_subscription_round", () => {
       submitted: { chain: "solana", action: "submit_attestation", submitter: signer, feed: feedPda }
     });
     expect(solana.submitAttestation).toHaveBeenCalledOnce();
+    // The SDK takes its nested Attestation, not the flat shape this server works with.
+    expect(solana.submitAttestation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          value: `0x${flatResult.valuePacked}`,
+          sourceId: `0x${flatResult.sourceId}`,
+          canonicalTimestamp: flatResult.timestamp
+        }),
+        signature: expect.objectContaining({ s: `0x${flatResult.s}`, signersBitmap: expect.stringMatching(/^0x0*4$/) })
+      })
+    );
   });
 
   it("keeps the artifact when autoSubmit fails", async () => {
