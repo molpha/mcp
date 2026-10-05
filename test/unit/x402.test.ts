@@ -782,6 +782,7 @@ describe("execute_x402_round and get_x402_status tools", () => {
       dryRun: true,
       action: "execute_x402_round",
       sourceId: `0x${sourceId}`,
+      payTo: env.treasuryOwner,
       priceAtomicUsdc: String(PRICE)
     });
     expect(env.payments).toHaveLength(0);

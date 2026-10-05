@@ -12,7 +12,9 @@ const outputSchema = z.object({
       endpoint: z.string(),
       network: z.string().describe("CAIP-2 id of the Solana cluster."),
       payer: z.string(),
-      payTo: z.string().describe("The gateway authority."),
+      payTo: z
+        .string()
+        .describe("Where payment went: the protocol treasury owner (ProtocolConfig PDA), not the gateway."),
       asset: z.string().describe("USDC mint."),
       amountAtomicUsdc: z.string(),
       feePayer: z.string(),
@@ -25,6 +27,10 @@ const outputSchema = z.object({
   action: z.literal("execute_x402_round").optional(),
   sourceId: z.string().optional().describe("Preview only; a live round carries it in dataUpdate."),
   gateway: z.object({ endpoint: z.string(), authority: z.string(), pda: z.string() }).optional(),
+  payTo: z
+    .string()
+    .optional()
+    .describe("Preview only: verified USDC recipient — the protocol treasury owner (ProtocolConfig PDA), not the gateway."),
   network: z.string().optional(),
   asset: z.string().optional(),
   priceAtomicUsdc: z.string().optional(),
@@ -47,7 +53,7 @@ export function registerExecuteX402RoundTool(server: ToolServer, dependencies: T
     {
       title: "Execute x402-paid Molpha round",
       description:
-        "Run a threshold-signing round paid per request with an x402 USDC payment — no subscription needed — and return the self-contained signed attestation PLUS prebuilt verifier arguments for each requested chain, and the payment receipt. Before signing, the server checks the gateway's payment requirements against its own chain reads (payTo is the gateway authority, asset the protocol USDC mint, amount the protocol round price, network the SOLANA_RPC cluster, memo this round's commitment); it then signs a USDC transfer from the signer's own token account, refusing above the MOLPHA_X402_MAX_PRICE_USDC per-round and MOLPHA_X402_MAX_SPEND_PER_DAY_USDC daily caps. The gateway's facilitator pays the network fee. Each live call pays for a new round; `dryRun: true` quotes and verifies the payment without signing. Call get_x402_status first to see the quoted price. The round is keyed by sourceId, derived here from apiConfig (see derive_source_id). The signed payload is the trust anchor — do not consume `value` alone. Only the `solana` leg can be settled from this server (via `autoSubmit`, or submit_attestation); `evm` and `starknet` return calldata only (see build_verifier_calldata). Private API secrets are not supported on this path — use execute_subscription_round.",
+        "Run a threshold-signing round paid per request with an x402 USDC payment — no subscription needed — and return the self-contained signed attestation PLUS prebuilt verifier arguments for each requested chain, and the payment receipt. Before signing, the server checks the gateway's payment requirements against its own chain reads (payTo is the protocol treasury owner — the ProtocolConfig PDA, not the gateway authority; asset the protocol USDC mint; amount the protocol round price; network the SOLANA_RPC cluster; memo this round's commitment); it then signs a USDC transfer from the signer's own token account to that treasury, refusing above the MOLPHA_X402_MAX_PRICE_USDC per-round and MOLPHA_X402_MAX_SPEND_PER_DAY_USDC daily caps. The gateway's facilitator pays the network fee. Each live call pays for a new round; `dryRun: true` quotes and verifies the payment without signing and returns `payTo` for the verified treasury recipient. Call get_x402_status first to see the quoted price. The round is keyed by sourceId, derived here from apiConfig (see derive_source_id). The signed payload is the trust anchor — do not consume `value` alone. Only the `solana` leg can be settled from this server (via `autoSubmit`, or submit_attestation); `evm` and `starknet` return calldata only (see build_verifier_calldata). Private API secrets are not supported on this path — use execute_subscription_round.",
       inputSchema: roundInputSchema,
       outputSchema,
       // Irreversibly transfers USDC, and each call pays for a new round.
