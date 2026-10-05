@@ -29,7 +29,7 @@ Unsigned `describe_feed` omits signer subscription status. Unsigned x402 quotes 
 
 Hosted signing is revocable signing delegation. The server receives provider API credentials in plaintext inside its TLS-terminated process and temporarily holds them while handling a request. It does not persist credentials, create credential sessions, or log header values, arguments, or raw provider errors. This is **not** a claim that the hosted process cannot see credentials. Use scoped provider credentials with amount/spend policies and revoke them when no longer needed. Allowlisting a destination alone does not establish a spending budget.
 
-HTTP never uses `OWNER_KEYPAIR`, `AGENT_KEYPAIR`, `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, or provider credential environment variables as a signer fallback. It rejects local-wallet signer selection, JSON keypair arrays, and base58-encoded 64-byte wallet secret material in headers. A Turnkey 32-byte hex P-256 API credential is allowed. These shape checks do not identify every possible secret encoding; never send wallet private keys.
+HTTP never uses `OWNER_KEYPAIR`, `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, or provider credential environment variables as a signer fallback. It rejects local-wallet signer selection, JSON keypair arrays, and base58-encoded 64-byte wallet secret material in headers. A Turnkey 32-byte hex P-256 API credential is allowed. These shape checks do not identify every possible secret encoding; never send wallet private keys.
 
 Send all required headers on **every** signed request:
 

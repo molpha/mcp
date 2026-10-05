@@ -111,32 +111,29 @@ export interface RoundMemoParams {
   sourceId: Uint8Array;
   signaturesRequired: number;
   registryVersion: number;
-  canonicalTimestamp: number;
 }
 
-const ROUND_ID_PREFIX = keccak_256(Buffer.from("MOLPHA_PULL_ROUND_V1", "utf8"));
-
 /**
- * The gateway's `extra.memo`, which binds the payment to one deployment,
- * gateway, and round:
+ * The gateway's `extra.memo`, which binds the payment to one deployment, gateway, source,
+ * quorum and registry version:
  *
- *   keccak256("MOLPHA_X402_REQUEST_V1" || programId || gatewayPda || roundId || sourceId)
- *   roundId = keccak256(keccak256("MOLPHA_PULL_ROUND_V1") || sourceId
- *             || quorum u32be || registryVersion u32be || timestamp u64be)
+ *   keccak256("MOLPHA_X402_REQUEST_V1" || programId || gatewayPda || sourceId
+ *             || quorum u8 || registryVersion u32be)
  *
- * Checking it keeps a relaying endpoint from getting this signer to pay for a
- * different round.
+ * It names no round: the gateway assigns the round's timestamp after it has verified the payment,
+ * and each verified payment authorizes exactly one round. Checking the memo keeps a relaying
+ * endpoint from getting this signer to pay for a different source or quorum.
  */
 export function x402RoundMemo(params: RoundMemoParams): string {
   if (params.sourceId.length !== 32) {
     throw new Error(`sourceId must be 32 bytes, got ${params.sourceId.length}`);
   }
+  if (!Number.isInteger(params.signaturesRequired) || params.signaturesRequired < 1 || params.signaturesRequired > 255) {
+    throw new RangeError(`signaturesRequired must be an integer in 1..255, got ${params.signaturesRequired}`);
+  }
   const encoder = getAddressEncoder();
-  const roundFields = Buffer.alloc(16);
-  roundFields.writeUInt32BE(params.signaturesRequired, 0);
-  roundFields.writeUInt32BE(params.registryVersion, 4);
-  roundFields.writeBigUInt64BE(BigInt(params.canonicalTimestamp), 8);
-  const roundId = keccak_256(Buffer.concat([ROUND_ID_PREFIX, params.sourceId, roundFields]));
+  const registryVersion = Buffer.alloc(4);
+  registryVersion.writeUInt32BE(params.registryVersion, 0);
 
   return Buffer.from(
     keccak_256(
@@ -144,8 +141,9 @@ export function x402RoundMemo(params: RoundMemoParams): string {
         Buffer.from("MOLPHA_X402_REQUEST_V1", "utf8"),
         Buffer.from(encoder.encode(params.programId)),
         Buffer.from(encoder.encode(params.gatewayPda)),
-        roundId,
-        params.sourceId
+        params.sourceId,
+        Buffer.from([params.signaturesRequired]),
+        registryVersion
       ])
     )
   ).toString("hex");

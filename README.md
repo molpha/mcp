@@ -232,7 +232,7 @@ Replace the example URL with a public endpoint that returns stable, independentl
 
 ### Fetch a signed result
 
-> For that same source, run a subscription round with 3 required signatures and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp, registry version, quorum, and EVM verifier call. Treat the signed attestation as the trust anchor; do not trust the value by itself.
+> For that same source, run a subscription round with 3 required signatures and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp (unix milliseconds, assigned by the gateway), registry version, quorum, and EVM verifier call. Treat the signed attestation as the trust anchor; do not trust the value by itself.
 
 ### Check x402 spend before paying
 
@@ -310,7 +310,7 @@ A paid round works like this:
    - `asset` is the USDC mint in the on-chain `ProtocolConfig`.
    - `amount` is the protocol price, `x402_round_base + (signaturesRequired + redundancy_buffer) × reward_per_signature`, within `MOLPHA_X402_MAX_PRICE_USDC` and the rest of today's `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC`.
    - `network` is the cluster `SOLANA_RPC` points at.
-   - `extra.memo` is this round's commitment to the program, gateway, source, quorum, registry version, and timestamp.
+   - `extra.memo` commits the payment to the program, gateway, source, quorum, and registry version (`MOLPHA_X402_REQUEST_V1`). It names no timestamp: the gateway assigns the round's `timestamp` (unix milliseconds) after it has verified the payment.
    - `extra.feePayer` is an account other than the signer.
 3. The server signs a USDC `TransferChecked` from the signer's token account and repeats the request with the payment in the `PAYMENT-SIGNATURE` header. The gateway verifies the payment before it dispatches the round and settles it before it returns data. The tool result includes a `paymentReceipt` with the settlement transaction.
 

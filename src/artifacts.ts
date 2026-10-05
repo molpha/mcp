@@ -23,7 +23,7 @@ export const signedDataUpdateSchema = z.object({
     .string()
     .optional()
     .describe("32-byte packed value, 0x-prefixed hex — the value bytes the signature covers."),
-  canonicalTimestamp: z.number().int().describe("Round timestamp in unix seconds; signed.")
+  timestamp: z.number().int().describe("Gateway-assigned round time in unix MILLISECONDS; signed. Divide by 1000 for seconds.")
 });
 
 export const signedSignatureSchema = z.object({
@@ -47,8 +47,6 @@ export const signedArtifactSchema = z.object({
   ...signedAttestationSchema.shape
 });
 
-export type SignedDataUpdate = z.infer<typeof signedDataUpdateSchema>;
-export type SignedSignature = z.infer<typeof signedSignatureSchema>;
 export type DataUpdateArtifact = z.infer<typeof signedArtifactSchema>;
 
 /** Fixed byte widths the SDK and the Solana program enforce on the flat result. */
@@ -64,7 +62,7 @@ const HEX_WIDTHS: Record<string, number> = {
  * Flattens the two nested shapes a round can arrive in into the flat signed result this
  * server works with internally; a flat input is returned unchanged.
  *
- * - the SDK's `Attestation`: `{ payload: { value (packed), sourceId, ... canonicalTimestamp },
+ * - the SDK's `Attestation`: `{ payload: { value (packed), sourceId, ... timestamp },
  *   signature: { s, commitmentAddr, signersBitmap }, value (decimal), fresh }`
  * - the gateway's `data` body: `{ attestation: { payload, signature: { signature, commitment,
  *   signersBitmap } }, value (decimal), fresh, configHash, aggregation? }`
@@ -81,7 +79,7 @@ export function flattenAttestation(input: Record<string, unknown>): Record<strin
     sourceId: payload.sourceId,
     value: input.value,
     valuePacked: payload.value,
-    timestamp: payload.canonicalTimestamp,
+    timestamp: payload.timestamp,
     registryVersion: payload.registryVersion,
     signaturesRequired: payload.signaturesRequired,
     signersBitmap: signature.signersBitmap,
@@ -101,7 +99,7 @@ export function toSdkAttestation(flat: Record<string, unknown>): Record<string, 
       sourceId: flat.sourceId,
       registryVersion: Number(flat.registryVersion),
       signaturesRequired: Number(flat.signaturesRequired),
-      canonicalTimestamp: Number(flat.timestamp)
+      timestamp: Number(flat.timestamp)
     },
     signature: {
       s: flat.s,
@@ -154,7 +152,7 @@ export function toSignedResult(input: Record<string, unknown>): Record<string, u
     sourceId: du.sourceId ?? input.sourceId,
     value: du.value ?? input.value,
     valuePacked: du.valuePacked ?? input.valuePacked,
-    timestamp: du.canonicalTimestamp ?? du.timestamp ?? input.timestamp,
+    timestamp: du.timestamp ?? input.timestamp,
     registryVersion: du.registryVersion ?? input.registryVersion,
     signaturesRequired: du.signaturesRequired ?? input.signaturesRequired,
     signersBitmap: sig.signersBitmap ?? input.signersBitmap,
@@ -180,7 +178,7 @@ export function toDataUpdateArtifact(result: Record<string, unknown>): DataUpdat
       ...(normalized.valuePacked !== undefined
         ? { valuePacked: String(normalized.valuePacked) }
         : {}),
-      canonicalTimestamp: Number(normalized.timestamp ?? 0)
+      timestamp: Number(normalized.timestamp ?? 0)
     },
     signature: {
       signature: String(normalized.s ?? ""),

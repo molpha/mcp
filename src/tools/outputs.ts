@@ -55,7 +55,7 @@ export const verifierArgs = () =>
               sourceId: z.string().describe("bytes32, 0x hex."),
               registryVersion: z.number().int(),
               signaturesRequired: z.number().int(),
-              canonicalTimestamp: z.string().describe("uint64, decimal string.")
+              timestamp: z.string().describe("uint64, decimal string.")
             }),
             signature: z.object({
               signature: z.string().describe("bytes32 Schnorr scalar s, 0x hex."),
@@ -81,7 +81,7 @@ export const verifierArgs = () =>
               source_id: z.string().describe("u256, decimal string."),
               registry_version: z.number().int(),
               signatures_required: z.number().int(),
-              canonical_timestamp: z.number().int()
+              timestamp: z.number().int()
             }),
             signature: z.object({
               signature: z.string().describe("u256, decimal string."),
@@ -114,9 +114,9 @@ export const feedAccount = () =>
         .union([z.enum(["value", "hash"]), z.record(z.unknown())])
         .describe("Attested encoding of `value` — not a scale hint. Molpha attests no decimals."),
       valueKindMeaning: z.string().optional(),
-      canonicalTimestamp: z
+      timestamp: z
         .union([z.string(), z.number()])
-        .describe("Unix seconds of the stored attestation (u64, decimal string)."),
+        .describe("Unix MILLISECONDS of the stored attestation (u64, decimal string); divide by 1000 for seconds."),
       signaturesRequired: z.number().int(),
       signersBitmap: z.string().describe("0x-prefixed hex."),
       registryVersion: z.number().int(),

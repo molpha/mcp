@@ -99,7 +99,7 @@ Leave a variable unset when the default is what you want. Empty strings are not 
 | `MOLPHA_HTTP_DAILY_CAPS` | unset / `false` | Process-wide counters are meaningless across Fluid instances. Use provider spend policies. |
 | `MOLPHA_HTTP_RATE_LIMIT` | `true` | Per-instance token bucket. Complements, does not replace, WAF. |
 
-**Never set on Vercel:** `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, `OWNER_KEYPAIR`, `AGENT_KEYPAIR`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_WALLET_ID`, `PRIVY_WALLET_ADDRESS`, `TURNKEY_API_PUBLIC_KEY`, `TURNKEY_API_PRIVATE_KEY`, `TURNKEY_ORGANIZATION_ID`, `TURNKEY_WALLET_ADDRESS`, or any local `.env` dump.
+**Never set on Vercel:** `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, `OWNER_KEYPAIR`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_WALLET_ID`, `PRIVY_WALLET_ADDRESS`, `TURNKEY_API_PUBLIC_KEY`, `TURNKEY_API_PRIVATE_KEY`, `TURNKEY_ORGANIZATION_ID`, `TURNKEY_WALLET_ADDRESS`, or any local `.env` dump.
 
 After saving variables, you must **redeploy** for them to apply.
 

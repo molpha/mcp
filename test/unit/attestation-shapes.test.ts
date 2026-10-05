@@ -6,7 +6,7 @@ const payload = {
   sourceId: "11".repeat(32),
   registryVersion: 4,
   signaturesRequired: 3,
-  canonicalTimestamp: 1_700_000_000
+  timestamp: 1_700_000_000_000
 };
 
 describe("attestation shapes", () => {
@@ -22,7 +22,7 @@ describe("attestation shapes", () => {
       sourceId: payload.sourceId,
       value: "100.125",
       valuePacked: payload.value,
-      timestamp: 1_700_000_000,
+      timestamp: 1_700_000_000_000,
       registryVersion: 4,
       signaturesRequired: 3,
       signersBitmap: "e",
@@ -60,7 +60,7 @@ describe("attestation shapes", () => {
       sourceId: payload.sourceId,
       value: "7",
       valuePacked: payload.value,
-      timestamp: 1_700_000_000,
+      timestamp: 1_700_000_000_000,
       registryVersion: 4,
       signaturesRequired: 3,
       signersBitmap: "e",
@@ -70,6 +70,6 @@ describe("attestation shapes", () => {
     });
 
     expect(normalizeSignedResult(toSdkAttestation(flat))).toEqual(flat);
-    expect(toSdkAttestation(flat)).toMatchObject({ payload: { canonicalTimestamp: 1_700_000_000, signaturesRequired: 3 }, signature: { s: flat.s } });
+    expect(toSdkAttestation(flat)).toMatchObject({ payload: { timestamp: 1_700_000_000_000, signaturesRequired: 3 }, signature: { s: flat.s } });
   });
 });

@@ -47,7 +47,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return {
       ...withStatus("unauthorized", message, status),
       remediation:
-        "The request signature binds the program, gateway PDA, sourceId, and quorum. Ensure OWNER_KEYPAIR is the subscription owner and GATEWAY_AUTHORITIES names each gateway's authority."
+        "The request signature binds the program, gateway PDA, sourceId, and quorum. Ensure OWNER_KEYPAIR is the subscription owner (or a delegate), GATEWAY_AUTHORITIES names each gateway's authority, and this machine's clock is accurate: the signature carries a unix-seconds timestamp the gateway accepts only within a short window."
     };
   }
 
@@ -73,7 +73,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
     return withStatus("round_timeout", message, status);
   }
 
-  if (message.includes("OWNER_KEYPAIR") || message.includes("AGENT_KEYPAIR")) {
+  if (message.includes("OWNER_KEYPAIR")) {
     return {
       code: "missing_config",
       message,

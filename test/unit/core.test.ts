@@ -40,11 +40,6 @@ describe("loadConfig", () => {
     });
   });
 
-  it("accepts AGENT_KEYPAIR as deprecated alias for OWNER_KEYPAIR", () => {
-    const config = loadConfig({ AGENT_KEYPAIR: "./legacy.json" });
-    expect(config.ownerKeypair).toBe("./legacy.json");
-  });
-
   it("parses x402 caps as decimal USDC and defaults GATEWAY_ENDPOINTS when blank", () => {
     const config = loadConfig({
       GATEWAY_ENDPOINTS: "",
@@ -85,7 +80,7 @@ describe("toDataUpdateArtifact", () => {
       fresh: true,
       registryVersion: 42,
       signaturesRequired: 3,
-      timestamp: 1714300000,
+      timestamp: 1714300000000,
       s: "0x5165",
       commitmentAddr: "0xc0b",
       signersBitmap: "4"
@@ -99,7 +94,7 @@ describe("toDataUpdateArtifact", () => {
         registryVersion: 42,
         signaturesRequired: 3,
         value: "123",
-        canonicalTimestamp: 1714300000
+        timestamp: 1714300000000
       },
       signature: {
         signature: `0x${"0".repeat(60)}5165`,
@@ -115,7 +110,7 @@ describe("toSignedResult", () => {
     sourceId: `0x${"1".repeat(64)}`,
     value: "66285",
     valuePacked: `0x${"2".repeat(64)}`,
-    timestamp: 1714300000,
+    timestamp: 1714300000000,
     registryVersion: 7,
     signaturesRequired: 1,
     signersBitmap: "4",

@@ -38,7 +38,6 @@ export const apiConfigSchema = z.object({
     )
 });
 
-export type ApiConfigSchema = z.infer<typeof apiConfigSchema>;
 
 /** A full-width sourceId; tools echo it back `0x`-prefixed. */
 export const sourceIdSchema = z

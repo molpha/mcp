@@ -23,7 +23,7 @@ const flatResult = {
   sourceId: "1".repeat(64),
   value: "66285",
   valuePacked: "2".repeat(64),
-  timestamp: 1714300000,
+  timestamp: 1714300000000,
   registryVersion: 7,
   signaturesRequired: 1,
   signersBitmap: "4",
@@ -39,7 +39,7 @@ const sdkAttestation = {
     sourceId: flatResult.sourceId,
     registryVersion: flatResult.registryVersion,
     signaturesRequired: flatResult.signaturesRequired,
-    canonicalTimestamp: flatResult.timestamp
+    timestamp: flatResult.timestamp
   },
   signature: { s: flatResult.s, commitmentAddr: flatResult.commitmentAddr, signersBitmap: flatResult.signersBitmap },
   value: flatResult.value,
@@ -51,7 +51,7 @@ const feedAccount = {
   sourceId: Array(32).fill(0x11),
   value: new Uint8Array(32).fill(0x22),
   valueKind: { value: {} },
-  canonicalTimestamp: new BN(1714300000),
+  timestamp: new BN(1714300000000),
   signaturesRequired: 1,
   signersBitmap: [...Array(31).fill(0), 4],
   registryVersion: 7,
@@ -114,7 +114,7 @@ describe("feed reads", () => {
 
     expect(await callTool("get_latest_value", { sourceId: flatResult.sourceId, signaturesRequired: 1 })).toMatchObject({
       submitter: signer,
-      feed: { sourceId: `0x${"11".repeat(32)}`, valueKind: "value", canonicalTimestamp: "1714300000" }
+      feed: { sourceId: `0x${"11".repeat(32)}`, valueKind: "value", timestamp: "1714300000000" }
     });
 
     solana.readFeed.mockResolvedValueOnce(null);
@@ -174,7 +174,7 @@ describe("execute_subscription_round", () => {
         payload: expect.objectContaining({
           value: `0x${flatResult.valuePacked}`,
           sourceId: `0x${flatResult.sourceId}`,
-          canonicalTimestamp: flatResult.timestamp
+          timestamp: flatResult.timestamp
         }),
         signature: expect.objectContaining({ s: `0x${flatResult.s}`, signersBitmap: expect.stringMatching(/^0x0*4$/) })
       })

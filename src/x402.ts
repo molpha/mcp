@@ -43,10 +43,20 @@ import {
 } from "./x402-payment.js";
 
 /**
- * A 409 means the gateway already holds this round identity and settled
- * nothing, but retrying needs a new timestamp and therefore a new payment.
+ * A 409 means the gateway already holds this round identity (this payer, source and quorum in
+ * this tick) and settled nothing. Retrying needs a later tick, and therefore a new payment.
  */
 const MAX_PAID_ATTEMPTS = 3;
+
+/** The gateway's default tick grid in milliseconds (its `round.tick_ms`). */
+export const DEFAULT_X402_TICK_MS = 1000;
+
+/** Milliseconds from `nowMs` to the start of the next tick, plus a millisecond of margin. */
+export function msUntilNextTick(nowMs: number, tickMs: number): number {
+  return tickMs - (nowMs % tickMs) + 1;
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface X402RoundOptions {
   apiConfig: ApiConfigLike;
@@ -64,6 +74,8 @@ export interface X402RoundContext {
   signer: MolphaSigner;
   solana: Record<string, unknown>;
   gateway: Record<string, unknown>;
+  /** The gateway's tick grid in ms (its `round.tick_ms`), for retrying after a 409. Default 1000. */
+  tickMs?: number;
 }
 
 export interface X402PaymentReceipt {
@@ -105,7 +117,6 @@ export interface X402Reconciliation {
   amountAtomicUsdc: string;
   memo: string;
   sourceId: string;
-  canonicalTimestamp: number;
   httpStatus?: number;
   gatewayMessage: string;
 }
@@ -169,7 +180,7 @@ export async function fetchX402Status(
 export async function quoteX402Round(ctx: Omit<X402RoundContext, "signer">, opts: X402RoundOptions): Promise<Record<string, unknown>> {
   ctx.lifecycle?.signal.throwIfAborted();
   const plan = await planRound(ctx, opts);
-  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan, nowSeconds()), ctx.lifecycle?.signal);
+  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan), ctx.lifecycle?.signal);
   const envelope = asRecord(required);
   if (!envelope || !Array.isArray(envelope.accepts) || envelope.accepts.length === 0 || envelope.x402Version !== 2) {
     throw new Error("Invalid payment-required envelope");
@@ -212,7 +223,7 @@ export async function previewX402Round(
 ): Promise<Record<string, unknown>> {
   ctx.lifecycle?.signal.throwIfAborted();
   const plan = await planRound(ctx, opts);
-  const { endpoint, verified, accounts } = await preparePayment(ctx, plan, nowSeconds());
+  const { endpoint, verified, accounts } = await preparePayment(ctx, plan);
   const shortfall = verified.amount > accounts.payerBalance ? verified.amount - accounts.payerBalance : 0n;
 
   return {
@@ -242,12 +253,11 @@ export async function previewX402Round(
 export async function executeX402Round(ctx: X402RoundContext, opts: X402RoundOptions): Promise<X402RoundResult> {
   ctx.lifecycle?.signal.throwIfAborted();
   const plan = await planRound(ctx, opts);
-  let canonicalTimestamp = nowSeconds();
 
   for (let attempt = 1; ; attempt += 1) {
     const dailyCapsEnabled = ctx.config.x402.dailyCapsEnabled !== false;
     const { payment, paymentHeader } = await withX402DailySpendSerialization(dailyCapsEnabled, async () => {
-      const prepared = await preparePayment(ctx, plan, canonicalTimestamp);
+      const prepared = await preparePayment(ctx, plan);
       const { verified, accounts } = prepared;
       if (accounts.payerBalance < verified.amount) {
         throw new Error(
@@ -266,16 +276,18 @@ export async function executeX402Round(ctx: X402RoundContext, opts: X402RoundOpt
       ctx.lifecycle.reconciliation = {
         endpoint: payment.endpoint, payer: ctx.signer.publicKey, payTo: verified.payTo,
         asset: verified.asset, amountAtomicUsdc: verified.amount.toString(), memo: verified.memo,
-        sourceId: plan.sourceId, canonicalTimestamp
+        sourceId: plan.sourceId
       };
     }
-    const outcome = await postPaidExecute(payment.endpoint, executeBody(plan, canonicalTimestamp), paymentHeader, ctx.lifecycle?.signal);
+    const outcome = await postPaidExecute(payment.endpoint, executeBody(plan), paymentHeader, ctx.lifecycle?.signal);
 
     if (outcome.kind === "ok") {
       return completeRound(ctx, plan, payment, outcome);
     }
     if (outcome.kind === "conflict" && attempt < MAX_PAID_ATTEMPTS) {
-      canonicalTimestamp = Math.max(nowSeconds(), canonicalTimestamp + 1);
+      // The gateway stamps a round with the tick it arrives in: wait for a later one.
+      await sleep(msUntilNextTick(Date.now(), ctx.tickMs ?? DEFAULT_X402_TICK_MS));
+      ctx.lifecycle?.signal.throwIfAborted();
       continue;
     }
     throw paidOutcomeError(ctx, plan, payment, outcome);
@@ -342,17 +354,15 @@ async function planRound(ctx: Omit<X402RoundContext, "signer">, opts: X402RoundO
 interface PreparedPayment {
   endpoint: string;
   required: unknown;
-  canonicalTimestamp: number;
   verified: VerifiedPayment;
   accounts: PaymentAccounts;
 }
 
 async function preparePayment(
   ctx: X402RoundContext,
-  plan: RoundPlan,
-  canonicalTimestamp: number
+  plan: RoundPlan
 ): Promise<PreparedPayment> {
-  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan, canonicalTimestamp), ctx.lifecycle?.signal);
+  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan), ctx.lifecycle?.signal);
   const authority = await gatewayAuthority(ctx, endpoint);
   const accounts = await readPaymentAccounts(ctx.connection, {
     programId: plan.programId,
@@ -372,8 +382,7 @@ async function preparePayment(
       gatewayPda: accounts.gatewayPda,
       sourceId: plan.sourceIdBytes,
       signaturesRequired: plan.signaturesRequired,
-      registryVersion: plan.registryVersion,
-      canonicalTimestamp
+      registryVersion: plan.registryVersion
     })
   });
   if (ctx.config.x402.dailyCapsEnabled !== false) {
@@ -382,7 +391,7 @@ async function preparePayment(
     checkX402PerRoundCap(verified.amount, ctx.config.x402.maxPriceUsdcAtomic);
   }
 
-  return { endpoint, required, canonicalTimestamp, verified, accounts };
+  return { endpoint, required, verified, accounts };
 }
 
 async function signPayment(ctx: X402RoundContext, payment: PreparedPayment): Promise<string> {
@@ -487,7 +496,6 @@ function paidOutcomeError(
           amountAtomicUsdc: payment.verified.amount.toString(),
           memo: payment.verified.memo,
           sourceId: plan.sourceId,
-          canonicalTimestamp: payment.canonicalTimestamp,
           ...(outcome.status !== undefined ? { httpStatus: outcome.status } : {}),
           gatewayMessage: outcome.message
         }
@@ -520,7 +528,9 @@ function completeRound(
   const data = flattenAttestation(asRecord(outcome.body.data) ?? {});
   const sameRound =
     normalizeSourceId(String(data.sourceId ?? "")) === plan.sourceId &&
-    Number(data.timestamp) === payment.canonicalTimestamp &&
+    // The gateway assigned the timestamp, so there is no requested value to compare with: it must
+    // simply be present, because an aggregate without it cannot be verified anywhere.
+    Number.isFinite(Number(data.timestamp)) && Number(data.timestamp) > 0 &&
     Number(data.registryVersion) === plan.registryVersion &&
     Number(data.signaturesRequired) === plan.signaturesRequired;
   if (!sameRound) {
@@ -606,9 +616,8 @@ function clusterNetwork(connection: Pick<Connection, "getGenesisHash">): Promise
   return pending;
 }
 
-function executeBody(plan: RoundPlan, canonicalTimestamp: number): Record<string, unknown> {
+function executeBody(plan: RoundPlan): Record<string, unknown> {
   return {
-    canonical_timestamp: canonicalTimestamp,
     signatures_required: plan.signaturesRequired,
     registry_version: plan.registryVersion,
     apiConfig: plan.apiConfig
@@ -724,6 +733,3 @@ function trimSlash(endpoint: string): string {
   return endpoint.replace(/\/$/, "");
 }
 
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}

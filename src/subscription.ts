@@ -5,7 +5,7 @@ export interface SubscriptionStatus {
   owner?: string;
   planType?: unknown;
   validUntil?: string;
-  /** The plan's round quota. The program no longer counts rounds; the gateway's outbox does. */
+  /** The plan's round quota. The program does not count rounds; the gateway's outbox does. */
   maxRounds?: number;
   message?: string;
 }
@@ -30,7 +30,7 @@ export async function readSubscriptionStatus(
     const validUntil = BigInt(String(subscription.validUntil ?? 0));
     const now = BigInt(Math.floor(Date.now() / 1000));
     const maxRounds = BigInt(String(subscription.maxRounds ?? 0));
-    // Rounds used are no longer on-chain, so only expiry can be judged here; the gateway enforces the quota.
+    // Rounds used are not on-chain, so only expiry can be judged here; the gateway enforces the quota.
     const active = validUntil > now;
 
     return {

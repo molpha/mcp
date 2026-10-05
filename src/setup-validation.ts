@@ -32,7 +32,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
   ];
 
   if (backend === "memory") {
-    const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR);
+    const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR);
     if (!ownerKeypair?.trim()) {
       checks.push({
         name: "owner_keypair",
@@ -291,7 +291,7 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
   const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
   if (backend === "memory") {
     out.SIGNER_BACKEND = "memory";
-    const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR);
+    const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR);
     if (ownerKeypair) {
       out.OWNER_KEYPAIR = resolveKeypairPath(ownerKeypair);
     }

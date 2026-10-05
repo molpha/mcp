@@ -37,7 +37,7 @@ const flatResult = {
   sourceId: `0x${"1".repeat(64)}`,
   value: "66285",
   valuePacked: `0x${"2".repeat(64)}`,
-  timestamp: 1714300000,
+  timestamp: 1714300000000,
   registryVersion: 7,
   signaturesRequired: 1,
   signersBitmap: "4",
@@ -217,7 +217,7 @@ describe("build_verifier_calldata", () => {
                 sourceId: flatResult.sourceId,
                 registryVersion: 7,
                 signaturesRequired: 1,
-                canonicalTimestamp: String(flatResult.timestamp)
+                timestamp: String(flatResult.timestamp)
               },
               signature: { signersBitmap: "4" }
             },

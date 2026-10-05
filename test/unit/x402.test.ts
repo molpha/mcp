@@ -126,7 +126,7 @@ interface Env {
   };
   quotes: Array<Record<string, unknown>>;
   payments: Array<{ endpoint: string; body: Record<string, unknown>; payload: Record<string, unknown>; tx: VersionedTransaction }>;
-  memoFor(canonicalTimestamp: number): string;
+  memoFor(): string;
 }
 
 let endpointCounter = 0;
@@ -210,14 +210,13 @@ async function setup(
     getMultipleAccountsInfo: vi.fn(async (keys: PublicKey[]) => keys.map((key) => accounts.get(key.toBase58()) ?? null))
   };
 
-  const memoFor = (canonicalTimestamp: number): string =>
+  const memoFor = (): string =>
     x402RoundMemo({
       programId,
       gatewayPda,
       sourceId: Buffer.from(sourceId, "hex"),
       signaturesRequired: 2,
-      registryVersion: 3,
-      canonicalTimestamp
+      registryVersion: 3
     });
 
   const quotes: Env["quotes"] = [];
@@ -247,7 +246,7 @@ async function setup(
       asset: mint,
       payTo: treasuryOwner,
       maxTimeoutSeconds: 60,
-      extra: { feePayer, memo: memoFor(body.canonical_timestamp as number) }
+      extra: { feePayer, memo: memoFor() }
     };
     const paymentHeader = (init?.headers as Record<string, string> | undefined)?.["PAYMENT-SIGNATURE"];
 
@@ -286,7 +285,8 @@ async function setup(
               sourceId,
               registryVersion: body.registry_version,
               signaturesRequired: body.signatures_required,
-              canonicalTimestamp: body.canonical_timestamp,
+              // Assigned by the gateway from its own clock, in unix milliseconds.
+              timestamp: 1_750_000_000_000,
               ...gw.data
             },
             signature: { signature: "11".repeat(32), commitment: "22".repeat(20), signersBitmap: "3" }
@@ -318,7 +318,8 @@ async function setup(
     connection: connection as unknown as X402RoundContext["connection"],
     signer,
     solana: { getRegistrySelectionConfig: async () => ({ registryVersion: 3, redundancyBuffer: 1, nodeCount: 3 }) },
-    gateway: { fetchGatewayInfo: vi.fn(async () => ({ gatewayAuthority: authority })) }
+    gateway: { fetchGatewayInfo: vi.fn(async () => ({ gatewayAuthority: authority })) },
+    tickMs: 5 // a 409 retry waits for the next tick; keep it short in tests
   };
 
   return {
@@ -352,9 +353,10 @@ afterEach(() => {
 
 describe("x402RoundMemo", () => {
   it("matches the memo the gateway advertises for its service-test fixture", async () => {
-    // gateway internal/gateway/features/agentexec/service_test.go newFixture:
-    // authority PublicKey{4}, apiConfig {url: https://example.com, method: GET},
-    // quorum 2, registry version 3, canonical timestamp 1750000000.
+    // gateway internal/gateway/features/agentexec/service_test.go newFixture
+    // (TestPaymentMemoGoldenVector pins the same value): authority PublicKey{4},
+    // apiConfig {url: https://example.com, method: GET}, quorum 2, registry version 3.
+    // The memo names no timestamp: the gateway assigns it after verifying the payment.
     const fixtureSourceId = requireSdkExport<(config: Record<string, unknown>) => string>("deriveSourceIdString")({
       url: "https://example.com",
       method: "GET",
@@ -372,28 +374,25 @@ describe("x402RoundMemo", () => {
         gatewayPda,
         sourceId: Buffer.from(fixtureSourceId, "hex"),
         signaturesRequired: 2,
-        registryVersion: 3,
-        canonicalTimestamp: 1_750_000_000
+        registryVersion: 3
       })
-    ).toBe("6346778bff94f910fb6a562731fb07a7183098b4675e7e267d46859390bcb719");
+    ).toBe("e2eeef1f32716c89df97420bbdd1559755b1ed610c652a3b9fb39aaf2eb40f06");
   });
 
-  it("commits to the gateway, source, quorum, registry version, and timestamp", () => {
+  it("commits to the gateway, source, quorum and registry version, and to nothing time-dependent", () => {
     const base = {
       programId,
       gatewayPda: randomAddress(),
       sourceId: Buffer.from(sourceId, "hex"),
       signaturesRequired: 2,
-      registryVersion: 3,
-      canonicalTimestamp: 1_750_000_000
+      registryVersion: 3
     };
     const memos = [
       base,
       { ...base, gatewayPda: randomAddress() },
       { ...base, sourceId: Buffer.alloc(32, 1) },
       { ...base, signaturesRequired: 3 },
-      { ...base, registryVersion: 4 },
-      { ...base, canonicalTimestamp: 1_750_000_001 }
+      { ...base, registryVersion: 4 }
     ].map(x402RoundMemo);
     expect(new Set(memos).size).toBe(memos.length);
   });
@@ -472,9 +471,10 @@ describe("executeX402Round", () => {
     expect(env.quotes).toHaveLength(1);
     expect(env.payments).toHaveLength(1);
     const [paid] = env.payments;
-    const timestamp = env.quotes[0]!.canonical_timestamp as number;
     expect(paid!.body).toEqual(env.quotes[0]);
     expect(env.quotes[0]).toMatchObject({ signatures_required: 2, registry_version: 3 });
+    // The caller sends no timestamp: the gateway assigns the round's.
+    expect(env.quotes[0]).not.toHaveProperty("timestamp");
     expect(payment).toEqual({
       endpoint: env.endpoint,
       network: NETWORK,
@@ -483,7 +483,7 @@ describe("executeX402Round", () => {
       asset: env.mint,
       amountAtomicUsdc: String(PRICE),
       feePayer: env.feePayer,
-      memo: env.memoFor(timestamp),
+      memo: env.memoFor(),
       transaction: SETTLEMENT_TX
     });
     expect(paid!.payload).toMatchObject({ x402Version: 2, resource: { url: `${env.endpoint}/v1/x402/execute` } });
@@ -513,7 +513,7 @@ describe("executeX402Round", () => {
     expect(transfer.data[9]).toBe(6);
     expect(transfer.accounts).toEqual([env.payerAta, env.mint, env.payToAta, env.payer]);
     expect(instructions[3]!.accounts).toEqual([]);
-    expect(instructions[3]!.data.toString("utf8")).toBe(env.memoFor(timestamp));
+    expect(instructions[3]!.data.toString("utf8")).toBe(env.memoFor());
 
     expect(x402SpentToday()).toBe(PRICE);
   });
@@ -602,7 +602,7 @@ describe("executeX402Round", () => {
     expect(x402SpentToday()).toBe(PRICE);
   });
 
-  it("re-quotes with a new timestamp and pays again when the round identity is taken (409)", async () => {
+  it("waits for a later tick, re-quotes and pays again when the round identity is taken (409)", async () => {
     const env = await setup({
       gateway: { onPaid: (attempt) => (attempt === 1 ? jsonResponse(409, { error: "round or payment already reserved" }) : undefined) }
     });
@@ -611,9 +611,10 @@ describe("executeX402Round", () => {
 
     expect(env.quotes).toHaveLength(2);
     expect(env.payments).toHaveLength(2);
-    const [first, second] = env.quotes.map((quote) => quote.canonical_timestamp as number);
-    expect(second).toBeGreaterThan(first!);
-    expect(payment.memo).toBe(env.memoFor(second!));
+    // Neither request names a timestamp; the memo is the same, since it commits to nothing
+    // time-dependent, and each attempt is a separately signed payment.
+    for (const quote of env.quotes) expect(quote).not.toHaveProperty("timestamp");
+    expect(payment.memo).toBe(env.memoFor());
     expect(x402SpentToday()).toBe(PRICE * 2n);
   });
 
@@ -632,7 +633,7 @@ describe("executeX402Round", () => {
       endpoint: env.endpoint,
       payTo: env.treasuryOwner,
       amountAtomicUsdc: String(PRICE),
-      memo: env.memoFor(env.quotes[0]!.canonical_timestamp as number),
+      memo: env.memoFor(),
       httpStatus: 503
     });
     expect(normalizeError(error)).toMatchObject({ code: "payment_outcome_unknown", details: reconciliation });
@@ -695,7 +696,7 @@ describe("previewX402Round", () => {
       asset: env.mint,
       priceAtomicUsdc: String(PRICE),
       feePayer: env.feePayer,
-      memo: env.memoFor(env.quotes[0]!.canonical_timestamp as number),
+      memo: env.memoFor(),
       payerUsdcAta: env.payerAta,
       payerBalanceAtomicUsdc: "5000000",
       shortfallAtomicUsdc: "0"

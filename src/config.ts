@@ -49,7 +49,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
       gatewayEndpoints.length
     ),
     solanaRpc: resolveEnvString(env.SOLANA_RPC) ?? DEFAULT_SOLANA_RPC,
-    ownerKeypair: resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR),
+    ownerKeypair: resolveEnvString(env.OWNER_KEYPAIR),
     evmNetworks: parseCsv(resolveEnvString(env.MOLPHA_EVM_NETWORKS) ?? "evm-sepolia"),
     starknetNetworks: parseCsv(resolveEnvString(env.MOLPHA_STARKNET_NETWORKS) ?? "starknet-sepolia"),
     guardrails: {
@@ -72,11 +72,6 @@ export function loadOwnerKeypair(config: MolphaConfig): Uint8Array {
   }
 
   return loadKeypair(config.ownerKeypair);
-}
-
-/** @deprecated Use loadOwnerKeypair — AGENT_KEYPAIR alias retained for compatibility. */
-export function loadAgentKeypair(config: MolphaConfig): Uint8Array {
-  return loadOwnerKeypair(config);
 }
 
 export function loadKeypair(pathOrJson: string): Uint8Array {

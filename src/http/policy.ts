@@ -42,7 +42,7 @@ export function safeReconciliation(value: Record<string, unknown> | undefined): 
     if (typeof value?.[key] === "string" && /^(?:0x)?[a-fA-F0-9]{64}$/.test(value[key])) out[key] = value[key];
   }
   if (typeof value?.amountAtomicUsdc === "string" && /^\d+$/.test(value.amountAtomicUsdc)) out.amountAtomicUsdc = value.amountAtomicUsdc;
-  if (typeof value?.canonicalTimestamp === "number") out.canonicalTimestamp = value.canonicalTimestamp;
+  if (typeof value?.timestamp === "number") out.timestamp = value.timestamp;
   return out;
 }
 
