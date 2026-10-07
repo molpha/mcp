@@ -104,7 +104,7 @@ export function registerDescribeFeedTool(server: ToolServer, dependencies: ToolD
               }
             }
           : {}),
-        ...(subscription ? { subscription } : { note: "Signer subscription status is unavailable without managed-signer headers." }),
+        ...(subscription ? { subscription } : { note: "No subscription status: this server holds no signer. See describe_access for a wallet's subscription." }),
         chains: {
           solana: "devnet (canonical state)",
           evm: config.evmNetworks,

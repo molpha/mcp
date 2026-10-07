@@ -1,5 +1,6 @@
 import { address, type Address } from "@solana/kit";
 import { Connection, type Transaction, type VersionedTransaction } from "@solana/web3.js";
+import type { ChallengeKeys } from "./challenge.js";
 import { loadConfig, type MolphaConfig } from "./config.js";
 import { parseSolanaPubkey } from "./solana-address.js";
 import { toLegacyPublicKey } from "./solana-compat.js";
@@ -34,6 +35,8 @@ export interface SharedRuntime {
 export interface ToolDependencies {
   getContext?: () => Promise<RequestContext>;
   config?: MolphaConfig;
+  /** Set by the hosted HTTP server: tools take the caller's wallet address and return work for it to sign. */
+  hosted?: { challengeKeys?: ChallengeKeys };
 }
 
 export function assertActive(context: RequestContext): void {
@@ -42,7 +45,7 @@ export function assertActive(context: RequestContext): void {
 
 export function requireSigner(context: RequestContext): asserts context is RequestContext & { signer: MolphaSigner } {
   if (!context.signer) {
-    throw Object.assign(new Error("Supply X-Molpha-Signer and managed-signer headers, or use npx @molpha/mcp locally."), {
+    throw Object.assign(new Error("This operation needs a signer held by the server. Run npx @molpha/mcp locally with a configured signer."), {
       code: "authentication_required"
     });
   }
@@ -63,36 +66,20 @@ export function getSharedRuntime(env: NodeJS.ProcessEnv = process.env): SharedRu
   return { config, connection: new Connection(config.solanaRpc, "confirmed") };
 }
 
-export function createRequestContext(runtime: SharedRuntime, signer?: MolphaSigner, lifecycle?: RequestLifecycle): RequestContext {
-  const guarded = signer && lifecycle ? guardSigner(signer, lifecycle) : signer;
-  const wallet = guarded ?? {
+/**
+ * A hosted request's context: chain and gateway access, and no signer. The SDK's Solana client
+ * wants a wallet, so it gets one that can only be read from.
+ */
+export function createRequestContext(runtime: SharedRuntime, lifecycle?: RequestLifecycle): RequestContext {
+  const refuse = async (): Promise<never> => { throw new Error("Read-only wallet cannot sign"); };
+  const solana = createSolanaClient(runtime.config, {
     publicKey: address("11111111111111111111111111111111"),
     isAvailable: async () => false,
-    signMessage: async () => { throw new Error("Read-only wallet cannot sign"); },
-    signTransaction: async () => { throw new Error("Read-only wallet cannot sign"); },
-    signAllTransactions: async () => { throw new Error("Read-only wallet cannot sign"); }
-  };
-  const solana = createSolanaClient(runtime.config, wallet, runtime.connection);
-  return {
-    ...runtime, solana, gateway: createGateway(runtime.config, solana, guarded), hosted: true,
-    ...(guarded ? { signer: guarded } : {}), ...(lifecycle ? { lifecycle } : {})
-  };
-}
-
-function guardSigner(signer: MolphaSigner, lifecycle: RequestLifecycle): MolphaSigner {
-  const guard = async <T>(run: () => Promise<T>): Promise<T> => {
-    lifecycle.signal.throwIfAborted();
-    const result = await run();
-    lifecycle.signal.throwIfAborted();
-    return result;
-  };
-  return {
-    publicKey: signer.publicKey,
-    isAvailable: () => guard(() => signer.isAvailable()),
-    signMessage: msg => guard(() => signer.signMessage(msg)),
-    signTransaction: tx => guard(() => signer.signTransaction(tx)),
-    signAllTransactions: txs => guard(() => signer.signAllTransactions(txs))
-  };
+    signMessage: refuse,
+    signTransaction: refuse,
+    signAllTransactions: refuse
+  }, runtime.connection);
+  return { ...runtime, solana, gateway: createGateway(runtime.config, solana), hosted: true, ...(lifecycle ? { lifecycle } : {}) };
 }
 
 let cachedContextPromise: Promise<MolphaContext> | undefined;

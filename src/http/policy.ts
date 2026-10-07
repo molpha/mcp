@@ -4,19 +4,27 @@ import type { JsonToolResult } from "../mcp.js";
 import type { ToolServer } from "../tools/types.js";
 
 const messages: Record<string, string> = {
-  authentication_required: "Supply X-Molpha-Signer and managed-signer headers, or use npx @molpha/mcp locally.",
-  submitter_required: "Pass submitter explicitly for unsigned hosted feed reads.",
+  authentication_required: "This operation needs a signer the hosted server does not hold. Use the prepare/sign/execute tools, or npx @molpha/mcp locally.",
+  submitter_required: "Pass submitter explicitly: the hosted server has no wallet of its own to default to.",
   invalid_request: "Invalid tool request. Check the tool input schema.",
   guardrail_exceeded: "The configured execution or spending limit was exceeded.",
   determinism_rejected: "Source configuration did not pass determinism checks.",
   invalid_config: "Server configuration is unavailable or invalid.",
   missing_config: "Required server configuration is unavailable.",
-  subscription_inactive: "The signer subscription is unavailable or inactive.",
+  invalid_challenge: "The challenge was not issued by this server or has been altered. Call the prepare tool again.",
+  payment_expired: "The prepared payment has expired. Call prepare_x402_round again and sign the new transaction.",
+  invalid_signature: "The signature is not the address's Ed25519 signature over the exact sign-in message. Sign the message as returned, as UTF-8 text with no prefix or envelope.",
+  sign_in_rejected: "The gateway refused the sign-in message: it expired, was already used, or is not this gateway's. Call begin_session again.",
+  session_invalid: "The gateway does not recognize the session token: it is unknown, expired or revoked. Call begin_session again.",
+  sessions_unavailable: "This gateway does not offer sign-in sessions.",
+  transaction_expired: "The prepared transaction has expired. Call prepare_submit_attestation again and sign the new transaction.",
+  signed_transaction_mismatch: "The signed transaction is not the prepared one signed by its payer. Sign the prepared transaction unchanged, without broadcasting it.",
+  subscription_inactive: "The subscription is unavailable or inactive.",
   payment_required: "The gateway rejected the payment requirements.",
   payment_outcome_unknown: "A payment may have settled. Reconcile the transfer before retrying.",
   round_timeout: "The upstream request timed out. A submitted operation may still complete; do not retry blindly.",
-  unauthorized: "Managed signer or gateway authentication failed.",
-  forbidden: "Managed signer or gateway policy denied this operation.",
+  unauthorized: "The gateway refused the request's authentication.",
+  forbidden: "The gateway denied this operation: the subscription is missing, expired or out of quota, or the delegate has no access. See describe_access.",
   rate_limited: "The upstream service rate limited this request.",
   internal_error: "The upstream service is unavailable or the operation failed.",
   output_schema_mismatch: "The upstream result did not match the expected output schema. Do not retry a paid operation without reconciliation."
@@ -42,7 +50,8 @@ export function safeReconciliation(value: Record<string, unknown> | undefined): 
     if (typeof value?.[key] === "string" && /^(?:0x)?[a-fA-F0-9]{64}$/.test(value[key])) out[key] = value[key];
   }
   if (typeof value?.amountAtomicUsdc === "string" && /^\d+$/.test(value.amountAtomicUsdc)) out.amountAtomicUsdc = value.amountAtomicUsdc;
-  if (typeof value?.canonicalTimestamp === "number") out.canonicalTimestamp = value.canonicalTimestamp;
+  if (typeof value?.payerSignature === "string" && /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(value.payerSignature)) out.payerSignature = value.payerSignature;
+  if (typeof value?.lastValidBlockHeight === "number" && Number.isSafeInteger(value.lastValidBlockHeight)) out.lastValidBlockHeight = value.lastValidBlockHeight;
   return out;
 }
 
@@ -85,7 +94,7 @@ export function hostedToolServer(server: ToolServer, catalog: Map<string, Hosted
     catalog.set(name, { schema: z.object(config.inputSchema) });
     return server.registerTool(name, {
       ...config,
-      description: `${config.description}\nHosted mode: signer headers are request-scoped. Unsigned feed reads require submitter; unsigned x402 calls quote only; subscription and submission require signer headers. Daily caps are disabled by default; use provider policies.`,
+      description: `${config.description}\nHosted mode: this server holds no keys and accepts no credentials. Anything that needs a signature is returned for the caller's own wallet to sign. Daily caps are disabled by default; set limits in the wallet's own policy.`,
       outputSchema: config.outputSchema.extend({ warnings: z.array(z.string()).optional() })
     }, async (args: Record<string, unknown>) => {
       let result: JsonToolResult;

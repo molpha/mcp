@@ -10,6 +10,7 @@ import { callTool, collectTools } from "./tool-harness.js";
 const TOOL_NAMES = [
   "build_verifier_calldata",
   "derive_source_id",
+  "describe_access",
   "describe_feed",
   "execute_subscription_round",
   "execute_x402_round",
@@ -19,9 +20,31 @@ const TOOL_NAMES = [
   "submit_attestation"
 ];
 
+/**
+ * The hosted server holds no signer: every operation that needs a signature is split around
+ * the caller's own wallet, and nothing that signs on the server is offered.
+ */
+const HOSTED_TOOL_NAMES = [
+  "begin_session",
+  "build_verifier_calldata",
+  "complete_session",
+  "derive_source_id",
+  "describe_access",
+  "describe_feed",
+  "execute_subscription_round",
+  "execute_x402_round",
+  "get_capabilities",
+  "get_latest_value",
+  "get_x402_status",
+  "prepare_submit_attestation",
+  "prepare_x402_round",
+  "send_signed_transaction"
+];
+
 const READ_ONLY = [
   "build_verifier_calldata",
   "derive_source_id",
+  "describe_access",
   "describe_feed",
   "get_capabilities",
   "get_latest_value",
@@ -98,6 +121,51 @@ describe("tool surface", () => {
         expect(shape, `${name}.${field}`).toHaveProperty(field);
       }
     }
+  });
+});
+
+describe("hosted tool surface", () => {
+  const tools = collectTools({ hosted: {} });
+  const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+
+  it("offers the keyless set and nothing that signs on the server", () => {
+    expect(tools.map((tool) => tool.name).sort()).toEqual(HOSTED_TOOL_NAMES);
+    for (const tool of tools) {
+      const inputs = Object.keys(tool.config.inputSchema);
+      for (const serverSide of ["autoSubmit", "encryptSecrets", "dryRun"]) {
+        expect(inputs, `${tool.name}.${serverSide}`).not.toContain(serverSide);
+      }
+      expect(tool.config.outputSchema?._def.typeName, tool.name).toBe("ZodObject");
+      expect(tool.config.description, tool.name).not.toMatch(/X-Molpha|signer header|OWNER_KEYPAIR/i);
+    }
+  });
+
+  it("takes the caller's wallet as an address wherever the stdio server would use its own signer", () => {
+    expect(Object.keys(byName.prepare_x402_round!.config.inputSchema)).toContain("payer");
+    expect(Object.keys(byName.prepare_submit_attestation!.config.inputSchema)).toContain("payer");
+    expect(Object.keys(byName.begin_session!.config.inputSchema)).toEqual(expect.arrayContaining(["address", "owner"]));
+    expect(Object.keys(byName.execute_subscription_round!.config.inputSchema)).toContain("sessionToken");
+    expect(Object.keys(byName.execute_x402_round!.config.inputSchema).sort()).toEqual(["challenge", "signedTransaction"]);
+    expect(Object.keys(byName.send_signed_transaction!.config.inputSchema).sort()).toEqual(["challenge", "signedTransaction"]);
+  });
+
+  it("marks the steps that prepare as read-only and the steps that spend as destructive", () => {
+    const hints = Object.fromEntries(tools.map((tool) => [tool.name, tool.config.annotations]));
+    for (const name of ["prepare_x402_round", "prepare_submit_attestation", "begin_session", "describe_access"]) {
+      expect(hints[name]!.readOnlyHint, name).toBe(true);
+    }
+    expect(hints.execute_x402_round).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
+    expect(hints.execute_subscription_round).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
+    expect(hints.send_signed_transaction).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(hints.complete_session).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+  });
+
+  it("documents every hosted tool in docs/hosted-http.md", () => {
+    const doc = readRepoFile("docs/hosted-http.md");
+    for (const name of HOSTED_TOOL_NAMES) {
+      expect(doc, name).toContain(`\`${name}\``);
+    }
+    expect(doc).not.toMatch(/X-Molpha-Privy|X-Molpha-Turnkey/);
   });
 });
 

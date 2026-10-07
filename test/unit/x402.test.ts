@@ -16,23 +16,28 @@ import { recordX402Spend, resetGuardrailCounters, x402SpentToday } from "../../s
 import { requireSdkExport } from "../../src/sdk.js";
 import { type MolphaSigner } from "../../src/signer/types.js";
 import {
+  executePreparedX402Round,
   executeX402Round,
   fetchX402Status,
+  prepareX402Round,
   previewX402Round,
   quoteX402Round,
+  x402Timing,
   X402PaymentOutcomeUnknownError,
   X402PaymentRequiredError,
-  type X402RoundContext
+  type X402PaidRound,
+  type X402SignerContext
 } from "../../src/x402.js";
 import {
   computeX402Price,
   deriveGatewayPda,
   deriveProtocolConfigPda,
   verifyPaymentRequirements,
-  x402RoundMemo,
+  x402RequestMemo,
   type ExpectedPayment
 } from "../../src/x402-payment.js";
-import { callTool } from "./tool-harness.js";
+import { loadChallengeKeys, sealChallenge } from "../../src/challenge.js";
+import { callTool, callToolError, collectTools } from "./tool-harness.js";
 
 vi.mock("../../src/clients.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/clients.js")>()),
@@ -109,7 +114,8 @@ interface FakeGatewayOptions {
 }
 
 interface Env {
-  ctx: X402RoundContext;
+  ctx: X402SignerContext;
+  payerKeypair: Keypair;
   endpoint: string;
   authority: Address;
   mint: Address;
@@ -123,10 +129,11 @@ interface Env {
   connection: {
     getLatestBlockhash: ReturnType<typeof vi.fn>;
     getMultipleAccountsInfo: ReturnType<typeof vi.fn>;
+    getBlockHeight: ReturnType<typeof vi.fn>;
   };
   quotes: Array<Record<string, unknown>>;
   payments: Array<{ endpoint: string; body: Record<string, unknown>; payload: Record<string, unknown>; tx: VersionedTransaction }>;
-  memoFor(canonicalTimestamp: number): string;
+  memo: string;
 }
 
 let endpointCounter = 0;
@@ -206,19 +213,18 @@ async function setup(
   const connection = {
     getGenesisHash: vi.fn(async () => GENESIS_HASH),
     getLatestBlockhash: vi.fn(async () => ({ blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 100 })),
+    getBlockHeight: vi.fn(async () => 40),
     getAccountInfo: vi.fn(async (key: PublicKey) => accounts.get(key.toBase58()) ?? null),
     getMultipleAccountsInfo: vi.fn(async (keys: PublicKey[]) => keys.map((key) => accounts.get(key.toBase58()) ?? null))
   };
 
-  const memoFor = (canonicalTimestamp: number): string =>
-    x402RoundMemo({
-      programId,
-      gatewayPda,
-      sourceId: Buffer.from(sourceId, "hex"),
-      signaturesRequired: 2,
-      registryVersion: 3,
-      canonicalTimestamp
-    });
+  const memo = x402RequestMemo({
+    programId,
+    gatewayPda,
+    sourceId: Buffer.from(sourceId, "hex"),
+    signaturesRequired: 2,
+    registryVersion: 3
+  });
 
   const quotes: Env["quotes"] = [];
   const payments: Env["payments"] = [];
@@ -239,6 +245,8 @@ async function setup(
     expect(href).toBe(`${endpoint}/v1/x402/execute`);
 
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    // The gateway assigns the round's timestamp; a body that names one is from the old protocol.
+    expect(Object.keys(body).sort()).toEqual(["apiConfig", "registry_version", "signatures_required"]);
     // What the gateway's service advertises for this body.
     const requirements = {
       scheme: "exact",
@@ -247,7 +255,7 @@ async function setup(
       asset: mint,
       payTo: treasuryOwner,
       maxTimeoutSeconds: 60,
-      extra: { feePayer, memo: memoFor(body.canonical_timestamp as number) }
+      extra: { feePayer, memo }
     };
     const paymentHeader = (init?.headers as Record<string, string> | undefined)?.["PAYMENT-SIGNATURE"];
 
@@ -286,7 +294,8 @@ async function setup(
               sourceId,
               registryVersion: body.registry_version,
               signaturesRequired: body.signatures_required,
-              canonicalTimestamp: body.canonical_timestamp,
+              // Stamped by the gateway on its tick grid, in unix milliseconds.
+              timestamp: Math.floor(Date.now() / 1000) * 1000,
               ...gw.data
             },
             signature: { signature: "11".repeat(32), commitment: "22".repeat(20), signersBitmap: "3" }
@@ -313,9 +322,9 @@ async function setup(
     x402: { maxPriceUsdcAtomic: 1_000_000n, maxSpendPerDayUsdcAtomic: 10_000_000n, ...options.caps }
   };
 
-  const ctx: X402RoundContext = {
+  const ctx: X402SignerContext = {
     config,
-    connection: connection as unknown as X402RoundContext["connection"],
+    connection: connection as unknown as X402SignerContext["connection"],
     signer,
     solana: { getRegistrySelectionConfig: async () => ({ registryVersion: 3, redundancyBuffer: 1, nodeCount: 3 }) },
     gateway: { fetchGatewayInfo: vi.fn(async () => ({ gatewayAuthority: authority })) }
@@ -323,6 +332,7 @@ async function setup(
 
   return {
     ctx,
+    payerKeypair,
     endpoint,
     authority,
     mint,
@@ -336,7 +346,7 @@ async function setup(
     connection,
     quotes,
     payments,
-    memoFor
+    memo
   };
 }
 
@@ -344,17 +354,18 @@ const round = { apiConfig, signaturesRequired: 2 };
 
 beforeEach(() => {
   resetGuardrailCounters();
+  x402Timing.conflictRetryMs = 0;
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("x402RoundMemo", () => {
+describe("x402RequestMemo", () => {
   it("matches the memo the gateway advertises for its service-test fixture", async () => {
-    // gateway internal/gateway/features/agentexec/service_test.go newFixture:
+    // gateway internal/gateway/features/agentexec/service_test.go TestPaymentMemoGoldenVector:
     // authority PublicKey{4}, apiConfig {url: https://example.com, method: GET},
-    // quorum 2, registry version 3, canonical timestamp 1750000000.
+    // quorum 2, registry version 3.
     const fixtureSourceId = requireSdkExport<(config: Record<string, unknown>) => string>("deriveSourceIdString")({
       url: "https://example.com",
       method: "GET",
@@ -367,34 +378,32 @@ describe("x402RoundMemo", () => {
     expect(gatewayPda).toBe("H6DDMmWivXh8GdBaxwsZQbwWXwKwPSx3SdmSyJV24yXd");
 
     expect(
-      x402RoundMemo({
+      x402RequestMemo({
         programId: fixtureProgramId,
         gatewayPda,
         sourceId: Buffer.from(fixtureSourceId, "hex"),
         signaturesRequired: 2,
-        registryVersion: 3,
-        canonicalTimestamp: 1_750_000_000
+        registryVersion: 3
       })
-    ).toBe("6346778bff94f910fb6a562731fb07a7183098b4675e7e267d46859390bcb719");
+    ).toBe("e2eeef1f32716c89df97420bbdd1559755b1ed610c652a3b9fb39aaf2eb40f06");
   });
 
-  it("commits to the gateway, source, quorum, registry version, and timestamp", () => {
+  it("commits to the deployment, gateway, source, quorum, and registry version", () => {
     const base = {
       programId,
       gatewayPda: randomAddress(),
       sourceId: Buffer.from(sourceId, "hex"),
       signaturesRequired: 2,
-      registryVersion: 3,
-      canonicalTimestamp: 1_750_000_000
+      registryVersion: 3
     };
     const memos = [
       base,
+      { ...base, programId: randomAddress() },
       { ...base, gatewayPda: randomAddress() },
       { ...base, sourceId: Buffer.alloc(32, 1) },
       { ...base, signaturesRequired: 3 },
-      { ...base, registryVersion: 4 },
-      { ...base, canonicalTimestamp: 1_750_000_001 }
-    ].map(x402RoundMemo);
+      { ...base, registryVersion: 4 }
+    ].map(x402RequestMemo);
     expect(new Set(memos).size).toBe(memos.length);
   });
 });
@@ -472,7 +481,6 @@ describe("executeX402Round", () => {
     expect(env.quotes).toHaveLength(1);
     expect(env.payments).toHaveLength(1);
     const [paid] = env.payments;
-    const timestamp = env.quotes[0]!.canonical_timestamp as number;
     expect(paid!.body).toEqual(env.quotes[0]);
     expect(env.quotes[0]).toMatchObject({ signatures_required: 2, registry_version: 3 });
     expect(payment).toEqual({
@@ -483,7 +491,7 @@ describe("executeX402Round", () => {
       asset: env.mint,
       amountAtomicUsdc: String(PRICE),
       feePayer: env.feePayer,
-      memo: env.memoFor(timestamp),
+      memo: env.memo,
       transaction: SETTLEMENT_TX
     });
     expect(paid!.payload).toMatchObject({ x402Version: 2, resource: { url: `${env.endpoint}/v1/x402/execute` } });
@@ -513,7 +521,7 @@ describe("executeX402Round", () => {
     expect(transfer.data[9]).toBe(6);
     expect(transfer.accounts).toEqual([env.payerAta, env.mint, env.payToAta, env.payer]);
     expect(instructions[3]!.accounts).toEqual([]);
-    expect(instructions[3]!.data.toString("utf8")).toBe(env.memoFor(timestamp));
+    expect(instructions[3]!.data.toString("utf8")).toBe(env.memo);
 
     expect(x402SpentToday()).toBe(PRICE);
   });
@@ -602,19 +610,33 @@ describe("executeX402Round", () => {
     expect(x402SpentToday()).toBe(PRICE);
   });
 
-  it("re-quotes with a new timestamp and pays again when the round identity is taken (409)", async () => {
+  it("resends the same payment once when its tick was taken (409), without quoting or signing again", async () => {
     const env = await setup({
       gateway: { onPaid: (attempt) => (attempt === 1 ? jsonResponse(409, { error: "round or payment already reserved" }) : undefined) }
     });
+    const sign = vi.spyOn(env.ctx.signer, "signTransaction");
 
     const { payment } = await executeX402Round(env.ctx, round);
 
-    expect(env.quotes).toHaveLength(2);
+    expect(env.quotes).toHaveLength(1);
+    expect(sign).toHaveBeenCalledTimes(1);
     expect(env.payments).toHaveLength(2);
-    const [first, second] = env.quotes.map((quote) => quote.canonical_timestamp as number);
-    expect(second).toBeGreaterThan(first!);
-    expect(payment.memo).toBe(env.memoFor(second!));
-    expect(x402SpentToday()).toBe(PRICE * 2n);
+    expect(env.payments[1]!.payload).toEqual(env.payments[0]!.payload);
+    expect(env.payments[1]!.body).toEqual(env.payments[0]!.body);
+    expect(payment.memo).toBe(env.memo);
+    // One signed transfer, however many times it was posted.
+    expect(x402SpentToday()).toBe(PRICE);
+  });
+
+  it("stops after a second 409: a payment that already bought a round cannot buy another", async () => {
+    const env = await setup({ gateway: { onPaid: () => jsonResponse(409, { error: "round or payment already reserved" }) } });
+
+    const error = await executeX402Round(env.ctx, round).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ status: 409 });
+    expect((error as Error).message).toMatch(/refused this x402 payment twice as a duplicate/);
+    expect(env.payments).toHaveLength(2);
+    expect(x402SpentToday()).toBe(PRICE);
   });
 
   it("reports an unknown payment outcome and never retries after a 503", async () => {
@@ -632,7 +654,9 @@ describe("executeX402Round", () => {
       endpoint: env.endpoint,
       payTo: env.treasuryOwner,
       amountAtomicUsdc: String(PRICE),
-      memo: env.memoFor(env.quotes[0]!.canonical_timestamp as number),
+      memo: env.memo,
+      payerSignature: expect.stringMatching(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
+      lastValidBlockHeight: 100,
       httpStatus: 503
     });
     expect(normalizeError(error)).toMatchObject({ code: "payment_outcome_unknown", details: reconciliation });
@@ -678,6 +702,127 @@ describe("executeX402Round", () => {
 
     await expect(executeX402Round(env.ctx, round)).rejects.toThrow(new RegExp(`settled x402 payment ${SETTLEMENT_TX}.*different round`));
   });
+
+  it.each([
+    ["in unix seconds, as the old protocol stamped it", () => Math.floor(Date.now() / 1000)],
+    ["from ten minutes ago", () => Date.now() - 600_000],
+    ["from ten minutes ahead", () => Date.now() + 600_000],
+    ["missing", () => undefined]
+  ])("refuses an aggregate whose timestamp is %s", async (_label, timestamp) => {
+    const env = await setup({ gateway: { data: { timestamp: timestamp() } } });
+
+    await expect(executeX402Round(env.ctx, round)).rejects.toThrow(/different round/);
+  });
+});
+
+describe("prepareX402Round and executePreparedX402Round", () => {
+  // The hosted path: no signer in the context, and the prepared round crosses the wire as JSON.
+  const keyless = (env: Env) => {
+    const { signer: _signer, ...ctx } = env.ctx;
+    return ctx;
+  };
+  const overTheWire = (prepared: { round: X402PaidRound; transaction: VersionedTransaction }) => ({
+    round: JSON.parse(JSON.stringify(prepared.round)) as X402PaidRound,
+    transaction: VersionedTransaction.deserialize(prepared.transaction.serialize())
+  });
+
+  it("builds an unsigned payment for the payer, then runs the round once the payer has signed it", async () => {
+    const env = await setup();
+    const ctx = keyless(env);
+
+    const prepared = await prepareX402Round(ctx, round, env.payer);
+
+    expect(prepared.transaction.signatures.every((signature) => signature.every((byte) => byte === 0))).toBe(true);
+    expect(prepared.round).toMatchObject({
+      endpoint: env.endpoint,
+      network: NETWORK,
+      gatewayPda: env.gatewayPda,
+      payer: env.payer,
+      feePayer: env.feePayer,
+      payTo: env.treasuryOwner,
+      asset: env.mint,
+      amountAtomicUsdc: String(PRICE),
+      memo: env.memo,
+      sourceId,
+      lastValidBlockHeight: 100
+    });
+    expect(prepared).toMatchObject({ payerAta: env.payerAta, payToAta: env.payToAta, payerBalanceAtomicUsdc: "5000000" });
+    expect(env.payments).toHaveLength(0);
+    expect(x402SpentToday()).toBe(0n);
+
+    const { round: paidRound, transaction } = overTheWire(prepared);
+    transaction.sign([env.payerKeypair]);
+    const { result, payment } = await executePreparedX402Round(ctx, paidRound, transaction);
+
+    expect(result).toMatchObject({ sourceId, value: "42", registryVersion: 3, signaturesRequired: 2 });
+    expect(payment).toMatchObject({ payer: env.payer, memo: env.memo, transaction: SETTLEMENT_TX });
+    expect(env.quotes).toHaveLength(1);
+    expect(env.payments).toHaveLength(1);
+    expect(env.payments[0]!.body).toEqual(env.quotes[0]);
+    expect(x402SpentToday()).toBe(PRICE);
+  });
+
+  it.each<[string, (env: Env, tx: VersionedTransaction) => VersionedTransaction | Promise<VersionedTransaction>, RegExp]>([
+    ["an unsigned transaction", (_env, tx) => tx, /not signed by its payer/],
+    [
+      "a signature that is not the payer's",
+      (_env, tx) => {
+        tx.signatures[1] = Keypair.generate().secretKey.slice(0, 64);
+        return tx;
+      },
+      /not signed by its payer/
+    ],
+    [
+      "a different transaction signed by the payer",
+      async (env) => {
+        const other = (await prepareX402Round(keyless(env), round, env.payer)).transaction;
+        other.sign([env.payerKeypair]);
+        return other;
+      },
+      /not the one that was prepared/
+    ]
+  ])("sends nothing for %s", async (_label, tamper, error) => {
+    const env = await setup();
+    const { round: paidRound, transaction } = overTheWire(await prepareX402Round(keyless(env), round, env.payer));
+
+    const failure = await executePreparedX402Round(keyless(env), paidRound, await tamper(env, transaction)).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toMatchObject({ code: "signed_transaction_mismatch" });
+    expect((failure as Error).message).toMatch(error);
+    expect(env.payments).toHaveLength(0);
+    expect(x402SpentToday()).toBe(0n);
+  });
+
+  it("refuses a round prepared for an endpoint that is not configured", async () => {
+    const env = await setup();
+    const { round: paidRound, transaction } = overTheWire(await prepareX402Round(keyless(env), round, env.payer));
+    transaction.sign([env.payerKeypair]);
+
+    await expect(
+      executePreparedX402Round(keyless(env), { ...paidRound, endpoint: "http://elsewhere.test" }, transaction)
+    ).rejects.toThrow(/not a configured gateway endpoint/);
+    expect(env.payments).toHaveLength(0);
+  });
+
+  it("applies the per-round cap again when the payment comes back", async () => {
+    const env = await setup({ caps: { dailyCapsEnabled: false } });
+    const { round: paidRound, transaction } = overTheWire(await prepareX402Round(keyless(env), round, env.payer));
+    transaction.sign([env.payerKeypair]);
+    const ctx = keyless(env);
+    ctx.config = { ...ctx.config, x402: { ...ctx.config.x402, maxPriceUsdcAtomic: PRICE - 1n } };
+
+    await expect(executePreparedX402Round(ctx, paidRound, transaction)).rejects.toThrow(/per-round price cap reached/);
+    expect(env.payments).toHaveLength(0);
+  });
+
+  it("refuses to prepare a payment the payer cannot cover", async () => {
+    const env = await setup({ payerBalance: PRICE - 1n });
+
+    await expect(prepareX402Round(keyless(env), round, env.payer)).rejects.toThrow(/insufficient USDC/);
+    expect(env.connection.getLatestBlockhash).not.toHaveBeenCalled();
+  });
 });
 
 describe("previewX402Round", () => {
@@ -695,7 +840,7 @@ describe("previewX402Round", () => {
       asset: env.mint,
       priceAtomicUsdc: String(PRICE),
       feePayer: env.feePayer,
-      memo: env.memoFor(env.quotes[0]!.canonical_timestamp as number),
+      memo: env.memo,
       payerUsdcAta: env.payerAta,
       payerBalanceAtomicUsdc: "5000000",
       shortfallAtomicUsdc: "0"
@@ -849,5 +994,154 @@ describe("hosted x402 policies", () => {
     await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).rejects.toThrow();
     expect(env.quotes).toHaveLength(0);
     expect(env.payments).toHaveLength(0);
+  });
+});
+
+describe("hosted prepare_x402_round and execute_x402_round tools", () => {
+  const challengeKeys = loadChallengeKeys({ MOLPHA_HTTP_CHALLENGE_SECRET: "5a".repeat(32) })!;
+  const args = (env: Env) => ({ ...round, chains: ["evm"], payer: env.payer });
+  // The hosted server's context: chain and gateway access, no signer.
+  const hosted = (env: Env, keys: typeof challengeKeys | null = challengeKeys) => {
+    const { signer: _signer, ...ctx } = env.ctx;
+    return { getContext: async () => ({ ...ctx, hosted: true }) as unknown as MolphaContext, hosted: keys ? { challengeKeys: keys } : {} };
+  };
+  const sign = (env: Env, unsignedTransaction: unknown): string => {
+    const tx = VersionedTransaction.deserialize(Buffer.from(String(unsignedTransaction), "base64"));
+    tx.sign([env.payerKeypair]);
+    return Buffer.from(tx.serialize()).toString("base64");
+  };
+
+  it("replaces the one-shot tool: the hosted server never signs", () => {
+    const names = (dependencies?: Parameters<typeof collectTools>[0]) => collectTools(dependencies).map((tool) => tool.name);
+    expect(names()).toContain("execute_x402_round");
+    expect(names()).not.toContain("prepare_x402_round");
+    expect(names({ hosted: {} })).toEqual(expect.arrayContaining(["prepare_x402_round", "execute_x402_round"]));
+    const execute = collectTools({ hosted: {} }).find((tool) => tool.name === "execute_x402_round")!;
+    expect(Object.keys(execute.config.inputSchema).sort()).toEqual(["challenge", "signedTransaction"]);
+  });
+
+  it("prepares an unsigned payment, then runs the round once the caller's wallet has signed it", async () => {
+    const env = await setup({ caps: { dailyCapsEnabled: false } });
+
+    const prepared = await callTool("prepare_x402_round", args(env), hosted(env));
+
+    expect(prepared).toMatchObject({
+      payment: "x402",
+      summary: {
+        amountAtomicUsdc: String(PRICE),
+        mint: env.mint,
+        payTo: env.treasuryOwner,
+        payToAta: env.payToAta,
+        payer: env.payer,
+        payerAta: env.payerAta,
+        feePayer: env.feePayer,
+        memo: env.memo,
+        network: NETWORK,
+        gateway: { endpoint: env.endpoint, pda: env.gatewayPda },
+        sourceId: `0x${sourceId}`
+      },
+      payerBalanceAtomicUsdc: "5000000",
+      lastValidBlockHeight: 100
+    });
+    expect(prepared.expiresAt).toBeGreaterThan(Date.now() / 1000);
+    expect(prepared.expiresAt).toBeLessThanOrEqual(Date.now() / 1000 + 60);
+    expect(env.payments).toHaveLength(0);
+
+    const live = await callTool(
+      "execute_x402_round",
+      { challenge: prepared.challenge, signedTransaction: sign(env, prepared.unsignedTransaction) },
+      hosted(env)
+    );
+
+    expect(live).toMatchObject({
+      payment: "x402",
+      value: "42",
+      dataUpdate: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 },
+      verifierArgs: { evm: { args: {} } },
+      paymentReceipt: { payer: env.payer, payTo: env.treasuryOwner, amountAtomicUsdc: String(PRICE), transaction: SETTLEMENT_TX }
+    });
+    expect(env.quotes).toHaveLength(1);
+    expect(env.payments).toHaveLength(1);
+  });
+
+  it("is unavailable, rather than insecure, without a challenge secret", async () => {
+    const env = await setup();
+
+    expect(await callToolError("prepare_x402_round", args(env), hosted(env, null))).toMatchObject({ code: "missing_config" });
+    expect(
+      await callToolError("execute_x402_round", { challenge: "mc1.x.y.z", signedTransaction: "AA==" }, hosted(env, null))
+    ).toMatchObject({ code: "missing_config" });
+    expect(env.fetch).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing for a challenge this server did not seal", async () => {
+    const env = await setup();
+    const prepared = await callTool("prepare_x402_round", args(env), hosted(env));
+    const signedTransaction = sign(env, prepared.unsignedTransaction);
+    const otherKeys = loadChallengeKeys({ MOLPHA_HTTP_CHALLENGE_SECRET: "6b".repeat(32) })!;
+
+    for (const challenge of [
+      `${String(prepared.challenge).slice(0, -2)}AA`,
+      sealChallenge(otherKeys, "x402", { round: { endpoint: "http://attacker.test" }, chains: ["evm"] }, Date.now() / 1000 + 60),
+      sealChallenge(challengeKeys, "submit", {}, Date.now() / 1000 + 60)
+    ]) {
+      expect(await callToolError("execute_x402_round", { challenge, signedTransaction }, hosted(env))).toMatchObject({
+        code: "invalid_challenge"
+      });
+    }
+    expect(env.payments).toHaveLength(0);
+  });
+
+  it("answers payment_expired once the challenge or its blockhash has lapsed", async () => {
+    const env = await setup();
+    const prepared = await callTool("prepare_x402_round", args(env), hosted(env));
+    const call = { challenge: prepared.challenge, signedTransaction: sign(env, prepared.unsignedTransaction) };
+
+    env.connection.getBlockHeight.mockResolvedValueOnce(101);
+    expect(await callToolError("execute_x402_round", call, hosted(env))).toMatchObject({ code: "payment_expired" });
+
+    vi.useFakeTimers({ now: Date.now() + 61_000, toFake: ["Date"] });
+    try {
+      expect(await callToolError("execute_x402_round", call, hosted(env))).toMatchObject({ code: "payment_expired" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(env.payments).toHaveLength(0);
+  });
+
+  it.each([
+    ["the unsigned transaction", (_env: Env, unsigned: string) => unsigned],
+    ["something that is not a transaction", () => Buffer.from("not a transaction").toString("base64")],
+    [
+      "the transaction signed by another wallet",
+      (_env: Env, unsigned: string) => {
+        const tx = VersionedTransaction.deserialize(Buffer.from(unsigned, "base64"));
+        tx.signatures[1] = Keypair.generate().secretKey.slice(0, 64);
+        return Buffer.from(tx.serialize()).toString("base64");
+      }
+    ]
+  ])("sends nothing for %s", async (_label, forge) => {
+    const env = await setup();
+    const prepared = await callTool("prepare_x402_round", args(env), hosted(env));
+
+    expect(
+      await callToolError(
+        "execute_x402_round",
+        { challenge: prepared.challenge, signedTransaction: forge(env, String(prepared.unsignedTransaction)) },
+        hosted(env)
+      )
+    ).toMatchObject({ code: "signed_transaction_mismatch" });
+    expect(env.payments).toHaveLength(0);
+  });
+
+  it("lets the gateway refuse a second round on one payment", async () => {
+    const env = await setup({
+      gateway: { onPaid: (attempt) => (attempt === 1 ? undefined : jsonResponse(409, { error: "round or payment already reserved" })) }
+    });
+    const prepared = await callTool("prepare_x402_round", args(env), hosted(env));
+    const call = { challenge: prepared.challenge, signedTransaction: sign(env, prepared.unsignedTransaction) };
+
+    await callTool("execute_x402_round", call, hosted(env));
+    expect(await callToolError("execute_x402_round", call, hosted(env))).toMatchObject({ status: 409 });
   });
 });

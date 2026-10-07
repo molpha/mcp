@@ -76,8 +76,12 @@
       "description": "Read the latest attested value stored in a Solana feed account."
     },
     {
+      "name": "describe_access",
+      "description": "Read from chain whether a wallet is a subscription owner or delegate, and its plan and round limits."
+    },
+    {
       "name": "get_x402_status",
-      "description": "Quote the next x402 round and read the gateway's USDC float, the signer's USDC balance, and the remaining daily x402 budget."
+      "description": "Quote the next x402 round and read where payment goes, a payer's USDC balance (the signer's by default), and the remaining daily x402 budget."
     },
     {
       "name": "execute_subscription_round",

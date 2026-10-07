@@ -36,7 +36,18 @@ const outputSchema = z.object({
   payment: z.object({
     subscription: z.literal("execute_subscription_round"),
     x402: z.literal("execute_x402_round"),
-    x402Caps: z.object({ maxPriceUsdcAtomic: z.string(), maxSpendPerDayUsdcAtomic: z.string().optional(), dailyCapsEnabled: z.boolean().optional() })
+    x402Caps: z.object({ maxPriceUsdcAtomic: z.string(), maxSpendPerDayUsdcAtomic: z.string().optional(), dailyCapsEnabled: z.boolean().optional() }),
+    signing: z
+      .enum(["server", "caller"])
+      .describe("`server`: this server holds a signer and each operation is one call. `caller`: it holds none, and each operation is split around a signature from the caller's own wallet (see `steps`)."),
+    steps: z
+      .object({
+        subscription: z.array(z.string()),
+        x402: z.array(z.string()),
+        solanaSubmit: z.array(z.string())
+      })
+      .optional()
+      .describe("With `signing: caller`: the tools to call, in order, for each operation. The caller's wallet signs between the first and the last.")
   })
 });
 
@@ -89,7 +100,17 @@ export function registerGetCapabilitiesTool(server: ToolServer, dependencies: To
           x402Caps: {
             maxPriceUsdcAtomic: config.x402.maxPriceUsdcAtomic.toString(),
             ...(config.x402.dailyCapsEnabled === false ? { dailyCapsEnabled: false } : { maxSpendPerDayUsdcAtomic: config.x402.maxSpendPerDayUsdcAtomic.toString() })
-          }
+          },
+          ...(dependencies.hosted
+            ? {
+                signing: "caller",
+                steps: {
+                  subscription: ["begin_session", "complete_session", "execute_subscription_round"],
+                  x402: ["prepare_x402_round", "execute_x402_round"],
+                  solanaSubmit: ["prepare_submit_attestation", "send_signed_transaction"]
+                }
+              }
+            : { signing: "server" })
         }
       };
     })

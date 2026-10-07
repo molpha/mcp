@@ -3,9 +3,9 @@ import { createHmac, randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { RequestContext, RequestLifecycle, SharedRuntime } from "../clients.js";
-import type { SignerSpec } from "./signers.js";
 import type { HostedTool } from "./policy.js";
 import { HttpInputError } from "./errors.js";
+import { loadChallengeKeys, type ChallengeKeys } from "../challenge.js";
 import { serverVersion } from "../version.js";
 
 export interface HttpConfig {
@@ -14,12 +14,13 @@ export interface HttpConfig {
   allowedHosts: string[];
   allowedOrigins: string[];
   trustedProxies: string[];
-  allowEncryptSecrets: boolean;
   rateLimit: boolean;
   burst: number;
   refillPerSecond: number;
   bodyLimit: number;
   timeoutMs: number;
+  /** MOLPHA_HTTP_CHALLENGE_SECRET; without it the prepare/execute tools are unavailable. */
+  challengeKeys?: ChallengeKeys;
 }
 
 function positive(value: string | undefined, fallback: number): number {
@@ -57,16 +58,21 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env, portOverrid
   const port = portOverride ?? positive(env.MOLPHA_HTTP_PORT || env.PORT, 8402);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("HTTP port must be between 1 and 65535");
   const vercelHosts = vercelPublicHosts(env);
+  const challengeKeys = loadChallengeKeys(env);
+  // Private-API rounds encrypt secrets under a signer's authority; this server holds none.
+  if (bool(env.MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS, false)) {
+    throw new Error("MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS is no longer supported: the hosted server holds no signer. Run private-API rounds with npx @molpha/mcp locally.");
+  }
   return {
     host: env.MOLPHA_HTTP_HOST ?? (env.VERCEL === "1" ? "0.0.0.0" : "127.0.0.1"), port,
     allowedHosts: unique([...list(env.MOLPHA_HTTP_ALLOWED_HOSTS, ["localhost", "127.0.0.1", "[::1]", "mcp.molpha.io"]), ...vercelHosts]),
     allowedOrigins: unique([...list(env.MOLPHA_HTTP_ALLOWED_ORIGINS, [`http://localhost:${port}`, `http://127.0.0.1:${port}`, "https://mcp.molpha.io"]), ...vercelHosts.map(host => `https://${host}`)]),
     trustedProxies: list(env.MOLPHA_HTTP_TRUSTED_PROXIES, []),
-    allowEncryptSecrets: bool(env.MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS, false),
     rateLimit: bool(env.MOLPHA_HTTP_RATE_LIMIT, true),
     burst: positive(env.MOLPHA_HTTP_RATE_BURST, 60),
     refillPerSecond: positive(env.MOLPHA_HTTP_RATE_REFILL, 1),
-    bodyLimit: 256 * 1024, timeoutMs: 90_000
+    bodyLimit: 256 * 1024, timeoutMs: 90_000,
+    ...(challengeKeys ? { challengeKeys } : {})
   };
 }
 
@@ -150,8 +156,8 @@ function sendError(res: ServerResponse, status: number, message: string, id: unk
 export interface HostedServerOptions {
   config?: HttpConfig;
   runtime?: SharedRuntime;
-  /** Injectable for deterministic tests; production always uses per-request managed signers. */
-  contextFactory?: (runtime: SharedRuntime, spec: SignerSpec | undefined, lifecycle: RequestLifecycle) => Promise<RequestContext> | RequestContext;
+  /** Injectable for deterministic tests; production builds a keyless context per request. */
+  contextFactory?: (runtime: SharedRuntime, lifecycle: RequestLifecycle) => Promise<RequestContext> | RequestContext;
   log?: (entry: Record<string, unknown>) => void;
 }
 
@@ -163,7 +169,7 @@ async function loadMcpStack() {
     clients,
     { registerTools },
     { normalizeError },
-    signers,
+    credentials,
     policy
   ] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/mcp.js"),
@@ -171,10 +177,10 @@ async function loadMcpStack() {
     import("../clients.js"),
     import("../tools/index.js"),
     import("../errors.js"),
-    import("./signers.js"),
+    import("./credentials.js"),
     import("./policy.js")
   ]);
-  return { McpServer, StreamableHTTPServerTransport, clients, registerTools, normalizeError, signers, policy };
+  return { McpServer, StreamableHTTPServerTransport, clients, registerTools, normalizeError, credentials, policy };
 }
 
 let mcpStackPromise: ReturnType<typeof loadMcpStack> | undefined;
@@ -205,7 +211,6 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
     let transport: { close(): Promise<void>; handleRequest(req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> } | undefined;
     let id: unknown;
     let toolName = "none";
-    let tier = "unsigned";
     let outcome = "ok";
     const ipHash = createHmac("sha256", salt).update(clientIp(req, config)).digest("hex").slice(0, 24);
     let cleaned = false;
@@ -219,8 +224,8 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
       void mcp?.close().catch(() => {});
       if (req.url !== "/healthz") {
         const status = res.statusCode >= 400 ? String(res.statusCode) : outcome;
-        log({ tool: toolName, tier, status, latencyMs: Date.now() - started, ipHash });
-        const key = `${toolName}/${tier}/${status}`;
+        log({ tool: toolName, status, latencyMs: Date.now() - started, ipHash });
+        const key = `${toolName}/${status}`;
         metrics.set(key, (metrics.get(key) ?? 0) + 1);
       }
     };
@@ -262,14 +267,12 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
         StreamableHTTPServerTransport,
         clients,
         registerTools,
-        normalizeError,
-        signers,
+        credentials,
         policy
       } = await mcpStack();
       const getRuntime = () => runtime ??= clients.getSharedRuntime();
 
-      const spec = signers.parseSignerHeaders(req.rawHeaders);
-      tier = spec?.backend ?? "unsigned";
+      credentials.refuseCredentialHeaders(req.rawHeaders);
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] ?? "")) throw new HttpInputError(415, "Content-Type must be application/json.");
       const body = await readBody(req, config.bodyLimit, controller.signal);
       const message = policy.record(body);
@@ -277,7 +280,7 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
       id = message.id;
       const params = policy.record(message.params);
       const args = policy.record(params?.arguments) ?? {};
-      if (!config.allowEncryptSecrets && Object.hasOwn(args, "encryptSecrets")) throw new HttpInputError(400, "encryptSecrets is disabled on hosted HTTP. Use npx @molpha/mcp locally or explicitly configure a private self-hosted server.");
+      if (Object.hasOwn(args, "encryptSecrets")) throw new HttpInputError(400, "encryptSecrets is not available on hosted HTTP: private API secrets must not pass through a shared server. Use npx @molpha/mcp locally.");
       const shared = getRuntime();
       const serverInstance = new McpServer({ name: "molpha-mcp", version: serverVersion });
       mcp = serverInstance;
@@ -285,10 +288,11 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
       let context: Promise<RequestContext> | undefined;
       const getContext = () => context ??= Promise.resolve().then(() => {
         controller.signal.throwIfAborted();
-        return options.contextFactory ? options.contextFactory(shared, spec, lifecycle)
-          : clients.createRequestContext(shared, signers.signerFromSpec(spec), lifecycle);
+        return options.contextFactory ? options.contextFactory(shared, lifecycle) : clients.createRequestContext(shared, lifecycle);
       });
-      registerTools(policy.hostedToolServer(serverInstance, catalog, (_name, result) => { outcome = result.isError ? "error" : "ok"; }, lifecycle), { getContext, config: shared.config });
+      registerTools(policy.hostedToolServer(serverInstance, catalog, (_name, result) => { outcome = result.isError ? "error" : "ok"; }, lifecycle), {
+        getContext, config: shared.config, hosted: config.challengeKeys ? { challengeKeys: config.challengeKeys } : {}
+      });
       if (message.method === "tools/call") {
         const tool = typeof params?.name === "string" ? catalog.get(params.name) : undefined;
         if (!tool) throw new HttpInputError(400, "Unknown tool.");

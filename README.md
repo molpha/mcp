@@ -17,7 +17,7 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 - Derive a source's `sourceId` locally from a declarative API spec — no transaction, wallet, or subscription required.
 - Run a threshold-signing round and build verifier arguments for multiple chains, paid for either by an active USDC subscription or a self-funded [x402](#x402-pay-per-request) round.
 - Build EVM/Starknet verifier call args, or submit a signed attestation to a Solana feed.
-- Use a local keypair, Privy server wallet, or Turnkey wallet without changing the MCP tool surface.
+- Use a local keypair, Privy server wallet, or Turnkey wallet without changing the MCP tool surface, or run the [hosted HTTP server](#hosted-http-mode), which holds no key and has your own wallet sign.
 - Put daily caps and a global dry-run default around agent-initiated writes and x402 spend.
 
 ## MCP tools
@@ -28,7 +28,8 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 | `derive_source_id` | Read, local | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
 | `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass `sourceId`, or `apiConfig` to derive it. |
 | `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
-| `get_x402_status` | Read | Quote the next x402 round, show where payment goes and the gateway's pending tickets, and read the signer's USDC balance and the remaining daily x402 budget. |
+| `describe_access` | Read | Read from chain whether a wallet is a subscription owner or a delegate (pass `owner`), with the plan's term, round and quorum limits and the delegate's own round limit. |
+| `get_x402_status` | Read | Quote the next x402 round, show where payment goes and the gateway's pending tickets, and read a payer's USDC balance (the signer's unless `payer` is given) and the remaining daily x402 budget. |
 | `execute_subscription_round` | Spends quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `execute_x402_round` | Spends USDC | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `build_verifier_calldata` | Read, local | Build EVM/Starknet verifier address and `verify()` call arguments. Calldata only: it verifies nothing. |
@@ -48,7 +49,7 @@ Each tool also carries MCP annotations, so clients can decide what needs confirm
 
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 | --- | --- | --- | --- | --- |
-| `get_capabilities`, `describe_feed`, `get_latest_value`, `get_x402_status` | `true` | — | — | `true` |
+| `get_capabilities`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status` | `true` | — | — | `true` |
 | `derive_source_id`, `build_verifier_calldata` | `true` | — | — | `false` |
 | `execute_subscription_round`, `execute_x402_round` | `false` | `true` | `false` | `true` |
 | `submit_attestation` | `false` | `false` | `true` | `true` |
@@ -365,8 +366,16 @@ Released under the [MIT License](LICENSE).
 
 ## Hosted HTTP mode
 
-Run `molpha-mcp --http --port 8402` to serve stateless Streamable HTTP at `/mcp`, with health checks at `/healthz`. Stdio remains the default. Unsigned clients can discover capabilities, read feeds with an explicit submitter, and obtain x402 quotes. Signed calls use request-scoped Privy or Turnkey headers; HTTP never falls back to a local signer.
+Run `molpha-mcp --http --port 8402` to serve stateless Streamable HTTP at `/mcp`, with health checks at `/healthz`. Stdio remains the default.
 
-Hosted defaults reject `encryptSecrets`, retain the per-round price ceiling, disable shared daily budgets, and rate-limit requests per IP. Use provider spending policies for hosted budgets and local stdio/private self-hosting for private API work. Credentials are visible transiently to the hosted process but are never persisted or logged.
+The hosted server is **keyless**: it holds no signer and accepts no credentials, and a client is configured with nothing but the URL. Anything that needs a signature is returned for the caller's own wallet to sign, so each such operation is two tool calls around one signature:
+
+| Operation | Hosted tools | The wallet signs |
+| --- | --- | --- |
+| Subscription round | `begin_session` → `complete_session` → `execute_subscription_round` | A text message, once per session |
+| x402 round | `prepare_x402_round` → `execute_x402_round` | A USDC transfer, not broadcast |
+| Solana submit | `prepare_submit_attestation` → `send_signed_transaction` | The submit transaction |
+
+The stdio tools `submit_attestation` and the one-call round tools are not offered over HTTP, and neither are `autoSubmit`, `dryRun` or `encryptSecrets`. Hosted defaults retain the per-round price ceiling, disable shared daily budgets, and rate-limit requests per IP; set spending limits in the wallet's own policy, and use local stdio for private API work. The prepare tools need `MOLPHA_HTTP_CHALLENGE_SECRET` on the server.
 
 See [hosted HTTP configuration, client examples, and deployment runbook](docs/hosted-http.md). The container is deployment-ready; public deployment and `server.json` remote registration are separate launch steps.
