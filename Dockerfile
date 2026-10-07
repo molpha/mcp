@@ -1,13 +1,13 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-# Provider SDKs are optional peers/dev dependencies in the published package.
-# Install the locked full tree so both are included in this hosted image.
+# The build needs the dev toolchain; the image does not. The hosted server signs nothing, so the
+# Privy and Turnkey SDKs (dev dependencies of the published package) are pruned with the rest.
 RUN npm ci --include=dev
 COPY tsconfig.json ./
 COPY src ./src
 COPY cli ./cli
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production MOLPHA_HTTP_HOST=0.0.0.0

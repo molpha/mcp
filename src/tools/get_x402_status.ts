@@ -6,7 +6,8 @@ import { toolHandler } from "../mcp.js";
 import { fetchX402Status } from "../x402.js";
 import { readPayerUsdc } from "../x402-payment.js";
 import { settleFailure } from "./outputs.js";
-import { signaturesRequiredSchema } from "./schemas.js";
+import { parseSolanaPubkey } from "../solana-address.js";
+import { signaturesRequiredSchema, walletAddressSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
 const outputSchema = z.object({
@@ -31,7 +32,7 @@ const outputSchema = z.object({
       settleFailure()
     ])
     .optional()
-    .describe("The signer's USDC, which pays each round."),
+    .describe("The payer's USDC, which pays each round."),
   caps: z.object({
     dailyCapsEnabled: z.boolean().optional(),
     maxPriceUsdcAtomic: z.string(),
@@ -48,20 +49,25 @@ export function registerGetX402StatusTool(server: ToolServer, dependencies: Tool
     {
       title: "Get x402 gateway status",
       description:
-        "Advisory read before execute_x402_round: the next x402 round's quoted price for a quorum; where payment goes (the protocol treasury, which the gateway does not control) and the rounds the gateway still has to submit tickets for; the signer's own USDC balance, which pays each round; and the remaining MOLPHA_X402_MAX_SPEND_PER_DAY_USDC budget. Signs and spends nothing.",
+        "Advisory read before execute_x402_round: the next x402 round's quoted price for a quorum; where payment goes (the protocol treasury, which the gateway does not control) and the rounds the gateway still has to submit tickets for; the payer's USDC balance, which pays each round (this server's signer, or the wallet passed as `payer`); and the remaining MOLPHA_X402_MAX_SPEND_PER_DAY_USDC budget. Signs and spends nothing.",
       inputSchema: {
         signaturesRequired: signaturesRequiredSchema
           .optional()
-          .describe("Quorum to quote. Omit for the protocol minimum (min_signers).")
+          .describe("Quorum to quote. Omit for the protocol minimum (min_signers)."),
+        payer: walletAddressSchema
+          .optional()
+          .describe("Base58 wallet whose USDC balance to report. Defaults to this server's signer, when it has one.")
       },
       outputSchema,
       annotations: { readOnlyHint: true, openWorldHint: true }
     },
-    toolHandler(outputSchema, async ({ signaturesRequired }: { signaturesRequired?: number }) => {
+    toolHandler(outputSchema, async (args: { signaturesRequired?: number; payer?: string }) => {
+      const { signaturesRequired } = args;
       const { config, signer, connection, lifecycle } = await (dependencies.getContext ?? getMolphaContext)();
+      const payer = args.payer ? parseSolanaPubkey(args.payer, "payer") : signer?.publicKey;
       const [{ endpoint, status }, payerUsdc] = await Promise.all([
         fetchX402Status(config, signaturesRequired, lifecycle?.signal),
-        signer ? settle("solana.readPayerUsdc", () => readPayerUsdc(connection, signer.publicKey)) : Promise.resolve(undefined)
+        payer ? settle("solana.readPayerUsdc", () => readPayerUsdc(connection, payer)) : Promise.resolve(undefined)
       ]);
 
       const price = BigInt(status.quotedNextPrice);
@@ -81,8 +87,9 @@ export function registerGetX402StatusTool(server: ToolServer, dependencies: Tool
           treasuryAta: status.treasuryAta,
           pendingTickets: status.pendingTickets
         },
-        ...(signer && payerUsdc ? { payer: signer.publicKey, payerUsdc: payerUsdc.ok ? payerUsdc.value : payerUsdc }
-          : { note: "Payer details omitted: supply managed-signer headers for payer balances." }),
+        ...(payer && payerUsdc
+          ? { payer, payerUsdc: payerUsdc.ok ? payerUsdc.value : payerUsdc }
+          : { note: "Payer details omitted: pass `payer` to see a wallet's USDC balance." }),
         caps: {
           maxPriceUsdcAtomic: maxPriceUsdcAtomic.toString(),
           ...(config.x402.dailyCapsEnabled === false ? { dailyCapsEnabled: false } : {

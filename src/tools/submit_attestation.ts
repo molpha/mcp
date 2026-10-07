@@ -23,7 +23,7 @@ const flatResultSchema = z.object({
 // The artifact shape is the round tools' output, accepted verbatim: extra keys
 // (`value`, `payment`, `trustAnchor`, `verifierArgs`) ride along on a pasted
 // round response, and passthrough keeps that from being a validation error.
-const signedResultSchema = z.union([
+export const signedResultSchema = z.union([
   signedAttestationSchema.passthrough(),
   flatResultSchema.passthrough()
 ]);

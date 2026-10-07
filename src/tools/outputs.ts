@@ -143,3 +143,21 @@ export const submitFailure = () =>
     ...normalizedErrorShape(),
     retry: z.string()
   });
+
+/** The USDC payment an x402 round settled. */
+export const x402PaymentReceipt = () =>
+  z.object({
+    endpoint: z.string(),
+    network: z.string().describe("CAIP-2 id of the Solana cluster."),
+    payer: z.string(),
+    payTo: z
+      .string()
+      .describe("Where payment went: the protocol treasury owner (ProtocolConfig PDA), not the gateway."),
+    asset: z.string().describe("USDC mint."),
+    amountAtomicUsdc: z.string(),
+    feePayer: z.string(),
+    memo: z
+      .string()
+      .describe("The request's commitment (deployment, gateway, source, quorum, registry version); every payment for the same request carries it."),
+    transaction: z.string().optional().describe("Settlement transaction, when the gateway reports one.")
+  });

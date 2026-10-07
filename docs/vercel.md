@@ -15,7 +15,9 @@ Vercel captures the Node `http.Server` in `src/server.ts` (it looks for `src/ser
 - A Solana RPC URL you are willing to expose as an **origin only** (the hosted tools strip path/query API keys from `solanaRpc` in responses). Do not put an API key in the RPC URL if you can avoid it.
 - Optional: the Molpha gateway authority pin if the gateway does not serve `GET /v1/info`.
 
-Do **not** put wallet keypairs, Privy secrets, or Turnkey API keys in Vercel. Hosted HTTP never uses `OWNER_KEYPAIR`, `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, or provider credential environment variables as a signer. Clients send per-request `X-Molpha-*` headers. See [Trust and credentials](hosted-http.md#trust-and-credentials).
+Do **not** put wallet keypairs, Privy secrets, or Turnkey API keys in Vercel. The hosted server is keyless: it never uses `OWNER_KEYPAIR`, `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, or provider credential environment variables, and it accepts no credentials from clients either. Callers sign with their own wallet. See [Keyless by design](hosted-http.md#keyless-by-design).
+
+The one secret the deployment does need is `MOLPHA_HTTP_CHALLENGE_SECRET` (see step 4): it authenticates the state the prepare tools hand back to the execute tools, and every Fluid instance must share it.
 
 ## 1. Confirm the server locally first
 
@@ -40,7 +42,7 @@ curl -sS http://127.0.0.1:8402/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-You should see nine tools. Stop the process (`Ctrl+C`) before deploying.
+You should see fourteen tools. Stop the process (`Ctrl+C`) before deploying.
 
 Optional: `npx vercel dev` from the repo root. Vercel CLI sets `VERCEL=1`, so `src/server.ts` starts HTTP without `--http`. Use this to catch Host-allowlist and env mistakes before a cloud deploy.
 
@@ -69,7 +71,7 @@ The repo already contains [`vercel.json`](../vercel.json):
 | Key | Why it is set |
 | --- | --- |
 | `fluid: true` | MCP traffic is bursty with long I/O waits. Fluid is Vercel's default; this pins it. |
-| `installCommand: npm ci --include=dev` | Privy and Turnkey are optional peers installed as `devDependencies`. Production `npm ci` would omit them and signed requests would fail. |
+| `installCommand: npm ci --include=dev` | Kept from when the hosted server loaded the Privy and Turnkey SDKs (installed as `devDependencies`). It no longer loads them; a production-only install has not been tried on Vercel. |
 | `functions["src/server.ts"].maxDuration: 300` | Hosted requests have a 90-second application deadline. 300 seconds is the Hobby Fluid maximum and gives the platform margin above that. |
 | `Cache-Control: no-store` | MCP POST bodies and health are not CDN-cacheable. The app also sets `no-store`. |
 
@@ -83,20 +85,21 @@ Leave a variable unset when the default is what you want. Empty strings are not 
 
 | Variable | Production value | Notes |
 | --- | --- | --- |
-| `SOLANA_RPC` | `https://api.devnet.solana.com` (or your RPC origin) | Required for feed reads and signed rounds. Prefer an origin with no API key in the path. |
+| `SOLANA_RPC` | `https://api.devnet.solana.com` (or your RPC origin) | Required for feed reads and for building and checking payments. Prefer an origin with no API key in the path. |
 | `GATEWAY_ENDPOINTS` | unset, or `https://dev-gateway.molpha.io` | Molpha gateway base URL(s), comma-separated. **Not** a Solana RPC URL. |
 | `GATEWAY_AUTHORITIES` | gateway base58 authority, one per endpoint | Required if the gateway does not serve `GET /v1/info`. Same order as `GATEWAY_ENDPOINTS`. |
 | `MOLPHA_EVM_NETWORKS` | `evm-sepolia` | Default is already this. |
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Default is already this. |
-| `MOLPHA_DRY_RUN` | `false` for go-live; `true` for a read-only canary | Tool-level `dryRun` still wins over the default. |
 | `MOLPHA_X402_MAX_PRICE_USDC` | `1` | Per-round ceiling. Keep the public default until you have a reason to change it. |
 | `MOLPHA_HTTP_ALLOWED_HOSTS` | unset, or `mcp.molpha.io,molpha-mcp.vercel.app` | Exact hostnames, no ports. Vercel also **merges** `VERCEL_URL`, `VERCEL_BRANCH_URL`, and `VERCEL_PROJECT_PRODUCTION_URL` at runtime, so preview `*.vercel.app` hosts work without listing every deployment. |
 | `MOLPHA_HTTP_ALLOWED_ORIGINS` | unset, or `https://mcp.molpha.io` | Exact origins. Requests with no `Origin` are accepted (normal for Cursor/Claude). Browser CORS is not provided. |
 | `MOLPHA_HTTP_HOST` | unset | On Vercel this defaults to `0.0.0.0`. Vercel intercepts `listen()` and does not publish that port publicly. |
 | `MOLPHA_HTTP_PORT` / `PORT` | unset | Vercel injects `PORT`. The server honors `MOLPHA_HTTP_PORT`, then `PORT`, then `8402`. The listen port is only used locally. |
 | `MOLPHA_HTTP_TRUSTED_PROXIES` | **leave unset** | Only trust a proxy that overwrites forwarding headers with a single IP. Vercel’s socket peer is not a documented static allowlist, and `X-Forwarded-For` may be a chain (rejected). Edge rate limits belong in Vercel Firewall, not in-process IP buckets. |
-| `MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS` | unset / `false` | Public hosted default. Do not opt in. |
-| `MOLPHA_HTTP_DAILY_CAPS` | unset / `false` | Process-wide counters are meaningless across Fluid instances. Use provider spend policies. |
+| `MOLPHA_HTTP_CHALLENGE_SECRET` | 32+ random bytes, hex or base64 (`openssl rand -hex 32`) | **Sensitive.** Required for `prepare_x402_round` / `execute_x402_round` and `prepare_submit_attestation` / `send_signed_transaction`; without it they answer `missing_config`. A malformed value fails startup. Set it for every environment that should take payments. |
+| `MOLPHA_HTTP_CHALLENGE_SECRET_PREVIOUS` | unset | Rotation only: the old secret, verified for a few minutes after a change. |
+| `MOLPHA_HTTP_ALLOW_ENCRYPT_SECRETS` | **leave unset** | No longer supported; `true` fails startup. |
+| `MOLPHA_HTTP_DAILY_CAPS` | unset / `false` | Process-wide counters are meaningless across Fluid instances. Callers set limits in their own wallet's policy. |
 | `MOLPHA_HTTP_RATE_LIMIT` | `true` | Per-instance token bucket. Complements, does not replace, WAF. |
 
 **Never set on Vercel:** `SIGNER_BACKEND`, `KEYCHAIN_BACKEND`, `OWNER_KEYPAIR`, `AGENT_KEYPAIR`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_WALLET_ID`, `PRIVY_WALLET_ADDRESS`, `TURNKEY_API_PUBLIC_KEY`, `TURNKEY_API_PRIVATE_KEY`, `TURNKEY_ORGANIZATION_ID`, `TURNKEY_WALLET_ADDRESS`, or any local `.env` dump.
@@ -120,7 +123,7 @@ MCP clients are not browsers. Two Vercel features will 401/403 them if left on.
 2. Settings → **Firewall**:
    - Add a rate limit on `POST /mcp` (start around 60 req/min/IP, then tune).
    - Do not cache `POST /mcp`. GET `/healthz` may be cached briefly; the app sends `no-store` either way.
-   - Disable request-body and header logging on any Log Drain, tracing, or WAF debug rule. The application log contract is: tool name, signer tier, status, latency, process-salted IP hash. Nothing else.
+   - Disable request-body and header logging on any Log Drain, tracing, or WAF debug rule. The application log contract is: tool name, status, latency, process-salted IP hash. Nothing else.
 3. Do **not** configure platform retries for POST. A retried `execute_x402_round` or `submit_attestation` can double-spend. Timeouts return a conservative warning; treat `payment_outcome_unknown` as “reconcile, then decide,” never “retry immediately.”
 4. Optional: Settings → Functions → **Region**. Pin near the Solana RPC and `dev-gateway.molpha.io` if you observe cold-start plus RTT issues. One region is enough; this is a single logical function.
 
@@ -180,7 +183,7 @@ There is no `Mcp-Session-Id`. Each POST is independent; skip initialize if you o
 npx @modelcontextprotocol/inspector@latest
 ```
 
-Transport: **Streamable HTTP**. URL: `https://<deployment>/mcp`. Do not paste signer headers into a shared Inspector session. List tools, then `get_capabilities` unsigned.
+Transport: **Streamable HTTP**. URL: `https://<deployment>/mcp`. No headers or credentials are needed. List tools (fourteen), then `get_capabilities`: `payment.signing` should read `caller`.
 
 ### Wrong-host check
 
@@ -193,29 +196,20 @@ curl -sS https://molpha-mcp.vercel.app/mcp \
 
 Expect 403 `Host is not allowed.` (TLS/SNI may make this hard through the public hostname; the Inspector origin check is the practical equivalent: a browser `Origin` that is not allowlisted returns 403.)
 
-### Unsigned feed read
+### Feed read
 
-Call `describe_feed` with an explicit `submitter`. Unsigned hosted mode rejects missing `submitter`. Confirm the response does not include signer subscription status.
+Call `describe_feed` with an explicit `submitter`. The hosted server has no wallet to default to and rejects a missing `submitter`.
 
-### Signed canary (devnet, funded wallet, provider limits on)
+### Paid canary (devnet, funded test wallet, wallet-side limits on)
 
-Only after unsigned checks pass. Configure **Privy or Turnkey amount/spend policies first**. Use a throwaway credential set.
+Only after the checks above pass, with `MOLPHA_HTTP_CHALLENGE_SECRET` set. Use a throwaway devnet wallet holding a little USDC, with a spending policy that allowlists the protocol treasury token account and USDC mint.
 
-Cursor (`~/.cursor/mcp.json` locally — never commit populated files):
+Client configuration is the URL alone:
 
 ```json
 {
   "mcpServers": {
-    "molpha": {
-      "url": "https://molpha-mcp.vercel.app/mcp",
-      "headers": {
-        "X-Molpha-Signer": "privy",
-        "X-Molpha-Privy-App-Id": "<app-id>",
-        "X-Molpha-Privy-App-Secret": "<app-secret>",
-        "X-Molpha-Privy-Wallet-Id": "<wallet-id>",
-        "X-Molpha-Privy-Wallet-Address": "<base58-wallet-address>"
-      }
-    }
+    "molpha": { "url": "https://molpha-mcp.vercel.app/mcp" }
   }
 }
 ```
@@ -223,11 +217,13 @@ Cursor (`~/.cursor/mcp.json` locally — never commit populated files):
 Then:
 
 1. `get_capabilities`
-2. `get_x402_status` with the target quorum
-3. One `execute_x402_round` with `dryRun: true`
-4. One paid round only if the dry run, float, and provider policy all look right
+2. `get_x402_status` with the target quorum and `payer` set to the test wallet
+3. `prepare_x402_round` for that payer. Nothing is signed or spent; check `summary` (`payTo` is the protocol treasury, `amountAtomicUsdc` the quoted price)
+4. Sign `unsignedTransaction` with the wallet, without broadcasting, and call `execute_x402_round` — only if the summary and the wallet policy both look right
 
-Watch Vercel Function logs: you should see JSON lines with `tool`, `tier`, `status`, `latencyMs`, `ipHash`. If a header value, wallet secret, or `apiConfig` appears, **stop and rotate credentials** — that is a platform logging misconfiguration, not expected application behavior.
+Because prepare and execute are separate requests, they may land on different Fluid instances; that working is the check that the challenge secret is really shared.
+
+Watch Vercel Function logs: you should see JSON lines with `tool`, `status`, `latencyMs`, `ipHash`. If a header value, session token, signed transaction or `apiConfig` appears, **stop** — that is a platform logging misconfiguration, not expected application behavior.
 
 ## 8. Attach `mcp.molpha.io`
 
@@ -247,7 +243,7 @@ Keep the `*.vercel.app` production alias. It is useful for break-glass checks if
 | Uptime | External monitor `GET https://mcp.molpha.io/healthz` every minute. Alert on non-200. |
 | Failures / 504 | Application timeout is 90 seconds. Platform max is 300. Do not auto-retry POST. |
 | Rate limits | In-process limiter is per Fluid instance and resets on scale/cold start. Enforce public limits on the WAF. |
-| Daily caps | Leave `MOLPHA_HTTP_DAILY_CAPS=false`. Budget at Privy/Turnkey. |
+| Daily caps | Leave `MOLPHA_HTTP_DAILY_CAPS=false`. Budgets belong in each caller's wallet policy. |
 | Logs | Retain ~7 days. Store only the safe application fields. |
 | Rollback | Vercel Instant Rollback to the last good production deployment. |
 | Secrets | Rotate provider credentials by revoking them at the provider; the server does not persist them. |
@@ -265,7 +261,7 @@ This repository does not add the remote until that launch step.
 
 ## Client snippets (production)
 
-Unsigned Cursor:
+Cursor:
 
 ```json
 {
@@ -280,12 +276,7 @@ Unsigned Cursor:
 Claude Code:
 
 ```sh
-claude mcp add --transport http molpha https://mcp.molpha.io/mcp \
-  --header "X-Molpha-Signer: privy" \
-  --header "X-Molpha-Privy-App-Id: $PRIVY_APP_ID" \
-  --header "X-Molpha-Privy-App-Secret: $PRIVY_APP_SECRET" \
-  --header "X-Molpha-Privy-Wallet-Id: $PRIVY_WALLET_ID" \
-  --header "X-Molpha-Privy-Wallet-Address: $PRIVY_WALLET_ADDRESS"
+claude mcp add --transport http molpha https://mcp.molpha.io/mcp
 ```
 
 Claude Desktop via `mcp-remote` (HTTPS, no `--allow-http`):
@@ -295,20 +286,13 @@ Claude Desktop via `mcp-remote` (HTTPS, no `--allow-http`):
   "mcpServers": {
     "molpha": {
       "command": "npx",
-      "args": [
-        "-y", "mcp-remote", "https://mcp.molpha.io/mcp",
-        "--header", "X-Molpha-Signer:privy",
-        "--header", "X-Molpha-Privy-App-Id:${PRIVY_APP_ID}",
-        "--header", "X-Molpha-Privy-App-Secret:${PRIVY_APP_SECRET}",
-        "--header", "X-Molpha-Privy-Wallet-Id:${PRIVY_WALLET_ID}",
-        "--header", "X-Molpha-Privy-Wallet-Address:${PRIVY_WALLET_ADDRESS}"
-      ]
+      "args": ["-y", "mcp-remote", "https://mcp.molpha.io/mcp"]
     }
   }
 }
 ```
 
-Full header tables and unsigned vs signed tool behavior: [hosted HTTP mode](hosted-http.md).
+No headers are configured. The tool flows and what the caller's wallet signs: [hosted HTTP mode](hosted-http.md).
 
 ## Troubleshooting
 
@@ -321,13 +305,15 @@ Full header tables and unsigned vs signed tool behavior: [hosted HTTP mode](host
 | 413 | Body > 256 KiB. |
 | 429 | In-process or WAF rate limit. |
 | 504 with reconcile warning | 90-second deadline after a write may have started. Check the payer’s USDC memo before another paid round. |
-| Signed tools return `authentication_required` | Missing/incomplete `X-Molpha-*` headers, or the client only sent them on initialize. Every POST needs the full set. |
-| Provider SDK missing | Install command omitted `devDependencies`. |
-| Cold start > a few seconds | First Fluid instance loading Solana + signer SDKs. Subsequent requests on a warm instance are faster. |
+| 400 `X-Molpha-* signer headers are no longer accepted` | A client still configured for the removed per-request signer scheme. Remove the headers; the server takes no credentials. |
+| `missing_config` from a prepare or execute tool | `MOLPHA_HTTP_CHALLENGE_SECRET` is not set in that environment (redeploy after adding it). |
+| `invalid_challenge` right after a prepare | Instances disagree on the challenge secret (a deploy in progress, or a secret set for only some environments). |
+| `payment_expired` | More than about a minute passed between prepare and execute. Prepare again. |
+| Cold start > a few seconds | First Fluid instance loading the Solana SDKs. Subsequent requests on a warm instance are faster. |
 
 ## Related
 
-- [Hosted HTTP mode](hosted-http.md) — policy, headers, Docker runbook, tests
+- [Hosted HTTP mode](hosted-http.md) — keyless flows, policy, Docker runbook, tests
 - [Vercel: Node.js servers](https://vercel.com/docs/functions/runtimes/node-js)
 - [Vercel: function duration](https://vercel.com/docs/functions/configuring-functions/duration)
 - [Vercel: deploy MCP servers](https://vercel.com/docs/mcp/deploy-mcp-servers-to-vercel) — generic Next.js `mcp-handler` path; this repo uses the captured Node server instead

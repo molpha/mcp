@@ -1,16 +1,21 @@
 /**
  * x402 `exact` Solana payment primitives for a paid round: the protocol
- * price and round memo this server derives on its own, verification of a
+ * price and request memo this server derives on its own, verification of a
  * gateway's untrusted 402 requirements against them, the on-chain accounts the
- * payment touches, and the partially signed payment transaction.
+ * payment touches, and the payment transaction, unsigned and then checked once
+ * its payer has signed it.
  */
 import { BorshAccountsCoder, type Idl } from "@anchor-lang/core";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   address,
   createNoopSigner,
   getAddressEncoder,
   getProgramDerivedAddress,
+  getPublicKeyFromAddress,
+  signatureBytes,
+  verifySignature,
   type Address,
   type Instruction
 } from "@solana/kit";
@@ -22,6 +27,7 @@ import {
   TOKEN_PROGRAM_ADDRESS
 } from "@solana-program/token";
 import type { AccountInfo, Connection, VersionedTransaction } from "@solana/web3.js";
+import { exactBytes } from "./bytes.js";
 import { getMolphaProgramId } from "./clients.js";
 import { requireSdkExport } from "./sdk.js";
 import { toLegacyPublicKey, toLegacyV0Transaction } from "./solana-compat.js";
@@ -63,9 +69,9 @@ export interface ExpectedPayment {
   asset: Address;
   /** Protocol round price in USDC base units. */
   amount: bigint;
-  /** {@link x402RoundMemo} for this round. */
+  /** {@link x402RequestMemo} for this request. */
   memo: string;
-  /** This server's signer; it must never be asked to sponsor the fee. */
+  /** The paying wallet; it must never be asked to sponsor the fee. */
   payer: Address;
 }
 
@@ -104,39 +110,34 @@ export function computeX402Price(
   return price;
 }
 
-export interface RoundMemoParams {
+export interface RequestMemoParams {
   programId: Address;
   gatewayPda: Address;
   /** 32-byte sourceId; also the API-config hash the gateway commits to. */
   sourceId: Uint8Array;
   signaturesRequired: number;
   registryVersion: number;
-  canonicalTimestamp: number;
 }
-
-const ROUND_ID_PREFIX = keccak_256(Buffer.from("MOLPHA_PULL_ROUND_V1", "utf8"));
 
 /**
  * The gateway's `extra.memo`, which binds the payment to one deployment,
- * gateway, and round:
+ * gateway, source, quorum, and registry version:
  *
- *   keccak256("MOLPHA_X402_REQUEST_V1" || programId || gatewayPda || roundId || sourceId)
- *   roundId = keccak256(keccak256("MOLPHA_PULL_ROUND_V1") || sourceId
- *             || quorum u32be || registryVersion u32be || timestamp u64be)
+ *   keccak256("MOLPHA_X402_REQUEST_V1" || programId || gatewayPda || sourceId
+ *             || quorum u8 || registryVersion u32be)
  *
- * Checking it keeps a relaying endpoint from getting this signer to pay for a
- * different round.
+ * It names no round: the gateway assigns the round's timestamp after it has
+ * verified the payment. Checking it keeps a relaying endpoint from getting a
+ * payer to pay for a different request.
  */
-export function x402RoundMemo(params: RoundMemoParams): string {
+export function x402RequestMemo(params: RequestMemoParams): string {
   if (params.sourceId.length !== 32) {
     throw new Error(`sourceId must be 32 bytes, got ${params.sourceId.length}`);
   }
   const encoder = getAddressEncoder();
-  const roundFields = Buffer.alloc(16);
-  roundFields.writeUInt32BE(params.signaturesRequired, 0);
-  roundFields.writeUInt32BE(params.registryVersion, 4);
-  roundFields.writeBigUInt64BE(BigInt(params.canonicalTimestamp), 8);
-  const roundId = keccak_256(Buffer.concat([ROUND_ID_PREFIX, params.sourceId, roundFields]));
+  const sizes = Buffer.alloc(5);
+  sizes.writeUInt8(params.signaturesRequired, 0);
+  sizes.writeUInt32BE(params.registryVersion, 1);
 
   return Buffer.from(
     keccak_256(
@@ -144,8 +145,8 @@ export function x402RoundMemo(params: RoundMemoParams): string {
         Buffer.from("MOLPHA_X402_REQUEST_V1", "utf8"),
         Buffer.from(encoder.encode(params.programId)),
         Buffer.from(encoder.encode(params.gatewayPda)),
-        roundId,
-        params.sourceId
+        params.sourceId,
+        sizes
       ])
     )
   ).toString("hex");
@@ -212,11 +213,11 @@ export function verifyPaymentRequirements(required: unknown, expected: ExpectedP
   const feePayer = parseAddress(accepted.extra.feePayer, "extra.feePayer");
   if (feePayer === expected.payer) {
     throw new Error(
-      "x402 402 response names this server's signer as extra.feePayer; the facilitator must sponsor the fee. Refusing to sign."
+      "x402 402 response names the payer as extra.feePayer; the facilitator must sponsor the fee. Refusing to sign."
     );
   }
   if (accepted.extra.memo !== expected.memo) {
-    throw mismatch("extra.memo", String(accepted.extra.memo), `this round's commitment ${expected.memo}`);
+    throw mismatch("extra.memo", String(accepted.extra.memo), `this request's commitment ${expected.memo}`);
   }
 
   return {
@@ -236,7 +237,8 @@ function programAccounts(): BorshAccountsCoder {
   return accountsCoder;
 }
 
-function decodeProgramAccount<T>(info: AccountInfo<Buffer>, name: string, account: Address, programId: Address): T {
+/** Decodes a Molpha program account by its IDL name, refusing one the program does not own. */
+export function decodeProgramAccount<T>(info: AccountInfo<Buffer>, name: string, account: Address, programId: Address): T {
   if (info.owner.toBase58() !== programId) {
     throw new Error(`${name} account ${account} is not owned by the Molpha program ${programId}`);
   }
@@ -287,7 +289,7 @@ export function readTokenAmount(
   return token.amount;
 }
 
-/** The signer's USDC associated token account and balance. */
+/** A payer's USDC associated token account and balance. */
 export async function readPayerUsdc(
   connection: Pick<Connection, "getAccountInfo">,
   payer: Address
@@ -304,7 +306,7 @@ export interface PaymentAccounts {
   gatewayPda: Address;
   decimals: number;
   payerAta: Address;
-  /** 0 when the signer has no USDC account yet. */
+  /** 0 when the payer has no USDC account yet. */
   payerBalance: bigint;
   /** The treasury owner (ProtocolConfig PDA): the 402's `payTo`. */
   payTo: Address;
@@ -388,7 +390,7 @@ export interface PaymentTransactionArgs {
 /**
  * The exact-SVM layout: compute-unit limit, compute-unit price,
  * TransferChecked, then the Memo carrying `extra.memo`. The facilitator is the
- * fee payer, and this signer is the only other signer.
+ * fee payer, and the payer is the only other signer.
  */
 export function buildPaymentTransaction(args: PaymentTransactionArgs): VersionedTransaction {
   const limit = Buffer.alloc(5);
@@ -406,7 +408,7 @@ export function buildPaymentTransaction(args: PaymentTransactionArgs): Versioned
       mint: args.mint,
       destination: args.payToAta,
       // A noop signer gives the authority its signer role in the message; the
-      // signature itself comes from MolphaSigner.signTransaction.
+      // signature itself comes from the payer's own wallet.
       authority: createNoopSigner(args.payer),
       amount: args.amount,
       decimals: args.decimals
@@ -415,6 +417,48 @@ export function buildPaymentTransaction(args: PaymentTransactionArgs): Versioned
   ];
 
   return toLegacyV0Transaction(args.feePayer, args.recentBlockhash, instructions);
+}
+
+/** What a signed payment transaction must still be: the SHA-256 of the prepared message and its two signers. */
+export interface PreparedPaymentIdentity {
+  /** Hex SHA-256 of the unsigned transaction's serialized message. */
+  messageSha256: string;
+  feePayer: Address;
+  payer: Address;
+}
+
+export function paymentMessageSha256(transaction: VersionedTransaction): string {
+  return Buffer.from(sha256(transaction.message.serialize())).toString("hex");
+}
+
+/**
+ * Accepts a payment transaction signed outside this function only if it is still
+ * the prepared one: the same message, signed by exactly the fee payer and the
+ * payer, carrying the payer's valid signature. The fee payer's slot belongs to
+ * the facilitator and is ignored.
+ */
+export async function assertSignedPayment(
+  prepared: PreparedPaymentIdentity,
+  signed: VersionedTransaction
+): Promise<void> {
+  const message = signed.message.serialize();
+  if (Buffer.from(sha256(message)).toString("hex") !== prepared.messageSha256) {
+    throw signedMismatch("the signed x402 payment transaction is not the one that was prepared; refusing to send it");
+  }
+
+  const required = signed.message.header.numRequiredSignatures;
+  const signers = signed.message.staticAccountKeys.slice(0, required).map((key) => key.toBase58());
+  if (required !== 2 || signers[0] !== prepared.feePayer || signers[1] !== prepared.payer) {
+    throw signedMismatch(`x402 payment must be signed by exactly the fee payer and the payer, got [${signers.join(", ")}]`);
+  }
+
+  const signature = signed.signatures[1];
+  const valid =
+    signature?.length === 64 &&
+    (await verifySignature(await getPublicKeyFromAddress(prepared.payer), signatureBytes(exactBytes(signature)), exactBytes(message)));
+  if (!valid) {
+    throw signedMismatch(`the x402 payment transaction is not signed by its payer ${prepared.payer}`);
+  }
 }
 
 /**
@@ -426,21 +470,14 @@ export async function signPaymentTransaction(
   transaction: VersionedTransaction,
   feePayer: Address
 ): Promise<VersionedTransaction> {
-  const message = Buffer.from(transaction.message.serialize());
+  const prepared = { messageSha256: paymentMessageSha256(transaction), feePayer, payer: signer.publicKey };
   const signed = await signer.signTransaction(transaction);
-  if (!message.equals(Buffer.from(signed.message.serialize()))) {
-    throw new Error("the signer changed the x402 payment transaction; refusing to send it");
-  }
-
-  const required = signed.message.header.numRequiredSignatures;
-  const signers = signed.message.staticAccountKeys.slice(0, required).map((key) => key.toBase58());
-  if (required !== 2 || signers[0] !== feePayer || signers[1] !== signer.publicKey) {
-    throw new Error(`x402 payment must be signed by exactly the fee payer and this signer, got [${signers.join(", ")}]`);
-  }
-  if (signed.signatures[1]?.some((byte) => byte !== 0) !== true) {
-    throw new Error("the signer did not sign the x402 payment transaction");
-  }
+  await assertSignedPayment(prepared, signed);
   return signed;
+}
+
+function signedMismatch(message: string): Error {
+  return Object.assign(new Error(message), { code: "signed_transaction_mismatch" });
 }
 
 function mismatch(field: string, got: string, expected: string): Error {

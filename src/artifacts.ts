@@ -81,7 +81,8 @@ export function flattenAttestation(input: Record<string, unknown>): Record<strin
     sourceId: payload.sourceId,
     value: input.value,
     valuePacked: payload.value,
-    timestamp: payload.canonicalTimestamp,
+    // The gateway stamps `timestamp` (unix ms); the pinned SDK still names it `canonicalTimestamp`.
+    timestamp: payload.timestamp ?? payload.canonicalTimestamp,
     registryVersion: payload.registryVersion,
     signaturesRequired: payload.signaturesRequired,
     signersBitmap: signature.signersBitmap,

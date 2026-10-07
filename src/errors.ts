@@ -19,9 +19,24 @@ export async function settle<T>(label: string, run: () => Promise<T>): Promise<S
   }
 }
 
+/** Codes an error names for itself; they are reported as given instead of being inferred from its text. */
+const OWN_CODES = new Set([
+  "authentication_required",
+  "submitter_required",
+  "missing_config",
+  "invalid_challenge",
+  "payment_expired",
+  "transaction_expired",
+  "signed_transaction_mismatch",
+  "invalid_signature",
+  "sign_in_rejected",
+  "session_invalid",
+  "sessions_unavailable"
+]);
+
 export function normalizeError(error: unknown): NormalizedToolError {
   const ownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
-  if (ownCode === "authentication_required" || ownCode === "submitter_required") {
+  if (typeof ownCode === "string" && OWN_CODES.has(ownCode)) {
     return { code: ownCode, message: error instanceof Error ? error.message : "Invalid request" };
   }
   const status = getStatus(error);

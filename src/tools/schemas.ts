@@ -53,4 +53,9 @@ export const submitterSchema = z
   .string()
   .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "expected a base58 Solana address")
   .optional()
-  .describe("Base58 wallet whose feed to read. Defaults to this server's signer.");
+  .describe("Base58 wallet whose feed to read. Defaults to this server's signer, when it holds one; required on the hosted server.");
+
+/** A wallet the caller controls and names explicitly; the hosted server holds no wallet of its own. */
+export const walletAddressSchema = z
+  .string()
+  .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "expected a base58 Solana address");
