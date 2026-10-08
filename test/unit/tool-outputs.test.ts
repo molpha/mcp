@@ -131,7 +131,6 @@ describe("feed reads", () => {
 
     const out = await callTool("get_latest_value", { sourceId: flatResult.sourceId, signaturesRequired: 1 });
     expect(out).toMatchObject({ feed: { timestamp: "1791397718000", valueKind: "value" } });
-    expect((out.feed as Record<string, unknown>).timestamp).toBeUndefined();
   });
 
   it("describe_feed reports the feed, the unattested value encoding, and the subscription", async () => {
