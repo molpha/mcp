@@ -102,10 +102,7 @@ export function toSdkAttestation(flat: Record<string, unknown>): Record<string, 
       sourceId: flat.sourceId,
       registryVersion: Number(flat.registryVersion),
       signaturesRequired: Number(flat.signaturesRequired),
-      // Unix milliseconds. The SDK's payload names it `timestamp`; the SDK this server was first built
-      // against called it `timestamp`. Both are given so either reads it.
       timestamp: Number(flat.timestamp),
-      timestamp: Number(flat.timestamp)
     },
     signature: {
       s: flat.s,
