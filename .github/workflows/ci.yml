@@ -60,4 +60,4 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' > /tmp/molpha-tools.json
-          node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/molpha-tools.json'));const names=(r.result?.tools??[]).map(t=>t.name);if(names.length!==14||names.includes('submit_attestation')||!names.includes('prepare_x402_round')||!names.includes('begin_session'))process.exit(1)"
+          node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/molpha-tools.json'));const names=(r.result?.tools??[]).map(t=>t.name);const required=['begin_session','prepare_x402_round','list_providers','get_provider','quote_source_payment'];if(names.length!==17||names.includes('submit_attestation')||required.some(n=>!names.includes(n)))process.exit(1)"
