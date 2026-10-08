@@ -1,4 +1,4 @@
-import { formatUsdcAtomic, type GuardrailConfig } from "./config.js";
+import { formatUsdcAtomic, type GuardrailConfig, type SourcePaymentConfig } from "./config.js";
 
 interface DailyCounter {
   day: string;
@@ -12,6 +12,7 @@ interface DailySpend {
 
 const executes: DailyCounter = { day: "", count: 0 };
 const x402Spend: DailySpend = { day: "", spentAtomic: 0n };
+const sourceSpend: DailySpend = { day: "", spentAtomic: 0n };
 
 /** Chains concurrent x402 spend work so cap checks cannot all pass before any is recorded. */
 let x402DailySpendTail: Promise<void> = Promise.resolve();
@@ -40,6 +41,65 @@ export function resetGuardrailCounters(): void {
   executes.count = 0;
   x402Spend.day = "";
   x402Spend.spentAtomic = 0n;
+  sourceSpend.day = "";
+  sourceSpend.spentAtomic = 0n;
+}
+
+/** Chains concurrent source-payment work, for the same reason as the x402 one above. */
+let sourceSpendTail: Promise<void> = Promise.resolve();
+
+/** USDC signed away today to pay API sources, in base units (worst case: every authorization settles). */
+export function sourceSpentToday(): bigint {
+  return sourceSpend.day === todayKey() ? sourceSpend.spentAtomic : 0n;
+}
+
+/** A source payment the server will not make. Nothing has been signed when this is thrown. */
+export function refuseSourcePayment(message: string): never {
+  throw Object.assign(new Error(message), { code: "source_payment_refused" });
+}
+
+/** Checks one round's worst-case source payment against the per-round and the daily cap. Records nothing. */
+export function checkSourceSpendCap(worstCaseAtomic: bigint, config: SourcePaymentConfig): void {
+  if (worstCaseAtomic > config.maxPerRoundAtomic) {
+    refuseSourcePayment(
+      `Source payment refused: this round could cost up to ${formatUsdcAtomic(worstCaseAtomic)} USDC, above the per-round cap of ${formatUsdcAtomic(config.maxPerRoundAtomic)} USDC (MOLPHA_SOURCE_MAX_PER_ROUND_USDC).`
+    );
+  }
+  if (config.dailyCapsEnabled === false) return;
+  const spent = sourceSpentToday();
+  if (spent + worstCaseAtomic > config.maxPerDayAtomic) {
+    refuseSourcePayment(
+      `Source payment refused: the daily cap of ${formatUsdcAtomic(config.maxPerDayAtomic)} USDC (MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC) would be exceeded; ${formatUsdcAtomic(spent)} USDC is already committed today.`
+    );
+  }
+}
+
+/**
+ * Records a round's source payment as soon as its authorizations are signed. A signed authorization can settle
+ * whether or not the round completes, so counting it only on success would let the cap be exceeded.
+ */
+export function recordSourceSpend(worstCaseAtomic: bigint): void {
+  const day = todayKey();
+  if (sourceSpend.day !== day) {
+    sourceSpend.day = day;
+    sourceSpend.spentAtomic = 0n;
+  }
+  sourceSpend.spentAtomic += worstCaseAtomic;
+}
+
+/** Runs one round's cap check, signing and spend recording at a time, so concurrent rounds cannot all pass the check first. */
+export async function withSourceSpendSerialization<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = sourceSpendTail;
+  let release!: () => void;
+  sourceSpendTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 export function enforceExecuteCap(config: GuardrailConfig): void {

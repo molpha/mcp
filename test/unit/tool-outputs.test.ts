@@ -123,6 +123,16 @@ describe("feed reads", () => {
     });
   });
 
+  it("get_latest_value presents a feed from a program that stores `timestamp` in milliseconds", async () => {
+    const { solana } = fakeContext();
+    const { canonicalTimestamp: _seconds, ...rest } = feedAccount;
+    solana.readFeed.mockResolvedValueOnce({ ...rest, timestamp: new BN("1791397718000") });
+
+    const out = await callTool("get_latest_value", { sourceId: flatResult.sourceId, signaturesRequired: 1 });
+    expect(out).toMatchObject({ feed: { timestamp: "1791397718000", valueKind: "value" } });
+    expect((out.feed as Record<string, unknown>).canonicalTimestamp).toBeUndefined();
+  });
+
   it("describe_feed reports the feed, the unattested value encoding, and the subscription", async () => {
     const { solana } = fakeContext();
 

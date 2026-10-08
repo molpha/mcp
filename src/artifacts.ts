@@ -23,7 +23,7 @@ export const signedDataUpdateSchema = z.object({
     .string()
     .optional()
     .describe("32-byte packed value, 0x-prefixed hex — the value bytes the signature covers."),
-  canonicalTimestamp: z.number().int().describe("Round timestamp in unix seconds; signed.")
+  canonicalTimestamp: z.number().int().describe("Round timestamp in unix MILLISECONDS, assigned by the gateway; signed. Divide by 1000 to compare with a clock in seconds.")
 });
 
 export const signedSignatureSchema = z.object({
@@ -102,6 +102,9 @@ export function toSdkAttestation(flat: Record<string, unknown>): Record<string, 
       sourceId: flat.sourceId,
       registryVersion: Number(flat.registryVersion),
       signaturesRequired: Number(flat.signaturesRequired),
+      // Unix milliseconds. The SDK's payload names it `timestamp`; the SDK this server was first built
+      // against called it `canonicalTimestamp`. Both are given so either reads it.
+      timestamp: Number(flat.timestamp),
       canonicalTimestamp: Number(flat.timestamp)
     },
     signature: {

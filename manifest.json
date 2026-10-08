@@ -54,7 +54,11 @@
         "MOLPHA_MAX_EXECUTES_PER_DAY": "${user_config.max_executes_per_day}",
         "MOLPHA_DRY_RUN": "${user_config.dry_run}",
         "MOLPHA_X402_MAX_PRICE_USDC": "${user_config.x402_max_price_usdc}",
-        "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "${user_config.x402_max_spend_per_day_usdc}"
+        "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "${user_config.x402_max_spend_per_day_usdc}",
+        "MOLPHA_SOURCE_PAYER_KEY": "${user_config.source_payer_key}",
+        "MOLPHA_SOURCE_PAYMENT_NETWORKS": "${user_config.source_payment_networks}",
+        "MOLPHA_SOURCE_MAX_PER_ROUND_USDC": "${user_config.source_max_per_round_usdc}",
+        "MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC": "${user_config.source_max_spend_per_day_usdc}"
       }
     }
   },
@@ -78,6 +82,18 @@
     {
       "name": "describe_access",
       "description": "Read from chain whether a wallet is a subscription owner or delegate, and its plan and round limits."
+    },
+    {
+      "name": "list_providers",
+      "description": "List the data providers the gateway integrates (for example TickerLayer) and the access flows it serves for each."
+    },
+    {
+      "name": "get_provider",
+      "description": "Describe one integrated provider: flows, required aggregation, disclosure, and ready-made feeds with a complete apiConfig and sourceId."
+    },
+    {
+      "name": "quote_source_payment",
+      "description": "Read a paywalled source's price with one unpaid request: price per fetch, the nodes that will fetch, the worst-case total, and whether this server would pay it."
     },
     {
       "name": "get_x402_status",
@@ -247,6 +263,34 @@
       "title": "x402 max spend per day (USDC)",
       "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
       "default": "10",
+      "required": false
+    },
+    "source_payer_key": {
+      "type": "string",
+      "title": "Source payer key",
+      "description": "Hex private key of the EVM wallet that pays paywalled sources (for example a provider x402 feed). Never printed or returned by a tool. Source payment stays off without it and without allowed networks.",
+      "sensitive": true,
+      "required": false
+    },
+    "source_payment_networks": {
+      "type": "string",
+      "title": "Source payment networks",
+      "description": "Comma-separated CAIP-2 EVM networks a source may be paid on, e.g. eip155:84532 (Base Sepolia). Empty keeps source payment off, even with a payer key.",
+      "default": "",
+      "required": false
+    },
+    "source_max_per_round_usdc": {
+      "type": "string",
+      "title": "Source max per round (USDC)",
+      "description": "Refuse a round whose worst case (price per fetch × the nodes that may fetch) exceeds this (decimal USDC).",
+      "default": "0.25",
+      "required": false
+    },
+    "source_max_spend_per_day_usdc": {
+      "type": "string",
+      "title": "Source max spend per day (USDC)",
+      "description": "Process-local daily cap on USDC committed to paying sources (decimal USDC).",
+      "default": "1",
       "required": false
     }
   }

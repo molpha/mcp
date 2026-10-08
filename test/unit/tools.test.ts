@@ -16,7 +16,10 @@ const TOOL_NAMES = [
   "execute_x402_round",
   "get_capabilities",
   "get_latest_value",
+  "get_provider",
   "get_x402_status",
+  "list_providers",
+  "quote_source_payment",
   "submit_attestation"
 ];
 
@@ -35,9 +38,12 @@ const HOSTED_TOOL_NAMES = [
   "execute_x402_round",
   "get_capabilities",
   "get_latest_value",
+  "get_provider",
   "get_x402_status",
+  "list_providers",
   "prepare_submit_attestation",
   "prepare_x402_round",
+  "quote_source_payment",
   "send_signed_transaction"
 ];
 
@@ -48,7 +54,10 @@ const READ_ONLY = [
   "describe_feed",
   "get_capabilities",
   "get_latest_value",
-  "get_x402_status"
+  "get_provider",
+  "get_x402_status",
+  "list_providers",
+  "quote_source_payment"
 ];
 
 const RETIRED_NAMES = /\b(execute_agent_round|get_agent_status|verify_attestation)\b/;
@@ -284,8 +293,7 @@ describe("build_verifier_calldata", () => {
                 value: flatResult.valuePacked,
                 sourceId: flatResult.sourceId,
                 registryVersion: 7,
-                signaturesRequired: 1,
-                canonicalTimestamp: String(flatResult.timestamp)
+                signaturesRequired: 1
               },
               signature: { signersBitmap: "4" }
             },
@@ -294,6 +302,10 @@ describe("build_verifier_calldata", () => {
         }
       }
     });
+    // The verifier's payload names the round time `timestamp` (the SDK this server was first built against
+    // said `canonicalTimestamp`); the value is the same either way.
+    const evmPayload = (evm.verifierArgs as { evm: { args: { attestation: { payload: Record<string, unknown> } } } }).evm.args.attestation.payload;
+    expect(String(evmPayload.timestamp ?? evmPayload.canonicalTimestamp)).toBe(String(flatResult.timestamp));
     expect(String(evm.note)).toContain("no freshness check");
     const evmBounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "evm", maxAge: 300 });
     expect(evmBounded).toMatchObject({ verifierArgs: { evm: { args: { maxAge: "300" } } } });
