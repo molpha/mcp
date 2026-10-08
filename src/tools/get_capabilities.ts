@@ -3,7 +3,9 @@ import { getMolphaContext, getMolphaProgramId, requireMethod, type ToolDependenc
 import { settle } from "../errors.js";
 import { toolHandler } from "../mcp.js";
 import { getVerifierMetadata } from "../verifiers.js";
+import { evaluatePolicy } from "../source-payment.js";
 import { chains, settleFailure, verifierMetadata } from "./outputs.js";
+import { paymentPolicySchema } from "./quote_source_payment.js";
 import { type ToolServer } from "./types.js";
 
 const outputSchema = z.object({
@@ -32,6 +34,8 @@ const outputSchema = z.object({
     settleFailure()
   ]),
   solanaRpc: z.string(),
+  sourcePayment: paymentPolicySchema
+    .describe("Whether this server can pay a paywalled source (a provider's x402 feed) and under what limits. Off unless a payer wallet and an allowed network are configured."),
   verifiers: verifierMetadata(),
   payment: z.object({
     subscription: z.literal("execute_subscription_round"),
@@ -93,6 +97,7 @@ export function registerGetCapabilitiesTool(server: ToolServer, dependencies: To
         nodeCount: Array.isArray(nodes) ? nodes.length : 0,
         nodes: nodesResult.ok ? nodes : nodesResult,
         solanaRpc: hosted ? new URL(config.solanaRpc).origin : config.solanaRpc,
+        sourcePayment: evaluatePolicy(config),
         verifiers,
         payment: {
           subscription: "execute_subscription_round",

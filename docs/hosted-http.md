@@ -19,7 +19,7 @@ Every operation that needs a signature is therefore split into a step that prepa
 | x402 pay-per-request round | `prepare_x402_round` → `execute_x402_round` | One USDC transfer transaction per round (not broadcast) |
 | Solana attestation submit | `prepare_submit_attestation` → `send_signed_transaction` (or broadcast it yourself) | One `submit_attestation` transaction |
 
-The remaining tools need no signature: `get_capabilities`, `derive_source_id`, `build_verifier_calldata`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status`. `describe_feed` and `get_latest_value` need an explicit `submitter`, and `get_x402_status` reports a balance only for a `payer` you name: the server has no wallet of its own to default to.
+The remaining tools need no signature: `get_capabilities`, `derive_source_id`, `build_verifier_calldata`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status`, `list_providers`, `get_provider`, `quote_source_payment`. `describe_feed` and `get_latest_value` need an explicit `submitter`, and `get_x402_status` reports a balance only for a `payer` you name: the server has no wallet of its own to default to.
 
 Requests that still carry the removed `X-Molpha-*` signer headers, or anything shaped like a wallet secret in any header, are refused with `400` before the request is read. Private API secrets (`encryptSecrets`) are refused too: they must not pass through a shared server. Use `npx @molpha/mcp` locally for those, where a local keypair, Privy or Turnkey signer is still supported.
 

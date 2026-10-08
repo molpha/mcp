@@ -24,13 +24,16 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 
 | Tool | Access | Description |
 | --- | --- | --- |
-| `get_capabilities` | Read | Return the program id, registry version, node set, gateways, chains, verifier metadata, and x402 caps. |
+| `get_capabilities` | Read | Return the program id, registry version, node set, gateways, chains, verifier metadata, x402 caps, and whether (and under what limits) this server can pay a paywalled source. |
 | `derive_source_id` | Read, local | Derive the `sourceId` for an `apiConfig` locally (see [How sourceId is derived](#how-sourceid-is-derived)). No transaction, no wallet. |
 | `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass `sourceId`, or `apiConfig` to derive it. |
 | `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
 | `describe_access` | Read | Read from chain whether a wallet is a subscription owner or a delegate (pass `owner`), with the plan's term, round and quorum limits and the delegate's own round limit. |
 | `get_x402_status` | Read | Quote the next x402 round, show where payment goes and the gateway's pending tickets, and read a payer's USDC balance (the signer's unless `payer` is given) and the remaining daily x402 budget. |
-| `execute_subscription_round` | Spends quota | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
+| `list_providers` | Read | List the data providers the gateway integrates (for example TickerLayer) and the access flows it serves for each. See [Integrated providers](#integrated-providers). |
+| `get_provider` | Read | Describe one provider: its flows, required aggregation, disclosure and ready-made feeds, each with a complete `apiConfig` and its `sourceId`. |
+| `quote_source_payment` | Read | Read the price of a paywalled source with one unpaid request: price per fetch, network, payee, the nodes that will fetch, the **worst-case total**, and whether this server would pay it. |
+| `execute_subscription_round` | Spends quota (and USDC, if `sourcePayment` is set) | Run a signing round paid from the signer's USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. `sourcePayment.maxSpendUsdc` authorizes paying a paywalled source, capped. |
 | `execute_x402_round` | Spends USDC | Run a signing round paid per request over x402; return the signed attestation plus verifier arguments. `autoSubmit: true` settles the Solana leg in the same call. |
 | `build_verifier_calldata` | Read, local | Build EVM/Starknet verifier address and `verify()` call arguments. Calldata only: it verifies nothing. |
 | `submit_attestation` | Write | Submit a signed attestation to Solana. Accepts a round tool's output unmodified. |
@@ -49,7 +52,7 @@ Each tool also carries MCP annotations, so clients can decide what needs confirm
 
 | Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 | --- | --- | --- | --- | --- |
-| `get_capabilities`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status` | `true` | — | — | `true` |
+| `get_capabilities`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status`, `list_providers`, `get_provider`, `quote_source_payment` | `true` | — | — | `true` |
 | `derive_source_id`, `build_verifier_calldata` | `true` | — | — | `false` |
 | `execute_subscription_round`, `execute_x402_round` | `false` | `true` | `false` | `true` |
 | `submit_attestation` | `false` | `false` | `true` | `true` |
@@ -235,6 +238,14 @@ Replace the example URL with a public endpoint that returns stable, independentl
 
 > For that same source, run a subscription round with 3 required signatures and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp, registry version, quorum, and EVM verifier call. Treat the signed attestation as the trust anchor; do not trust the value by itself.
 
+### Find and run a provider's feed
+
+> List the integrated data providers. Describe TickerLayer's `btcusd` feed on the `api_key` flow, then run it with 3 required signatures for Solana, passing the `apiConfig` exactly as given. Report the signed value as an attested provider quote and settle it on Solana.
+
+### Price a paid source before paying
+
+> Describe TickerLayer's `btcusd` feed on the `x402` flow and call `quote_source_payment` for it with 3 signatures. Tell me the price per fetch, how many nodes will be paid, and the worst case. Then run it authorizing exactly that worst case, and tell me what was paid.
+
 ### Check x402 spend before paying
 
 > Call `get_x402_status` for 3 required signatures. Tell me the quoted next price, where the payment goes, and my USDC balance before I authorize an `execute_x402_round`.
@@ -293,6 +304,10 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `MOLPHA_DRY_RUN` | `false` | Preview all writes when set to `true` |
 | `MOLPHA_X402_MAX_PRICE_USDC` | `1` | Refuse to pay for an x402 round priced above this (decimal USDC) |
 | `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` | `10` | Process-local daily cap on USDC signed for x402 rounds (decimal USDC) |
+| `MOLPHA_SOURCE_PAYER_KEY` | — | Hex private key of the **EVM** wallet that pays paywalled sources. Never printed or returned by a tool. Source payment stays off without it. See [Integrated providers](#integrated-providers). |
+| `MOLPHA_SOURCE_PAYMENT_NETWORKS` | — | Comma-separated CAIP-2 networks a source may be paid on, e.g. `eip155:84532` (Base Sepolia). Empty keeps source payment off, even with a key. |
+| `MOLPHA_SOURCE_MAX_PER_ROUND_USDC` | `0.25` | Refuse a round whose worst case (price per fetch × the nodes that may fetch) exceeds this (decimal USDC) |
+| `MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC` | `1` | Process-local daily cap on USDC committed to paying sources (decimal USDC) |
 
 The daily counters are process-local and reset when the server restarts. They are safety rails, not durable rate limits.
 
@@ -318,6 +333,48 @@ A paid round works like this:
 The daily cap counts every payment the server signs, whether or not its round completes, because a signed transfer can settle until its blockhash expires. When the gateway rejects a payment, the tool fails without paying again. When the gateway's answer leaves the outcome unknown (a 5xx, or a dropped connection after the payment was sent), the tool fails with `payment_outcome_unknown` and the payment's memo; look for that memo in the signer's USDC account before paying for the round again.
 
 Call `get_x402_status` before spending. It returns the quoted price for a quorum, where payment goes (the protocol treasury) and the gateway's pending tickets, the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_x402_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
+
+## Integrated providers
+
+A gateway can integrate data providers; [TickerLayer](https://tickerlayer.com) market data is the first. A provider is a descriptor on the gateway (not on-chain state): it lists the access flows the gateway can serve and **ready-made feeds**, each with a complete `apiConfig` and its `sourceId`. Three tools expose it:
+
+| Tool | What it does |
+| --- | --- |
+| `list_providers` | The providers the gateway integrates and the flows it serves for each now. |
+| `get_provider` | One provider's flows, required aggregation, disclosure and feeds. Narrow with `flow` and `feed`. |
+| `quote_source_payment` | One unpaid request to a paywalled source: price per fetch, network, payee, the nodes that will fetch, and the **worst case**, plus whether this server would pay it. |
+
+There are two ways to get a provider's data, and an agent chooses by what `get_provider` says each flow is:
+
+- **`api_key` — you pay nothing and send nothing.** The gateway operator holds the provider key. Pass the feed's `apiConfig`, unchanged, to `execute_subscription_round` with `signaturesRequired` of at least 3 (provider feeds use median tolerance aggregation). Do not add headers or a key to it: any change moves the `sourceId` and, on the provider's host, is refused by the gateway.
+- **`x402` — you pay the provider, per node fetch.** Every node that fetches is paid for, so a round costs price × the nodes that may fetch. Call `quote_source_payment`, then run the feed with `sourcePayment: { maxSpendUsdc }` on `execute_subscription_round`.
+
+The credential or payment never enters the `apiConfig`, so the `sourceId` — the feed's identity — is the same whoever pays. Describe a provider's values as **attested provider quotes**: Molpha attests what the endpoint returned by threshold signature, not that the price is correct (`get_provider` returns the provider's own `disclosure`).
+
+### Paying a source
+
+Paying is **off by default**. It needs both a payer wallet and an explicit network allowlist on the server:
+
+```dotenv
+MOLPHA_SOURCE_PAYER_KEY=0x…                     # an EVM key; never printed or returned
+MOLPHA_SOURCE_PAYMENT_NETWORKS=eip155:84532     # Base Sepolia; add eip155:8453 only deliberately
+MOLPHA_SOURCE_MAX_PER_ROUND_USDC=0.25
+MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC=1
+```
+
+What stops an agent paying more than it meant to:
+
+1. **Opt-in per call.** A paywalled source called without `sourcePayment` is never paid: the call fails with `source_payment_required` and the quote.
+2. **The price is read first, from the source itself,** and the worst case is checked against what you authorized in `sourcePayment.maxSpendUsdc`, the per-round cap and the daily cap **before anything is signed**. A refusal (`source_payment_refused`) signs and pays nothing.
+3. **The vetted terms are what gets signed,** so the price cannot move between the check and the payment.
+4. **The network must be allowlisted.** A source asking to be paid elsewhere is refused.
+5. **No automatic retry once signing starts.** A retry would sign a fresh set of authorizations, and the caps cover exactly one.
+6. **The spend is counted when committed,** not when it settles: a signed authorization can settle whether or not the round completes. Concurrent calls cannot all pass a cap that only one fits under.
+7. **The key stays in the server.** It is not in any output, error or log, and the hosted HTTP server never loads one (it holds no wallet).
+
+The payer pays the source directly; Molpha never receives it. Only authorizations the nodes actually spend settle, so the exact charge is visible in the payer's balance. Source payment is for public sources: it cannot be combined with `encryptSecrets`.
+
+> **Needs an SDK that reads a source's payment-identifier.** TickerLayer rejects a payment without one. Use `@molpha/sdk` with that support (the pin may need a bump once it is published); on an older SDK the free flow works, and paying TickerLayer will fail at the provider.
 
 ## Development
 

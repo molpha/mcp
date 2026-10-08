@@ -55,7 +55,11 @@ export const verifierArgs = () =>
               sourceId: z.string().describe("bytes32, 0x hex."),
               registryVersion: z.number().int(),
               signaturesRequired: z.number().int(),
-              canonicalTimestamp: z.string().describe("uint64, decimal string.")
+              // The verifier's struct names this `timestamp` (unix milliseconds); the SDK this server was first
+              // built against emitted `canonicalTimestamp`. Either is accepted so the schema does not reject a
+              // correct result for the key it happens to use.
+              timestamp: z.string().optional().describe("uint64, decimal string, unix milliseconds."),
+              canonicalTimestamp: z.string().optional().describe("Older name of `timestamp`.")
             }),
             signature: z.object({
               signature: z.string().describe("bytes32 Schnorr scalar s, 0x hex."),
@@ -81,7 +85,10 @@ export const verifierArgs = () =>
               source_id: z.string().describe("u256, decimal string."),
               registry_version: z.number().int(),
               signatures_required: z.number().int(),
-              canonical_timestamp: z.number().int()
+              // `timestamp` (unix milliseconds) in the current SDK; `canonical_timestamp` in the one this server
+              // was first built against. Either is accepted.
+              timestamp: z.number().int().optional(),
+              canonical_timestamp: z.number().int().optional()
             }),
             signature: z.object({
               signature: z.string().describe("u256, decimal string."),
@@ -114,9 +121,17 @@ export const feedAccount = () =>
         .union([z.enum(["value", "hash"]), z.record(z.unknown())])
         .describe("Attested encoding of `value` — not a scale hint. Molpha attests no decimals."),
       valueKindMeaning: z.string().optional(),
+      // The program's feed account names this `timestamp`, in unix MILLISECONDS (the gateway assigns it); the
+      // program this server was first built against called it `canonicalTimestamp`, in seconds. Whichever the
+      // installed SDK decodes is passed through, so a correct feed read is never rejected for its key.
+      timestamp: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Unix MILLISECONDS of the stored attestation (u64, decimal string). Divide by 1000 for seconds."),
       canonicalTimestamp: z
         .union([z.string(), z.number()])
-        .describe("Unix seconds of the stored attestation (u64, decimal string)."),
+        .optional()
+        .describe("Older name of `timestamp`, from a program that stored seconds."),
       signaturesRequired: z.number().int(),
       signersBitmap: z.string().describe("0x-prefixed hex."),
       registryVersion: z.number().int(),

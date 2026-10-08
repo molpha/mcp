@@ -23,7 +23,7 @@ const apiConfig = { url: "https://example.com/finalized", responseParser: "$.val
 const walletA = Keypair.generate().publicKey.toBase58();
 const walletB = Keypair.generate().publicKey.toBase58();
 const canary = "CANARY_NEVER_LOG_882197";
-const HOSTED_TOOLS = 14;
+const HOSTED_TOOLS = 17;
 /** What a client configured for the removed per-request signer scheme still sends. */
 function legacySignerHeaders(wallet = walletA) {
   return { "X-Molpha-Signer": "privy", "X-Molpha-Privy-App-Id": canary + "app", "X-Molpha-Privy-App-Secret": canary + "secret", "X-Molpha-Privy-Wallet-Id": canary + "wallet", "X-Molpha-Privy-Wallet-Address": wallet };

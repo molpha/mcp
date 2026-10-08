@@ -8,6 +8,8 @@ import { registerExecuteX402RoundTool } from "./execute_x402_round.js";
 import { registerGetCapabilitiesTool } from "./get_capabilities.js";
 import { registerGetLatestValueTool } from "./get_latest_value.js";
 import { registerGetX402StatusTool } from "./get_x402_status.js";
+import { registerGetProviderTool, registerListProvidersTool } from "./providers.js";
+import { registerQuoteSourcePaymentTool } from "./quote_source_payment.js";
 import { registerBeginSessionTool } from "./hosted/begin_session.js";
 import { registerCompleteSessionTool } from "./hosted/complete_session.js";
 import { registerExecuteSessionRoundTool } from "./hosted/execute_subscription_round.js";
@@ -31,6 +33,10 @@ export function registerTools(server: ToolServer, dependencies: ToolDependencies
   registerDescribeAccessTool(server, dependencies);
   registerGetX402StatusTool(server, dependencies);
   registerBuildVerifierCalldataTool(server, dependencies);
+  // Provider discovery and a price quote need no signer, so every server offers them.
+  registerListProvidersTool(server, dependencies);
+  registerGetProviderTool(server, dependencies);
+  registerQuoteSourcePaymentTool(server, dependencies);
   if (dependencies.hosted) {
     registerBeginSessionTool(server, dependencies);
     registerCompleteSessionTool(server, dependencies);

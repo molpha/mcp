@@ -80,6 +80,18 @@
       "description": "Read from chain whether a wallet is a subscription owner or delegate, and its plan and round limits."
     },
     {
+      "name": "list_providers",
+      "description": "List the data providers the gateway integrates (for example TickerLayer) and the access flows it serves for each."
+    },
+    {
+      "name": "get_provider",
+      "description": "Describe one integrated provider: flows, required aggregation, disclosure, and ready-made feeds with a complete apiConfig and sourceId."
+    },
+    {
+      "name": "quote_source_payment",
+      "description": "Read a paywalled source's price with one unpaid request: price per fetch, the nodes that will fetch, the worst-case total, and whether this server would pay it."
+    },
+    {
       "name": "get_x402_status",
       "description": "Quote the next x402 round and read where payment goes, a payer's USDC balance (the signer's by default), and the remaining daily x402 budget."
     },

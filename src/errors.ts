@@ -31,13 +31,38 @@ const OWN_CODES = new Set([
   "invalid_signature",
   "sign_in_rejected",
   "session_invalid",
-  "sessions_unavailable"
+  "sessions_unavailable",
+  "source_payment_disabled",
+  "source_payment_refused"
 ]);
+
+/** What to do next, for the own codes that have a clear next step. */
+const OWN_REMEDIATION: Record<string, string> = {
+  source_payment_disabled:
+    "Paying a source needs a payer wallet and an explicit network allowlist on the server: set MOLPHA_SOURCE_PAYER_KEY (an EVM key) and MOLPHA_SOURCE_PAYMENT_NETWORKS (e.g. eip155:84532 for Base Sepolia). Nothing is paid until both are set.",
+  source_payment_refused:
+    "Nothing was signed or paid. Call quote_source_payment to see the price, network and worst case, then retry with a sourcePayment.maxSpendUsdc that covers it, if it is within this server's caps."
+};
 
 export function normalizeError(error: unknown): NormalizedToolError {
   const ownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
   if (typeof ownCode === "string" && OWN_CODES.has(ownCode)) {
-    return { code: ownCode, message: error instanceof Error ? error.message : "Invalid request" };
+    return {
+      code: ownCode,
+      message: error instanceof Error ? error.message : "Invalid request",
+      ...(OWN_REMEDIATION[ownCode] ? { remediation: OWN_REMEDIATION[ownCode] } : {})
+    };
+  }
+
+  // The source is paywalled and the call did not authorize paying it. The quote says what it would cost.
+  if (error instanceof Error && error.name === "UpstreamPaymentRequiredError") {
+    return {
+      code: "source_payment_required",
+      message: error.message,
+      details: (error as Error & { quote?: unknown }).quote,
+      remediation:
+        "This source charges per fetch. Call quote_source_payment for the price and worst case, then retry execute_subscription_round with sourcePayment.maxSpendUsdc to authorize paying it (needs a payer wallet configured on the server)."
+    };
   }
   const status = getStatus(error);
   const message = error instanceof Error ? error.message : String(error);
