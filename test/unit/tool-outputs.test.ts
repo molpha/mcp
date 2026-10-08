@@ -97,7 +97,8 @@ describe("get_capabilities", () => {
     expect(await callTool("get_capabilities", { includeAbi: true })).toMatchObject({
       registryVersion: 7,
       nodeCount: 1,
-      payment: { subscription: "execute_subscription_round", x402: "execute_x402_round" }
+      runLevel: "live",
+      payment: { subscription: "execute_subscription_round", x402: "execute_x402_round", signing: "server" }
     });
 
     gateway.getNodes.mockRejectedValueOnce(new Error("gateway down"));

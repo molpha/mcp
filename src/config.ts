@@ -74,10 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
     starknetNetworks: parseCsv(resolveEnvString(env.MOLPHA_STARKNET_NETWORKS) ?? "starknet-sepolia"),
     guardrails: {
       maxExecutesPerDay: parsePositiveInt(resolveEnvString(env.MOLPHA_MAX_EXECUTES_PER_DAY), 100),
-      dryRunDefault: (() => {
-        const dryRun = resolveEnvString(env.MOLPHA_DRY_RUN);
-        return dryRun === "1" || dryRun === "true";
-      })()
+      dryRunDefault: parseDryRun(resolveEnvString(env.MOLPHA_DRY_RUN))
     },
     x402: {
       maxPriceUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_PRICE_USDC), 1_000_000n),
@@ -85,6 +82,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
     },
     sourcePayment: loadSourcePayment(env)
   };
+}
+
+/**
+ * `MOLPHA_DRY_RUN` is a lock on spending, so it fails safe: unset is live, a recognised "off" value is live,
+ * and anything else (a typo, `True`, `yes`) locks to dry-run instead of silently going live.
+ */
+export function parseDryRun(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
 }
 
 /** Quarter of a dollar per round and a dollar a day: enough to try a feed, far from enough to hurt. */

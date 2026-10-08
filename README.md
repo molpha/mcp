@@ -95,26 +95,41 @@ By default nodes must fetch a byte-identical value to co-sign. For a live-drifti
 
 ## Quick start
 
+<!-- molpha:generated:quick-start -->
+Needs Node.js 24 or later. Nothing to clone or build.
+
+**1. Look around, no wallet.** Read-only: capabilities, providers, `sourceId`s, prices, feed values.
+
+```sh
+claude mcp add molpha -- npx -y @molpha/mcp@0.2.0 --read-only
+```
+
+**2. Build with a testnet wallet.** Put your signer settings in a `.env` file (see [Configure a signer](#configure-a-signer)), then check them. The doctor prints a ready-to-paste config for your client, with secrets left as placeholders:
+
+```sh
+npx -y @molpha/mcp@0.2.0 doctor
+```
+
+A config like this keeps every write a preview (`MOLPHA_DRY_RUN=true`):
+
+```sh
+claude mcp add molpha -e SIGNER_BACKEND=keychain -e KEYCHAIN_BACKEND=privy -e PRIVY_APP_ID='<privy-app-id>' -e PRIVY_APP_SECRET='<privy-app-secret>' -e PRIVY_WALLET_ID='<privy-wallet-id>' -e PRIVY_WALLET_ADDRESS='<base58-solana-address>' -e MOLPHA_DRY_RUN=true -- npx -y @molpha/mcp@0.2.0
+```
+
+**3. Spend** only when you mean to: fund the wallet, then set `MOLPHA_DRY_RUN=false` in the server's config. The full guide, with Cursor, VS Code, Codex and Claude Desktop, is [docs/integration.md](docs/integration.md).
+<!-- /molpha:generated:quick-start -->
+
 ### Requirements
 
 - Node.js 24 or later
-- A Solana wallet funded with Devnet SOL
-- Devnet USDC if you plan to use an active subscription or the x402 pay-per-request path
-- An MCP client such as Cursor, Claude Desktop, or Codex
+- For writes: a Solana wallet funded with Devnet SOL, and Devnet USDC if you plan to use an active subscription or the x402 pay-per-request path
+- An MCP client such as Claude Code, Cursor, VS Code, Claude Desktop, or Codex
 
-### 1. Install and build
+With no signer configured the server starts **read-only**: it offers only the ten read tools and reports `runLevel: "read-only"` from `get_capabilities`. Pass `--read-only` (or set `SIGNER_BACKEND=none`) to force it even when a signer is configured.
 
-```bash
-git clone https://github.com/molpha/mcp.git
-cd mcp
-npm ci
-cp .env.example .env
-npm run build
-```
+### Configure a signer
 
-### 2. Configure a signer
-
-For local development, point `OWNER_KEYPAIR` at a Solana JSON keypair. Use an absolute path when an MCP client launches the server.
+For local development, point `OWNER_KEYPAIR` at a Solana JSON keypair. Use an absolute path when an MCP client launches the server, and use a dedicated testnet wallet.
 
 ```dotenv
 SIGNER_BACKEND=memory
@@ -122,6 +137,7 @@ OWNER_KEYPAIR=/absolute/path/to/owner-keypair.json
 SOLANA_RPC=https://api.devnet.solana.com
 GATEWAY_ENDPOINTS=
 GATEWAY_AUTHORITIES=
+MOLPHA_DRY_RUN=true
 ```
 
 The same wallet owns feeds, pays for x402 rounds from its USDC account, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
@@ -135,8 +151,9 @@ Other supported signer configurations:
 | Local keypair | `SIGNER_BACKEND=memory`, `OWNER_KEYPAIR` |
 | Privy | `SIGNER_BACKEND=keychain`, `KEYCHAIN_BACKEND=privy`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_WALLET_ID`, `PRIVY_WALLET_ADDRESS` |
 | Turnkey | `SIGNER_BACKEND=keychain`, `KEYCHAIN_BACKEND=turnkey`, `TURNKEY_API_PUBLIC_KEY`, `TURNKEY_API_PRIVATE_KEY`, `TURNKEY_ORGANIZATION_ID`, `TURNKEY_WALLET_ADDRESS` |
+| None (read-only) | `SIGNER_BACKEND=none`, or no signer settings at all |
 
-Keychain backends are optional peer dependencies. Install the provider you use:
+The Privy and Turnkey SDKs are optional dependencies of `@molpha/mcp`, installed with it by default. If you installed with `--omit=optional`, add the provider you use next to the server:
 
 ```bash
 npm install @privy-io/node          # KEYCHAIN_BACKEND=privy
@@ -145,80 +162,43 @@ npm install @turnkey/sdk-server @turnkey/solana   # KEYCHAIN_BACKEND=turnkey
 
 See [.env.example](.env.example) and the ready-to-edit files in [examples](examples) for every backend.
 
-### 3. Check the setup
+### Dry-run lock
 
-```bash
-npm run doctor
+`MOLPHA_DRY_RUN=true` locks the write tools (`execute_subscription_round`, `execute_x402_round`, `submit_attestation`) to previews. A call that passes `dryRun: false` is refused with `dry_run_locked`, so going live is a change to the server's config, never to one tool call. Unset, the default is live and a call may pass `dryRun: true` to preview.
+
+### Check the setup
+
+From the folder that holds your `.env`:
+
+<!-- molpha:generated:doctor -->
+```sh
+npx -y @molpha/mcp@0.2.0 doctor
 ```
+<!-- /molpha:generated:doctor -->
 
-The doctor checks the compiled entry point, signer configuration, wallet availability, and Solana RPC. It also prints configuration snippets with resolved absolute paths.
+The doctor checks the signer configuration, wallet availability, Solana RPC and gateway. It then prints a config for each client with `MOLPHA_DRY_RUN=true`, leaving secrets as placeholders. If your settings came from an env file, the config points at that file instead of copying its values.
 
-### 4. Bootstrap a subscription
+### Bootstrap a subscription
 
-Subscription operations debit USDC, so they are deliberately kept out of the MCP tool surface. Run the provisioning CLI once with the same signer configuration used by the server:
+Subscription operations debit USDC, so they are deliberately kept out of the MCP tool surface. Run the provisioning command once with the same signer configuration used by the server:
 
-```bash
-# Preview without sending a transaction
-npm run provision -- subscribe --plan Basic --max-price-usdc 20000000 --dry-run
-
-# Subscribe, with a maximum approved price of 20 USDC (6 decimals)
-npm run provision -- subscribe --plan Basic --max-price-usdc 20000000
+<!-- molpha:generated:provision -->
+```sh
+npx -y @molpha/mcp@0.2.0 provision subscribe --plan Basic --max-price-usdc 20000000 --dry-run
 ```
+<!-- /molpha:generated:provision -->
 
-Extend an existing subscription with:
+`--max-price-usdc` is a safety cap in raw USDC base units (6 decimals), not a quoted plan price. The transaction aborts if the live on-chain price exceeds the cap. Drop `--dry-run` to subscribe, or replace `subscribe` with `extend` to extend an existing subscription.
 
-```bash
-npm run provision -- extend --max-price-usdc 20000000
-```
+### Connect an MCP client
 
-`--max-price-usdc` is a safety cap in raw USDC base units, not a quoted plan price. The transaction aborts if the live on-chain price exceeds the cap.
-
-### 5. Connect an MCP client
-
-Pick one of the install paths below. In both cases the server speaks stdio JSON-RPC and needs the same signer settings from step 2.
+The server speaks stdio JSON-RPC. Every client launches it with `npx`; the snippets are in [docs/integration.md](docs/integration.md) for Claude Code, Cursor, VS Code, Codex and Claude Desktop, and the doctor prints them for your own settings. Ready-to-edit copies live in [examples](examples) (`cursor-*.mcp.json`, `codex-*.toml`).
 
 #### Claude Desktop (MCPB)
 
-Package the built tree into an [MCP Bundle](https://github.com/modelcontextprotocol/mcpb) and install it as a desktop extension. The repo already includes a [`manifest.json`](manifest.json) that declares the Node entry point, tools, and user-config fields.
+From the first release that includes it, each GitHub release attaches `molpha-mcp.mcpb`, an [MCP Bundle](https://github.com/modelcontextprotocol/mcpb) built by CI from an allowlist of the published package's files. Install it by double-clicking the file, dragging it into the Claude Desktop window, or Settings → Extensions → Advanced settings → Install Extension…. During install, choose the signer (local keypair path, Privy, or Turnkey); leave it empty for read-only. `Dry run` defaults to on.
 
-```bash
-npm run build
-npx @anthropic-ai/mcpb pack . molpha-mcp.mcpb
-```
-
-That writes `molpha-mcp.mcpb` in the repo root. Install it in Claude Desktop by any of:
-
-- Double-click the `.mcpb` file
-- Drag it into the Claude Desktop window
-- Settings → Extensions → Advanced settings → Install Extension… → select the `.mcpb` file
-
-During install, set the signer backend and related fields (local keypair path, Privy, or Turnkey). Those map to the same env vars as `.env.example`.
-
-#### Cursor, Codex, or manual Claude Desktop config
-
-Point the client at the built server (`dist/src/server.js`), not at `src/server.ts`:
-
-```json
-{
-  "mcpServers": {
-    "molpha": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp/dist/src/server.js"],
-      "env": {
-        "SIGNER_BACKEND": "memory",
-        "OWNER_KEYPAIR": "/absolute/path/to/owner-keypair.json",
-        "SOLANA_RPC": "https://api.devnet.solana.com"
-      }
-    }
-  }
-}
-```
-
-- Cursor: save the JSON under `mcpServers` in `.cursor/mcp.json` or `~/.cursor/mcp.json`. Ready-to-edit copies live in [examples](examples) (`cursor-memory.mcp.json`, `cursor-privy.mcp.json`, `cursor-turnkey.mcp.json`).
-- Claude Desktop: add the same block to `claude_desktop_config.json` and restart, or prefer the MCPB path above.
-- Codex: use one of the [Codex TOML examples](examples/codex-memory.toml), or run `codex mcp add molpha -- node /absolute/path/to/mcp/dist/src/server.js` and then add the signer variables to `config.toml`.
-
-Restart the client after changing configuration or rebuilding. A direct `node dist/src/server.js` invocation waits silently for JSON-RPC on stdin; that is expected for a stdio server.
+To build a bundle yourself, see [Development](#development).
 
 ## Example prompts
 
@@ -296,7 +276,7 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `KEYCHAIN_BACKEND` | — | `privy` or `turnkey` for a keychain signer |
 | `OWNER_KEYPAIR` | — | Local Solana JSON keypair path |
 | `SOLANA_RPC` | `https://api.devnet.solana.com` | Solana RPC endpoint |
-| `GATEWAY_ENDPOINTS` | `https://dev-gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/x402/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
+| `GATEWAY_ENDPOINTS` | `https://dev-gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/x402/execute` for x402, `/v1/round/execute` for subscription). Run `molpha-mcp doctor` to verify. |
 | `GATEWAY_AUTHORITIES` | — | Comma-separated base58 gateway authorities, one per `GATEWAY_ENDPOINTS` entry in the same order. Bound into request signatures; required for gateways that do not serve `GET /v1/info`. |
 | `MOLPHA_EVM_NETWORKS` | `evm-sepolia` | Comma-separated EVM verifier networks |
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Comma-separated Starknet verifier networks |
@@ -376,14 +356,31 @@ The payer pays the source directly; Molpha never receives it. Only authorization
 
 ## Development
 
+Clone and build from source:
+
+```bash
+git clone https://github.com/molpha/mcp.git
+cd mcp
+npm ci
+cp .env.example .env
+npm run build
+```
+
+Point a client at the built server with `node /absolute/path/to/mcp/dist/src/server.js` instead of the `npx` command.
+
 ```bash
 npm run dev        # start from TypeScript for local development
 npm run typecheck  # validate types without emitting files
 npm test           # run the Vitest suite
 npm run build      # compile src/, cli/, and tests into dist/
+npm run gen:install  # rewrite the install snippets in the docs and examples
+npm run smoke:pack   # pack the tarball and run it with npx over stdio (needs network)
+npm run pack:mcpb    # build the Claude Desktop bundle from an allowlist (writes molpha-mcp.mcpb)
 ```
 
-`@molpha/sdk` currently resolves from a sibling `../sdk` checkout (`file:../sdk`, installed as a copy via `install-links` in `.npmrc`). After changing the SDK, run `pnpm build` in `../sdk`, then `npm install` here.
+`@molpha/sdk` is pinned to an exact version in `package.json` and resolved from the npm registry. To try a local SDK checkout, run `npm install ../sdk` here and do not commit the result.
+
+Install snippets (the README quick start, `docs/integration.md`, `examples/`) are generated from `src/install-config.ts` and the version the next release will have. Edit the renderers, not the generated text; `npm test` fails when a generated file is out of date.
 
 Before opening a pull request, run:
 

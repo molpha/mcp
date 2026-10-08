@@ -42,7 +42,7 @@ curl -sS http://127.0.0.1:8402/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-You should see fourteen tools. Stop the process (`Ctrl+C`) before deploying.
+You should see seventeen tools. Stop the process (`Ctrl+C`) before deploying.
 
 Optional: `npx vercel dev` from the repo root. Vercel CLI sets `VERCEL=1`, so `src/server.ts` starts HTTP without `--http`. Use this to catch Host-allowlist and env mistakes before a cloud deploy.
 
@@ -143,7 +143,7 @@ Wait for the build to finish. Common build failures:
 | --- | --- |
 | Detected as Next.js / missing `/mcp` | Framework must be Node.js server; delete any accidental `app/` or `next.config`. |
 | `Cannot find module '@privy-io/node'` (or Turnkey) on signed calls | `installCommand` must be `npm ci --include=dev`. |
-| Function exceeded 250 MB | Enable Large Functions (Fluid, public beta) or stop bundling unused native extras. The Docker image already includes both signer SDKs; Vercel should too. |
+| Function exceeded 250 MB | Enable Large Functions (Fluid, public beta) or stop bundling unused native extras. The hosted server signs nothing, so the Privy and Turnkey SDKs (optional dependencies of the package) are not needed. The Docker image prunes them; `npm ci` here installs them, so add `--omit=optional` to `installCommand` if size is the problem. |
 | Host is not allowed (403) | `Host` header is the public hostname. Confirm it is `mcp.molpha.io`, the production `*.vercel.app`, or a hostname Vercel injected (`VERCEL_URL`). |
 | 401 from Vercel, not JSON-RPC | Deployment Protection is still on. |
 
@@ -183,7 +183,7 @@ There is no `Mcp-Session-Id`. Each POST is independent; skip initialize if you o
 npx @modelcontextprotocol/inspector@latest
 ```
 
-Transport: **Streamable HTTP**. URL: `https://<deployment>/mcp`. No headers or credentials are needed. List tools (fourteen), then `get_capabilities`: `payment.signing` should read `caller`.
+Transport: **Streamable HTTP**. URL: `https://<deployment>/mcp`. No headers or credentials are needed. List tools (seventeen), then `get_capabilities`: `payment.signing` should read `caller`.
 
 ### Wrong-host check
 

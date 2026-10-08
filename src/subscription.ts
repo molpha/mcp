@@ -23,7 +23,7 @@ export async function readSubscriptionStatus(
       return {
         active: false,
         message:
-          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use execute_x402_round for a self-funded pay-per-request round."
+          "No active subscription found. Run `npx -y @molpha/mcp provision subscribe` with OWNER_KEYPAIR, or use execute_x402_round for a self-funded pay-per-request round."
       };
     }
 

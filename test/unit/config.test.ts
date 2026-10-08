@@ -57,3 +57,12 @@ describe("loadConfig", () => {
     ).toThrow(/GATEWAY_AUTHORITIES\[0\]/);
   });
 });
+
+describe("MOLPHA_DRY_RUN", () => {
+  it("is live only when unset or explicitly off, and locks on anything else", () => {
+    const locked = (value: string | undefined) => loadConfig({ MOLPHA_DRY_RUN: value }).guardrails.dryRunDefault;
+
+    for (const off of [undefined, "", "   ", "false", "FALSE", "0", "no", "off", " False "]) expect(locked(off), String(off)).toBe(false);
+    for (const on of ["true", "True", "1", "yes", "on", "enabled", "tru", "${user_config.dry_run_typo}x"]) expect(locked(on), on).toBe(true);
+  });
+});

@@ -21,12 +21,12 @@
       "environmentVariables": [
         {
           "name": "SIGNER_BACKEND",
-          "description": "Signing backend: memory (local keypair) or keychain (Privy / Turnkey).",
-          "isRequired": true,
-          "default": "memory",
+          "description": "Signing backend: memory (local keypair), keychain (Privy / Turnkey), or none. Leave unset with no keypair for a read-only server that cannot sign or spend.",
+          "isRequired": false,
           "choices": [
             "memory",
-            "keychain"
+            "keychain",
+            "none"
           ]
         },
         {
@@ -120,10 +120,10 @@
         },
         {
           "name": "MOLPHA_DRY_RUN",
-          "description": "Preview all write and spend operations without submitting them.",
+          "description": "Preview all write and spend operations without submitting them. While true, a tool call cannot turn it off.",
           "isRequired": false,
           "format": "boolean",
-          "default": "false"
+          "default": "true"
         },
         {
           "name": "MOLPHA_MAX_EXECUTES_PER_DAY",

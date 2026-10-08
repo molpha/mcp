@@ -6,6 +6,7 @@ import type { RequestContext, RequestLifecycle, SharedRuntime } from "../clients
 import type { HostedTool } from "./policy.js";
 import { HttpInputError } from "./errors.js";
 import { loadChallengeKeys, type ChallengeKeys } from "../challenge.js";
+import { buildInstructions } from "../instructions.js";
 import { serverVersion } from "../version.js";
 
 export interface HttpConfig {
@@ -282,7 +283,7 @@ export function createHostedHttpServer(options: HostedServerOptions = {}) {
       const args = policy.record(params?.arguments) ?? {};
       if (Object.hasOwn(args, "encryptSecrets")) throw new HttpInputError(400, "encryptSecrets is not available on hosted HTTP: private API secrets must not pass through a shared server. Use npx @molpha/mcp locally.");
       const shared = getRuntime();
-      const serverInstance = new McpServer({ name: "molpha-mcp", version: serverVersion });
+      const serverInstance = new McpServer({ name: "molpha-mcp", version: serverVersion }, { instructions: buildInstructions("hosted") });
       mcp = serverInstance;
       const catalog = new Map<string, HostedTool>();
       let context: Promise<RequestContext> | undefined;

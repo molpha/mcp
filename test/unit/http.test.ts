@@ -76,6 +76,7 @@ describe("stateless HTTP", () => {
     const init = await app.rpc("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } });
     expect(init.response.status).toBe(200);
     expect(init.response.headers.get("mcp-session-id")).toBeNull();
+    expect(init.body.result.instructions).toContain("This server holds no key");
     expect((await app.rpc("tools/list")).body.result.tools).toHaveLength(HOSTED_TOOLS);
     expect(app.contexts).toHaveLength(0);
     const notified = await fetch(`${app.base}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });

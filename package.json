@@ -28,9 +28,7 @@
   ],
   "type": "module",
   "bin": {
-    "molpha-mcp": "dist/src/server.js",
-    "molpha-provision": "dist/cli/provision.js",
-    "molpha-doctor": "dist/cli/doctor.js"
+    "molpha-mcp": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
@@ -43,17 +41,22 @@
     "access": "public"
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
     "start": "node dist/src/server.js --http",
-    "doctor": "node --import tsx cli/doctor.ts",
-    "provision": "node --import tsx cli/provision.ts",
+    "doctor": "node --import tsx src/cli.ts doctor",
+    "provision": "node --import tsx src/cli.ts provision",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "sync-version": "node scripts/sync-version.mjs",
+    "gen:install": "node --import tsx scripts/gen-install.ts",
+    "check:install": "node --import tsx scripts/gen-install.ts --check",
+    "pack:mcpb": "node scripts/pack-mcpb.mjs",
     "changeset": "changeset",
-    "ci:version": "changeset version && npm run sync-version",
-    "ci:publish": "changeset publish"
+    "ci:version": "changeset version && npm run sync-version && npm run gen:install",
+    "ci:publish": "changeset publish",
+    "smoke:pack": "node scripts/smoke-pack.mjs"
   },
   "engines": {
     "node": ">=24.0.0"
@@ -70,21 +73,10 @@
     "dotenv": "^16.6.1",
     "zod": "^3.25.0"
   },
-  "peerDependencies": {
+  "optionalDependencies": {
     "@privy-io/node": "^0.26.0",
     "@turnkey/sdk-server": "7.0.0",
     "@turnkey/solana": "^1.1.31"
-  },
-  "peerDependenciesMeta": {
-    "@privy-io/node": {
-      "optional": true
-    },
-    "@turnkey/sdk-server": {
-      "optional": true
-    },
-    "@turnkey/solana": {
-      "optional": true
-    }
   },
   "overrides": {
     "@privy-io/node": {
@@ -95,11 +87,9 @@
     }
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
-    "@privy-io/node": "^0.26.0",
-    "@turnkey/sdk-server": "7.0.0",
-    "@turnkey/solana": "^1.1.31",
     "@types/bn.js": "^5.1.6",
     "@types/node": "^22.15.29",
     "tsx": "^4.19.4",

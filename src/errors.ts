@@ -33,7 +33,8 @@ const OWN_CODES = new Set([
   "session_invalid",
   "sessions_unavailable",
   "source_payment_disabled",
-  "source_payment_refused"
+  "source_payment_refused",
+  "dry_run_locked"
 ]);
 
 /** What to do next, for the own codes that have a clear next step. */
@@ -41,7 +42,9 @@ const OWN_REMEDIATION: Record<string, string> = {
   source_payment_disabled:
     "Paying a source needs a payer wallet and an explicit network allowlist on the server: set MOLPHA_SOURCE_PAYER_KEY (an EVM key) and MOLPHA_SOURCE_PAYMENT_NETWORKS (e.g. eip155:84532 for Base Sepolia). Nothing is paid until both are set.",
   source_payment_refused:
-    "Nothing was signed or paid. Call quote_source_payment to see the price, network and worst case, then retry with a sourcePayment.maxSpendUsdc that covers it, if it is within this server's caps."
+    "Nothing was signed or paid. Call quote_source_payment to see the price, network and worst case, then retry with a sourcePayment.maxSpendUsdc that covers it, if it is within this server's caps.",
+  dry_run_locked:
+    "Retry with dryRun: true (or omit it) to preview. To run live, the user must set MOLPHA_DRY_RUN=false (or remove it) in the server's config and restart it; do not ask for a per-call override."
 };
 
 export function normalizeError(error: unknown): NormalizedToolError {
@@ -163,7 +166,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
       code: "invalid_config",
       message,
       remediation:
-        "GATEWAY_ENDPOINTS is pointing at a Solana RPC URL, not a Molpha gateway. Set it to the Molpha gateway base URL (see README / npm run doctor) and keep SOLANA_RPC separate."
+        "GATEWAY_ENDPOINTS is pointing at a Solana RPC URL, not a Molpha gateway. Set it to the Molpha gateway base URL (see README / `molpha-mcp doctor`) and keep SOLANA_RPC separate."
     };
   }
 
@@ -172,7 +175,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
       code: "invalid_config",
       message,
       remediation:
-        "This gateway host exposes /v1/nodes but not signing routes. Use https://dev-gateway.molpha.io (run npm run doctor to verify)."
+        "This gateway host exposes /v1/nodes but not signing routes. Use https://dev-gateway.molpha.io (run `molpha-mcp doctor` to verify)."
     };
   }
 

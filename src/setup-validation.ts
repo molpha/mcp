@@ -9,6 +9,8 @@ import {
   resolveEnvString,
   resolvePath
 } from "./config.js";
+import { SECRET_ENV_NAMES, signerEnv, type Env } from "./install-config.js";
+import { resolveRunMode } from "./run-mode.js";
 import { createSigner } from "./signer/factory.js";
 import { validateSolanaPubkey } from "./solana-address.js";
 
@@ -19,6 +21,11 @@ export interface SetupCheck {
 }
 
 export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCheck[] {
+  const runMode = resolveRunMode([], env);
+  if (runMode.mode === "read-only") {
+    return [{ name: "signer_backend", ok: true, message: `read-only: ${runMode.reason}; write tools are not offered` }];
+  }
+
   const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
   const checks: SetupCheck[] = [
     {
@@ -27,7 +34,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
       message:
         backend === "memory" || backend === "keychain"
           ? `SIGNER_BACKEND=${backend}`
-          : `unsupported SIGNER_BACKEND="${backend}" (expected memory or keychain)`
+          : `unsupported SIGNER_BACKEND="${backend}" (expected memory, keychain or none)`
     }
   ];
 
@@ -141,6 +148,10 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
 }
 
 export async function checkSignerAvailability(): Promise<SetupCheck> {
+  const runMode = resolveRunMode([], process.env);
+  if (runMode.mode === "read-only") {
+    return { name: "signer", ok: true, message: "no signer needed: the server runs read-only" };
+  }
   try {
     const signer = await createSigner(loadConfig());
     const available = await signer.isAvailable();
@@ -258,6 +269,7 @@ export async function checkSolanaRpc(rpc: string): Promise<SetupCheck> {
   }
 }
 
+/** A source checkout runs from `dist`; an installed package is already built, so there is nothing to check. */
 export function checkBuildArtifact(repoRoot = process.cwd()): SetupCheck {
   const built = resolve(repoRoot, "dist/src/server.js");
   return {
@@ -267,10 +279,6 @@ export function checkBuildArtifact(repoRoot = process.cwd()): SetupCheck {
       ? `server entry found at ${built}`
       : `missing ${built} — run npm run build`
   };
-}
-
-export function resolveServerEntry(repoRoot = process.cwd()): string {
-  return resolve(repoRoot, "dist/src/server.js");
 }
 
 export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
@@ -289,13 +297,15 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
   };
 
   const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
-  if (backend === "memory") {
+  if (resolveRunMode([], env).mode === "read-only") {
+    out.SIGNER_BACKEND = "none";
+  } else if (backend === "memory") {
     out.SIGNER_BACKEND = "memory";
     const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR);
     if (ownerKeypair) {
       out.OWNER_KEYPAIR = resolveKeypairPath(ownerKeypair);
     }
-  } else {
+  } else if (backend === "keychain") {
     out.SIGNER_BACKEND = "keychain";
     const provider = resolveEnvString(env.KEYCHAIN_BACKEND);
     if (provider) {
@@ -314,54 +324,36 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
             ]
           : [];
 
+    const placeholders = signerEnv(provider === "turnkey" ? "turnkey" : "privy");
     for (const name of passthrough) {
       const value = resolveEnvString(env[name]);
       if (value) {
-        out[name] = value;
+        // A secret is never copied into a snippet that gets pasted into a client config or a chat.
+        out[name] = SECRET_ENV_NAMES.has(name) ? (placeholders[name] ?? `<${name.toLowerCase()}>`) : value;
       }
     }
   }
 
-  if (config.guardrails.dryRunDefault) {
-    out.MOLPHA_DRY_RUN = "true";
+  if (config.sourcePayment?.payerKey) out.MOLPHA_SOURCE_PAYER_KEY = "<evm-payer-private-key>";
+  for (const name of ["MOLPHA_SOURCE_PAYMENT_NETWORKS", "MOLPHA_SOURCE_MAX_PER_ROUND_USDC", "MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC"]) {
+    const value = resolveEnvString(env[name]);
+    if (value) out[name] = value;
   }
+
+  // Always present, so a pasted config says plainly which level it is. Unset means dry-run here, not live:
+  // a snippet is for setting up, and going live is a deliberate edit of this one value.
+  out.MOLPHA_DRY_RUN = config.guardrails.dryRunDefault || resolveEnvString(env.MOLPHA_DRY_RUN) === undefined ? "true" : "false";
 
   return out;
 }
 
-export function buildMcpJsonSnippet(repoRoot = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
-  const serverPath = resolveServerEntry(repoRoot);
-  return JSON.stringify(
-    {
-      mcpServers: {
-        molpha: {
-          command: "node",
-          args: [serverPath],
-          env: buildMcpEnvBlock(env)
-        }
-      }
-    },
-    null,
-    2
-  );
-}
-
-export function buildCodexTomlSnippet(repoRoot = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
-  const serverPath = resolveServerEntry(repoRoot);
-  const envBlock = buildMcpEnvBlock(env);
-  const lines = [
-    "[mcp_servers.molpha]",
-    `command = "node"`,
-    `args = ["${serverPath}"]`,
-    "",
-    "[mcp_servers.molpha.env]"
-  ];
-
-  for (const [key, value] of Object.entries(envBlock)) {
-    lines.push(`${key} = "${value.replaceAll('"', '\\"')}"`);
-  }
-
-  return `${lines.join("\n")}\n`;
+/**
+ * The env a pasted config should carry. When the checks ran against a dotenv file, the config points at that
+ * file and keeps only the level, so no value from it (a secret or not) is copied into a client config or a chat.
+ */
+export function snippetEnv(env: NodeJS.ProcessEnv, envFile: string | undefined): Env {
+  const full = buildMcpEnvBlock(env);
+  return envFile ? { MOLPHA_ENV_FILE: envFile, MOLPHA_DRY_RUN: full.MOLPHA_DRY_RUN ?? "true" } : full;
 }
 
 function resolveKeypairPath(path: string): string {

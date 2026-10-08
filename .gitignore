@@ -11,3 +11,5 @@ privy-test.json
 .DS_Store
 tmp
 .vercel
+
+*.mcpb

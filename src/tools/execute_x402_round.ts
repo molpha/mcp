@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getMolphaContext, requireSigner, type ToolDependencies } from "../clients.js";
+import { resolveDryRun } from "../guardrails.js";
 import { toolHandler } from "../mcp.js";
 import { executeX402Round, previewX402Round, quoteX402Round } from "../x402.js";
 import { buildRoundResult, prepareRound, roundInputSchema, roundOutputShape, type RoundArgs } from "./round.js";
@@ -48,7 +49,7 @@ export function registerExecuteX402RoundTool(server: ToolServer, dependencies: T
     toolHandler(outputSchema, async (args: RoundArgs) => {
       const { apiConfig, signaturesRequired, maxAge, chains, autoSubmit = false, dryRun } = args;
       const context = await (dependencies.getContext ?? getMolphaContext)();
-      const isDryRun = dryRun ?? context.config.guardrails.dryRunDefault;
+      const isDryRun = resolveDryRun(dryRun, context.config.guardrails);
       const round = {
         apiConfig,
         signaturesRequired,

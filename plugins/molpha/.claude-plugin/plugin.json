@@ -1,0 +1,106 @@
+{
+  "name": "molpha",
+  "displayName": "Molpha",
+  "description": "Molpha oracle tools and the Molpha skill for agents. Testnet only (Solana Devnet and Sepolia). Dry-run on by default.",
+  "author": {
+    "name": "Molpha"
+  },
+  "homepage": "https://docs.molpha.io/",
+  "repository": "https://github.com/molpha/mcp",
+  "license": "MIT",
+  "keywords": [
+    "oracle",
+    "solana",
+    "evm",
+    "starknet",
+    "mcp"
+  ],
+  "mcpServers": {
+    "molpha": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@molpha/mcp@0.2.0"
+      ],
+      "env": {
+        "SIGNER_BACKEND": "${user_config.signer_backend}",
+        "OWNER_KEYPAIR": "${user_config.owner_keypair}",
+        "KEYCHAIN_BACKEND": "${user_config.keychain_backend}",
+        "PRIVY_APP_ID": "${user_config.privy_app_id}",
+        "PRIVY_APP_SECRET": "${user_config.privy_app_secret}",
+        "PRIVY_WALLET_ID": "${user_config.privy_wallet_id}",
+        "PRIVY_WALLET_ADDRESS": "${user_config.privy_wallet_address}",
+        "TURNKEY_API_PUBLIC_KEY": "${user_config.turnkey_api_public_key}",
+        "TURNKEY_API_PRIVATE_KEY": "${user_config.turnkey_api_private_key}",
+        "TURNKEY_ORGANIZATION_ID": "${user_config.turnkey_organization_id}",
+        "TURNKEY_WALLET_ADDRESS": "${user_config.turnkey_wallet_address}",
+        "MOLPHA_DRY_RUN": "${user_config.dry_run}"
+      }
+    }
+  },
+  "userConfig": {
+    "signer_backend": {
+      "type": "string",
+      "title": "Signer",
+      "description": "memory (local keypair), keychain (Privy or Turnkey), or none. Leave empty, with no keypair, for a read-only server that cannot sign or spend."
+    },
+    "owner_keypair": {
+      "type": "file",
+      "title": "Keypair file",
+      "description": "Signer memory only: a dedicated testnet Solana keypair file. Never a wallet you use elsewhere."
+    },
+    "keychain_backend": {
+      "type": "string",
+      "title": "Keychain provider",
+      "description": "privy or turnkey, when the signer is keychain."
+    },
+    "privy_app_id": {
+      "type": "string",
+      "title": "Privy app ID",
+      "description": "Privy keychain only."
+    },
+    "privy_app_secret": {
+      "type": "string",
+      "title": "Privy app secret",
+      "description": "Privy keychain only. Stored in your system credential store.",
+      "sensitive": true
+    },
+    "privy_wallet_id": {
+      "type": "string",
+      "title": "Privy wallet ID",
+      "description": "Privy keychain only."
+    },
+    "privy_wallet_address": {
+      "type": "string",
+      "title": "Privy wallet address",
+      "description": "Privy keychain only: the wallet's base58 Solana address."
+    },
+    "turnkey_api_public_key": {
+      "type": "string",
+      "title": "Turnkey API public key",
+      "description": "Turnkey keychain only."
+    },
+    "turnkey_api_private_key": {
+      "type": "string",
+      "title": "Turnkey API private key",
+      "description": "Turnkey keychain only. Stored in your system credential store.",
+      "sensitive": true
+    },
+    "turnkey_organization_id": {
+      "type": "string",
+      "title": "Turnkey organization ID",
+      "description": "Turnkey keychain only."
+    },
+    "turnkey_wallet_address": {
+      "type": "string",
+      "title": "Turnkey wallet address",
+      "description": "Turnkey keychain only: the wallet's base58 Solana address."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "title": "Dry run",
+      "description": "Preview every write and payment instead of sending it. While on, a tool call cannot turn it off: to spend, untick this and restart.",
+      "default": true
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { signedAttestationSchema } from "../artifacts.js";
 import { requireSigner, assertActive, getMolphaContext, type ToolDependencies } from "../clients.js";
+import { resolveDryRun } from "../guardrails.js";
 import { prepareSignedResult, previewSubmit, submitSignedResult } from "../submit.js";
 import { toolHandler } from "../mcp.js";
 import { submitOutcome } from "./outputs.js";
@@ -73,7 +74,7 @@ export function registerSubmitAttestationTool(server: ToolServer, dependencies: 
       const context = await (dependencies.getContext ?? getMolphaContext)();
       requireSigner(context);
       const { config, signer } = context;
-      const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
+      const isDryRun = resolveDryRun(dryRun, config.guardrails);
       const prepared = prepareSignedResult(result);
 
       if (isDryRun) {

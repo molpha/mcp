@@ -72,7 +72,7 @@ export function registerDescribeFeedTool(server: ToolServer, dependencies: ToolD
     ) => {
       const { config, solana, signer, hosted } = await (dependencies.getContext ?? getMolphaContext)();
       const resolvedSourceId = resolveSourceId(sourceId, apiConfig);
-      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly for unsigned hosted feed reads."), { code: "submitter_required" });
+      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly: this server has no signer to default to."), { code: "submitter_required" });
       const feedSubmitter = submitter ?? String(signer!.publicKey);
 
       const [onChainFeed, subscription] = await Promise.all([
