@@ -143,6 +143,29 @@
           "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
           "isRequired": false,
           "default": "10"
+        },
+        {
+          "name": "MOLPHA_SOURCE_PAYER_KEY",
+          "description": "Hex private key of the EVM wallet that pays paywalled sources. Never printed or returned by a tool. Source payment stays off without it.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MOLPHA_SOURCE_PAYMENT_NETWORKS",
+          "description": "Comma-separated CAIP-2 EVM networks a source may be paid on, e.g. eip155:84532 (Base Sepolia). Empty keeps source payment off, even with a payer key.",
+          "isRequired": false
+        },
+        {
+          "name": "MOLPHA_SOURCE_MAX_PER_ROUND_USDC",
+          "description": "Refuse a round whose worst case (price per fetch × the nodes that may fetch) exceeds this (decimal USDC).",
+          "isRequired": false,
+          "default": "0.25"
+        },
+        {
+          "name": "MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC",
+          "description": "Process-local daily cap on USDC committed to paying sources (decimal USDC).",
+          "isRequired": false,
+          "default": "1"
         }
       ]
     }

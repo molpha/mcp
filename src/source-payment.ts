@@ -14,6 +14,7 @@
 import { formatUsdcAtomic, type MolphaConfig, type SourcePaymentConfig } from "./config.js";
 import { requireMethod, type RequestContext } from "./clients.js";
 import { checkSourceSpendCap, refuseSourcePayment, sourceSpentToday } from "./guardrails.js";
+import { expectedUsdcAsset, isAllowedSourcePaymentAsset } from "./source-payment-assets.js";
 import { requireSdkExport } from "./sdk.js";
 
 /** A price fetch is a single unpaid request: it must not hold the agent up. */
@@ -85,10 +86,72 @@ export async function eligibleSetSizeFor(context: RequestContext, signaturesRequ
   return size(signaturesRequired, { nodeCount: selection.nodeCount ?? nodes.length, redundancyBuffer: selection.redundancyBuffer });
 }
 
+function apiConfigUrl(apiConfig: unknown): string {
+  if (!apiConfig || typeof apiConfig !== "object" || typeof (apiConfig as { url?: unknown }).url !== "string") {
+    throw new Error("apiConfig.url is required");
+  }
+  return (apiConfig as { url: string }).url;
+}
+
+/**
+ * Reads x402 accepts from a 402 body when the SDK refuses non-USDC terms but the caller still needs
+ * the quoted network, asset and price for policy checks.
+ */
+async function fetchSourceTermsFrom402(apiConfig: unknown, timeoutMs: number): Promise<SourceTerms | null> {
+  const url = apiConfigUrl(apiConfig);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { method: "GET", signal: controller.signal });
+    if (response.status !== 402) {
+      return null;
+    }
+    const body = (await response.json()) as {
+      x402Version?: number;
+      accepts?: Array<Record<string, unknown>>;
+      extensions?: Record<string, unknown>;
+    };
+    const accept = body.accepts?.[0];
+    if (!accept) {
+      return null;
+    }
+    const { network, asset, amount, payTo, maxTimeoutSeconds, chainId } = accept;
+    if (typeof network !== "string" || typeof asset !== "string" || typeof amount !== "string" || typeof payTo !== "string") {
+      return null;
+    }
+    const terms: SourceTerms = {
+      x402Version: body.x402Version === 2 ? 2 : 1,
+      network,
+      chainId: typeof chainId === "number" ? chainId : 0,
+      asset,
+      payTo,
+      amount,
+      maxTimeoutSeconds: typeof maxTimeoutSeconds === "number" ? maxTimeoutSeconds : 60
+    };
+    const paymentIdentifier = body.extensions?.["payment-identifier"];
+    if (paymentIdentifier !== undefined) {
+      terms.paymentIdentifier = paymentIdentifier;
+    }
+    return terms;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Reads the source's own price with one unpaid request. Null when the source is not paywalled. */
 export async function probeSourceTerms(apiConfig: unknown): Promise<SourceTerms | null> {
   const probe = requireSdkExport<(config: unknown, options?: { timeoutMs?: number }) => Promise<SourceTerms | null>>("probeSource");
-  return probe(apiConfig, { timeoutMs: PROBE_TIMEOUT_MS });
+  try {
+    return await probe(apiConfig, { timeoutMs: PROBE_TIMEOUT_MS });
+  } catch (error) {
+    const fallback = await fetchSourceTermsFrom402(apiConfig, PROBE_TIMEOUT_MS);
+    if (fallback !== null) {
+      return fallback;
+    }
+    throw error;
+  }
 }
 
 export function describeQuote(terms: SourceTerms, eligibleSetSize: number): SourceQuote {
@@ -114,6 +177,8 @@ export interface PaymentPolicy {
   payer?: string;
   allowedNetworks: string[];
   networkAllowed?: boolean;
+  /** Whether the source's asset is the USDC contract this server signs on that network. */
+  assetAllowed?: boolean;
   perRoundCapUsdc: string;
   dailyCapUsdc: string;
   spentTodayUsdc: string;
@@ -145,6 +210,16 @@ export function evaluatePolicy(config: MolphaConfig, quote?: SourceQuote): Payme
     const allowed = sp.networks.includes(quote.network);
     policy.networkAllowed = allowed;
     if (!allowed) reasons.push(`The source asks to be paid on ${quote.network}, which is not in this server's allowed networks.`);
+    const assetOk = allowed && isAllowedSourcePaymentAsset(quote.network, quote.asset);
+    policy.assetAllowed = assetOk;
+    if (allowed && !assetOk) {
+      const expected = expectedUsdcAsset(quote.network);
+      reasons.push(
+        expected
+          ? `The source asks to be paid in token ${quote.asset}, but this server only signs USDC (${expected}) on ${quote.network}.`
+          : `The source asks to be paid on ${quote.network}, which has no known USDC contract on this server.`
+      );
+    }
     const worst = BigInt(quote.worstCaseAtomic);
     if (worst > sp.maxPerRoundAtomic) {
       reasons.push(`Worst case ${quote.worstCaseUsdc} USDC exceeds the per-round cap of ${policy.perRoundCapUsdc} USDC.`);
@@ -166,6 +241,14 @@ export function authorizePayment(config: MolphaConfig, terms: SourceTerms, quote
   if (!sp || !sourcePaymentEnabled(config)) throw disabledError();
   if (!sp.networks.includes(terms.network)) {
     refuseSourcePayment(`Source payment refused: the source asks to be paid on ${terms.network}, which is not in MOLPHA_SOURCE_PAYMENT_NETWORKS (${sp.networks.join(", ")}).`);
+  }
+  if (!isAllowedSourcePaymentAsset(terms.network, terms.asset)) {
+    const expected = expectedUsdcAsset(terms.network);
+    refuseSourcePayment(
+      expected
+        ? `Source payment refused: the source asks to be paid in token ${terms.asset}, but this server only signs USDC (${expected}) on ${terms.network}.`
+        : `Source payment refused: ${terms.network} has no known USDC contract on this server.`
+    );
   }
   const worst = BigInt(quote.worstCaseAtomic);
   if (worst > authorizedAtomic) {

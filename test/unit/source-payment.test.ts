@@ -132,6 +132,7 @@ describe("source payment configuration", () => {
     }
     expect(() => loadConfig({ MOLPHA_SOURCE_PAYMENT_NETWORKS: "solana:devnet" })).toThrow(/CAIP-2 EVM networks/);
     expect(() => loadConfig({ MOLPHA_SOURCE_PAYMENT_NETWORKS: "eip155:84532,base" })).toThrow(/"base"/);
+    expect(() => loadConfig({ MOLPHA_SOURCE_PAYMENT_NETWORKS: "eip155:11155111" })).toThrow(/no known USDC contract/);
   });
 
   it("defaults to a quarter dollar a round and a dollar a day", () => {
@@ -198,6 +199,12 @@ describe("quote_source_payment", () => {
     fakeContext({}, ["MOLPHA_SOURCE_PAYER_KEY"]);
     stubSource(() => source402());
     expect(await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 })).toMatchObject({ policy: { enabled: false, wouldPay: false } });
+
+    fakeContext();
+    stubSource(() => source402({ asset: "0x0000000000000000000000000000000000000001" }));
+    const wrongAsset = await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 });
+    expect(wrongAsset).toMatchObject({ policy: { networkAllowed: true, assetAllowed: false, wouldPay: false } });
+    expect(String((wrongAsset.policy as { reasons: string[] }).reasons.join(" "))).toContain("only signs USDC");
   });
 });
 
@@ -260,6 +267,16 @@ describe("execute_subscription_round with sourcePayment", () => {
       const error = await callToolError("execute_subscription_round", pay("10"));
       expect(error).toMatchObject({ code: "source_payment_refused" });
       expect(String(error.message)).toContain("eip155:8453");
+      expectNothingPaid(gateway);
+    });
+
+    it("when the source asks for a non-USDC token on an allowed network", async () => {
+      const { gateway } = fakeContext();
+      stubSource(() => source402({ asset: "0x0000000000000000000000000000000000000001" }));
+      const error = await callToolError("execute_subscription_round", pay("10"));
+      expect(error).toMatchObject({ code: "source_payment_refused" });
+      expect(String(error.message)).toContain("only signs USDC");
+      expect(String(error.message)).toContain(USDC_SEPOLIA);
       expectNothingPaid(gateway);
     });
 

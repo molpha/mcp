@@ -23,6 +23,7 @@ export const paymentPolicySchema = z.object({
   payer: z.string().optional().describe("The payer wallet's public address."),
   allowedNetworks: z.array(z.string()),
   networkAllowed: z.boolean().optional(),
+  assetAllowed: z.boolean().optional().describe("Whether the source's token is USDC on that network."),
   perRoundCapUsdc: z.string(),
   dailyCapUsdc: z.string(),
   spentTodayUsdc: z.string(),

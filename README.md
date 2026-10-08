@@ -374,8 +374,6 @@ What stops an agent paying more than it meant to:
 
 The payer pays the source directly; Molpha never receives it. Only authorizations the nodes actually spend settle, so the exact charge is visible in the payer's balance. Source payment is for public sources: it cannot be combined with `encryptSecrets`.
 
-> **Needs an SDK that reads a source's payment-identifier.** TickerLayer rejects a payment without one. Use `@molpha/sdk` with that support (the pin may need a bump once it is published); on an older SDK the free flow works, and paying TickerLayer will fail at the provider.
-
 ## Development
 
 ```bash

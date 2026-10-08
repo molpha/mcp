@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { getSdkExport } from "./sdk.js";
+import { assertSourcePaymentNetworkSupported } from "./source-payment-assets.js";
 import { parseSolanaPubkey } from "./solana-address.js";
 
 const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
@@ -101,6 +102,7 @@ function loadSourcePayment(env: NodeJS.ProcessEnv): SourcePaymentConfig {
     if (!/^eip155:\d+$/.test(network)) {
       throw new Error(`MOLPHA_SOURCE_PAYMENT_NETWORKS entries are CAIP-2 EVM networks such as eip155:84532, got "${network}"`);
     }
+    assertSourcePaymentNetworkSupported(network);
   }
   return {
     payerKey,
