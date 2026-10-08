@@ -70,7 +70,7 @@ export function renderBlocks(version: string): Record<string, Record<string, str
         "",
         fence("sh", claudeCodeCommand(readOnly)),
         "",
-        "**2. Build with a testnet wallet.** Put your signer settings in a `.env` file (see [Configure a signer](#configure-a-signer)), then check them. The doctor prints a ready-to-paste config for your client, with secrets left as placeholders:",
+        "**2. Build with a testnet wallet.** Put your signer settings in a `.env` file (see [Setup](#setup)), then check them. The doctor prints a ready-to-paste config for your client, with secrets left as placeholders:",
         "",
         fence("sh", `npx -y ${pinned} doctor`),
         "",
