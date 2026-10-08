@@ -17,7 +17,7 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 - Derive a source's `sourceId` locally from a declarative API spec — no transaction, wallet, or subscription required.
 - Run a threshold-signing round and build verifier arguments for multiple chains, paid for either by an active USDC subscription or a self-funded [x402](#x402-pay-per-request) round.
 - Build EVM/Starknet verifier call args, or submit a signed attestation to a Solana feed.
-- Use a local keypair, Privy server wallet, or Turnkey wallet without changing the MCP tool surface, or run the [hosted HTTP server](#hosted-http-mode), which holds no key and has your own wallet sign.
+- Use a local keypair, Privy server wallet, or Turnkey wallet without changing the MCP tool surface, or run the [hosted HTTP server](#hosted-http-mode), which holds no key and has your own wallet sign: one [Sign-In-With-X message](#sign-in-with-your-wallet-siwx) opens a session for subscription rounds.
 - Put daily caps and a global dry-run default around agent-initiated writes and x402 spend.
 
 ## MCP tools
@@ -295,7 +295,7 @@ The daily counters are process-local and reset when the server restarts. They ar
 
 Each way of paying for a round has its own tool:
 
-- `execute_subscription_round` — use the signer's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
+- `execute_subscription_round` — use the signer's active USDC subscription (see [Bootstrap a subscription](#bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
 - `execute_x402_round` — pay for the round itself with an [x402](https://github.com/x402-foundation/x402) `exact` payment on Solana, with no subscription required. The signer transfers the round price in USDC to the protocol treasury (the USDC account of the `ProtocolConfig` PDA); the gateway's facilitator pays the network fee.
 
 A paid round works like this:
@@ -408,6 +408,7 @@ No secrets are needed for either publish step; both rely on the workflow's `id-t
 ## Documentation
 
 - [Molpha protocol documentation](https://docs.molpha.io/)
+- [Integration guide](docs/integration.md): install per client, and [signing in with your own wallet (SIWX)](docs/integration.md#4-sign-in-with-your-own-wallet-siwx)
 - [Client configuration examples](examples)
 - [MCPB manifest](manifest.json) for Claude Desktop / `.mcpb` packaging
 - [Hosted HTTP mode](docs/hosted-http.md)
@@ -429,5 +430,25 @@ The hosted server is **keyless**: it holds no signer and accepts no credentials,
 | Solana submit | `prepare_submit_attestation` → `send_signed_transaction` | The submit transaction |
 
 The stdio tools `submit_attestation` and the one-call round tools are not offered over HTTP, and neither are `autoSubmit`, `dryRun` or `encryptSecrets`. Hosted defaults retain the per-round price ceiling, disable shared daily budgets, and rate-limit requests per IP; set spending limits in the wallet's own policy, and use local stdio for private API work. The prepare tools need `MOLPHA_HTTP_CHALLENGE_SECRET` on the server.
+
+### Sign in with your wallet (SIWX)
+
+A local stdio server authenticates subscription rounds with the signer it holds. The hosted server holds none, so a subscription round is authorized by a **sign-in session** instead: the wallet signs one Sign-In-With-X text message (the x402 `sign-in-with-x` extension, in its Solana form), and the gateway issues a short-lived bearer token. The message is not a transaction and moves no funds.
+
+| Step | Call | Result |
+| --- | --- | --- |
+| 1 | `describe_access({ address, owner? })` | Whether the wallet is a subscription `owner` or `delegate`, and its limits |
+| 2 | `begin_session({ address, owner? })` | The `message` to sign and an opaque `challenge` |
+| 3 | The wallet signs `message` | An Ed25519 signature over its exact UTF-8 bytes |
+| 4 | `complete_session({ challenge, signature })` | A `sessionToken` and its `expiresAt` |
+| 5 | `execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` | The signed attestation and verifier arguments |
+
+- **Who can sign in.** The subscription owner, or a delegate the owner added with the program's `add_delegate` instruction. A delegate passes the owner's address as `owner`.
+- **What is signed.** The message names the gateway, its on-chain PDA, the program and the subscription owner, and expires in about five minutes. The server refuses a gateway challenge that does not state its own configured terms, so it never hands a wallet text for another gateway or chain.
+- **How to sign.** The message as returned: raw UTF-8, no prefix, no envelope, no trailing newline. The signature may be base58, base64 or hex. `solana sign-offchain-message` wraps the text and is refused with `invalid_signature`.
+- **What the token is.** A credential scoped to one wallet and one gateway, valid for 30 minutes by default and never past the subscription term. It only identifies the caller: the gateway re-reads the subscription and delegate from chain for every round, so `remove_delegate` ends access whatever tokens exist. It passes through this server on each round call and is never stored, cached or logged here.
+- **What it needs.** A gateway with sessions enabled: `GET /v1/info` reports `sessionAuth: true`. Otherwise `begin_session` answers `sessions_unavailable`, and x402 rounds remain available.
+
+The walkthrough, with a signing example, delegate setup, error codes and the gateway's own session routes, is in [docs/integration.md](docs/integration.md#4-sign-in-with-your-own-wallet-siwx).
 
 See [hosted HTTP configuration, client examples, and deployment runbook](docs/hosted-http.md). The container is deployment-ready; public deployment and `server.json` remote registration are separate launch steps.

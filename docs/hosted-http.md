@@ -25,6 +25,8 @@ Requests that still carry the removed `X-Molpha-*` signer headers, or anything s
 
 ### Subscription rounds: sign in once
 
+A step-by-step walkthrough, with a signing example and delegate setup, is in [integration.md](integration.md#4-sign-in-with-your-own-wallet-siwx).
+
 `begin_session({ address, owner? })` returns a short Sign-In-With-Solana message (the x402 `sign-in-with-x` extension's format). It names the gateway, the program and the subscription owner, states that it moves no funds, and expires in about five minutes. The server checks that the gateway's challenge states exactly the configured gateway's terms before returning it. Sign `message` as UTF-8 text — no prefix, no envelope, no trailing newline. `solana sign-offchain-message` wraps the text in an envelope and will **not** verify.
 
 `complete_session({ challenge, signature })` verifies the signature locally (base58, base64 or hex), exchanges it at the gateway, and returns a `sessionToken`. The gateway checks on chain that the signer is the subscription owner, or a delegate the owner added with `add_delegate`; a delegate passes the owner's address as `owner`. Use `describe_access` to see a wallet's role and limits first.

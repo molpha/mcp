@@ -54,6 +54,7 @@ export function renderBlocks(version: string): Record<string, Record<string, str
         "sh",
         `npx -y ${pinned} provision subscribe --plan Basic --max-price-usdc 20000000 --dry-run`
       ),
+      "hosted-local": fence("sh", `npx -y ${pinned} --http --port 8402`),
       prompt: fence("text", setupPrompt(version))
     },
     "README.md": {

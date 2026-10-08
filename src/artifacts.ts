@@ -23,7 +23,7 @@ export const signedDataUpdateSchema = z.object({
     .string()
     .optional()
     .describe("32-byte packed value, 0x-prefixed hex — the value bytes the signature covers."),
-  canonicalTimestamp: z.number().int().describe("Round timestamp in unix MILLISECONDS, assigned by the gateway; signed. Divide by 1000 to compare with a clock in seconds.")
+  timestamp: z.number().int().describe("Round timestamp in unix MILLISECONDS, assigned by the gateway; signed. Divide by 1000 to compare with a clock in seconds.")
 });
 
 export const signedSignatureSchema = z.object({
@@ -64,7 +64,7 @@ const HEX_WIDTHS: Record<string, number> = {
  * Flattens the two nested shapes a round can arrive in into the flat signed result this
  * server works with internally; a flat input is returned unchanged.
  *
- * - the SDK's `Attestation`: `{ payload: { value (packed), sourceId, ... canonicalTimestamp },
+ * - the SDK's `Attestation`: `{ payload: { value (packed), sourceId, ... timestamp },
  *   signature: { s, commitmentAddr, signersBitmap }, value (decimal), fresh }`
  * - the gateway's `data` body: `{ attestation: { payload, signature: { signature, commitment,
  *   signersBitmap } }, value (decimal), fresh, configHash, aggregation? }`
@@ -81,8 +81,8 @@ export function flattenAttestation(input: Record<string, unknown>): Record<strin
     sourceId: payload.sourceId,
     value: input.value,
     valuePacked: payload.value,
-    // The gateway stamps `timestamp` (unix ms); the pinned SDK still names it `canonicalTimestamp`.
-    timestamp: payload.timestamp ?? payload.canonicalTimestamp,
+    // The gateway stamps `timestamp` (unix ms); the pinned SDK still names it `timestamp`.
+    timestamp: payload.timestamp ?? payload.timestamp,
     registryVersion: payload.registryVersion,
     signaturesRequired: payload.signaturesRequired,
     signersBitmap: signature.signersBitmap,
@@ -103,9 +103,9 @@ export function toSdkAttestation(flat: Record<string, unknown>): Record<string, 
       registryVersion: Number(flat.registryVersion),
       signaturesRequired: Number(flat.signaturesRequired),
       // Unix milliseconds. The SDK's payload names it `timestamp`; the SDK this server was first built
-      // against called it `canonicalTimestamp`. Both are given so either reads it.
+      // against called it `timestamp`. Both are given so either reads it.
       timestamp: Number(flat.timestamp),
-      canonicalTimestamp: Number(flat.timestamp)
+      timestamp: Number(flat.timestamp)
     },
     signature: {
       s: flat.s,
@@ -158,7 +158,7 @@ export function toSignedResult(input: Record<string, unknown>): Record<string, u
     sourceId: du.sourceId ?? input.sourceId,
     value: du.value ?? input.value,
     valuePacked: du.valuePacked ?? input.valuePacked,
-    timestamp: du.canonicalTimestamp ?? du.timestamp ?? input.timestamp,
+    timestamp: du.timestamp ?? du.timestamp ?? input.timestamp,
     registryVersion: du.registryVersion ?? input.registryVersion,
     signaturesRequired: du.signaturesRequired ?? input.signaturesRequired,
     signersBitmap: sig.signersBitmap ?? input.signersBitmap,
@@ -184,7 +184,7 @@ export function toDataUpdateArtifact(result: Record<string, unknown>): DataUpdat
       ...(normalized.valuePacked !== undefined
         ? { valuePacked: String(normalized.valuePacked) }
         : {}),
-      canonicalTimestamp: Number(normalized.timestamp ?? 0)
+      timestamp: Number(normalized.timestamp ?? 0)
     },
     signature: {
       signature: String(normalized.s ?? ""),

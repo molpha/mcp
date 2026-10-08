@@ -303,9 +303,9 @@ describe("build_verifier_calldata", () => {
       }
     });
     // The verifier's payload names the round time `timestamp` (the SDK this server was first built against
-    // said `canonicalTimestamp`); the value is the same either way.
+    // said `timestamp`); the value is the same either way.
     const evmPayload = (evm.verifierArgs as { evm: { args: { attestation: { payload: Record<string, unknown> } } } }).evm.args.attestation.payload;
-    expect(String(evmPayload.timestamp ?? evmPayload.canonicalTimestamp)).toBe(String(flatResult.timestamp));
+    expect(String(evmPayload.timestamp ?? evmPayload.timestamp)).toBe(String(flatResult.timestamp));
     expect(String(evm.note)).toContain("no freshness check");
     const evmBounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "evm", maxAge: 300 });
     expect(evmBounded).toMatchObject({ verifierArgs: { evm: { args: { maxAge: "300" } } } });

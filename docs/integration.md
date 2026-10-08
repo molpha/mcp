@@ -15,6 +15,7 @@ Molpha has two parts for agents:
 | Look around: capabilities, providers, `sourceId`s, prices, feed values | [Explore](#1-explore-without-a-wallet) | Nothing |
 | Build an integration and preview every write | [Build](#2-build-with-a-testnet-wallet) | A testnet wallet |
 | Run real rounds and publish on Solana | [Spend](#3-turn-on-spending) | Devnet SOL and USDC |
+| Run subscription rounds with a wallet the server never holds | [Sign in](#4-sign-in-with-your-own-wallet-siwx) | A wallet that can sign a text message, and access to a subscription |
 | Have your agent do the setup | [Prompt](#set-it-up-with-a-prompt) | An agent that can run commands |
 
 All paths need **Node.js 24 or later**.
@@ -206,6 +207,147 @@ Daily caps are per server process and reset when it restarts. For a hard limit, 
 
 Round tools spend on **every** call. If one fails with an unclear error, check `describe_feed` or `get_x402_status` before trying again.
 
+## 4. Sign in with your own wallet (SIWX)
+
+The local server in sections 2 and 3 holds a signer, so it authenticates subscription rounds itself and there is nothing to sign in to. The **hosted HTTP server holds no key**. There, your own wallet signs one text message, the gateway answers with a short-lived session token, and that token runs subscription rounds.
+
+This is Sign-In-With-X (SIWX): the x402 `sign-in-with-x` extension, in its Solana form (Sign-In-With-Solana). The signature is over plain text. It is not a transaction and moves no funds.
+
+x402 pay-per-request rounds need no sign-in: the payment is the authorization. See [hosted-http.md](hosted-http.md#x402-rounds-prepare-sign-execute).
+
+### Before you start
+
+- **A hosted server.** `https://mcp.molpha.io/mcp` is not deployed yet **(planned)**. Until it is, run the same keyless server on your machine and connect your client to `http://127.0.0.1:8402/mcp` (client snippets are in [hosted-http.md](hosted-http.md#client-configuration)):
+
+<!-- molpha:generated:hosted-local -->
+```sh
+npx -y @molpha/mcp@0.2.0 --http --port 8402
+```
+<!-- /molpha:generated:hosted-local -->
+
+- **A gateway with sessions enabled.** `GET <gateway>/v1/info` must report `"sessionAuth": true`. Against a gateway that reports `false`, `begin_session` answers `sessions_unavailable`: use x402 rounds, or the local server from section 2. If you run the server yourself, its `GATEWAY_ENDPOINTS` entry must be the gateway's `publicOrigin` from the same response: the message is signed for that host, and a challenge for any other is refused.
+- **Access to a subscription.** The wallet is the subscription owner, or a delegate the owner added. `describe_access` tells you which, and under what limits. To create a subscription, see [Turn on spending](#3-turn-on-spending).
+- **A wallet that signs a text message.** An Ed25519 signature over the message's raw UTF-8 bytes: what Solana wallets call `signMessage`.
+
+### The flow
+
+| Step | Call | What comes back |
+|---|---|---|
+| 1 | `describe_access({ address, owner? })` | The wallet's `role` (`owner`, `delegate` or `none`), its limits, and `canRequestRounds` |
+| 2 | `begin_session({ address, owner? })` | The `message` to sign, an opaque `challenge`, and `expiresAt` |
+| 3 | Your wallet signs `message` | A 64-byte signature |
+| 4 | `complete_session({ challenge, signature })` | A `sessionToken`, the `role` it carries, and `expiresAt` |
+| 5 | `execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` | The signed attestation and verifier arguments |
+
+Steps 2 to 4 happen once per session. Step 5 repeats until the token expires, and each call uses one round of the subscription's quota.
+
+Step 1 signs and spends nothing, so run it first: a wallet with role `none` is refused at step 4, after you have already signed.
+
+### What you sign
+
+`begin_session` returns a message like this:
+
+```text
+gateway.example wants you to sign in with your Solana account:
+<your wallet address>
+
+Sign in to Molpha gateway <gateway PDA> as subscriber or delegate. This signature does not move funds.
+
+URI: https://gateway.example/v1/session
+Version: 1
+Chain ID: EtWTRABZaYq6iMfeYKouRu166VU2xqa1
+Nonce: 5f3a9c0e7b1d4a26c8e0f1a2b3c4d5e6
+Issued At: 2026-10-07T12:00:00.000Z
+Expiration Time: 2026-10-07T12:05:00.000Z
+Resources:
+- molpha:program:<program id>
+- molpha:gateway:<gateway PDA>
+- molpha:subscription:<subscription owner>
+```
+
+Before the server returns it, it checks the gateway's challenge against its own configuration: the domain and URI are the configured gateway's, the chain is the `SOLANA_RPC` cluster, the statement and resources name the Gateway PDA and program the server derived itself, and the message expires within five minutes. A challenge that says anything else is refused and never reaches your wallet.
+
+Read it anyway before you sign. The first line names the gateway you expect, the second your address, and the last resource the subscription you mean to use.
+
+### Sign the message
+
+- Sign the `message` string exactly as returned: its UTF-8 bytes, with no prefix, no envelope and no trailing newline.
+- Use the wallet's message-signing function, not transaction signing.
+- Pass the signature as base58, base64 or hex. The server detects which; name it with `signatureEncoding` if you prefer.
+- `solana sign-offchain-message` will **not** work: it wraps the text in an envelope, and the result is refused with `invalid_signature`.
+- Sign and call `complete_session` before `expiresAt` (about five minutes). A signed message opens one session, once.
+
+With a wallet adapter in a browser, `await wallet.signMessage(new TextEncoder().encode(message))` returns the signature bytes. In Node, with a devnet keypair file and [`@solana/kit`](https://www.npmjs.com/package/@solana/kit):
+
+```js
+import { readFileSync } from "node:fs";
+import { createKeyPairFromBytes, getBase58Decoder, signBytes } from "@solana/kit";
+
+// message: the `message` string begin_session returned
+const secret = Uint8Array.from(JSON.parse(readFileSync(process.env.KEYPAIR_PATH, "utf8")));
+const { privateKey } = await createKeyPairFromBytes(secret);
+const signature = getBase58Decoder().decode(await signBytes(privateKey, new TextEncoder().encode(message)));
+```
+
+An agent wallet (Privy, Turnkey and others) works the same way when it exposes a raw message-signing call. Do not paste a private key into chat to get a signature.
+
+### What a session is
+
+- **Short-lived.** 30 minutes by default, and never past the subscription term. `expiresAt` is in the result. There is no refresh: sign in again for a new token.
+- **One wallet, one gateway.** `complete_session` returns the `gatewayEndpoint` that issued the token. When the server is configured with several gateways, pass it to `execute_subscription_round`.
+- **Identity only.** The gateway re-reads the subscription and the delegate account from chain for every round. Removing a delegate, or letting the subscription lapse, ends access within seconds, whatever tokens exist.
+- **A credential.** The token admits rounds on the subscription until it expires, so keep it out of logs and version control. It passes through the hosted server on each `execute_subscription_round` call and is never stored, cached or logged there.
+- **Bounded per wallet.** A gateway keeps a limited number of live sessions per wallet (16 by default); opening another ends the oldest.
+
+### Delegates
+
+A subscription owner can let another wallet, such as an agent's, request rounds without sharing the owner key. The owner sends the Molpha program's `add_delegate` instruction from their own wallet, with the delegate's address and `max_data_requests`, the rounds that delegate may request per subscription term. `remove_delegate` revokes it; there is no pause. This package has no command for either: use a client for the Molpha program.
+
+The delegate then signs in with its own wallet as `address` and the owner's wallet as `owner`, in both `describe_access` and `begin_session`. A delegate account is keyed by owner and delegate, so the owner cannot be left out. The delegate's limit is enforced by the gateway, and rounds it runs also count against the plan's quota.
+
+### Without the MCP server
+
+The session routes are the gateway's own, so any HTTP client can use them. This also keeps the token off the hosted server entirely.
+
+| Request | Purpose |
+|---|---|
+| `GET /v1/session/challenge?address=<wallet>[&owner=<owner>]` | The sign-in terms (`data.info`) and the exact text to sign (`data.message`) |
+| `POST /v1/session` with a `SIGN-IN-WITH-X` header | Exchanges the signed message for `data.token`. Answers `201`. |
+| `POST /v1/round/execute` with `Authorization: Bearer <token>` | Runs a round. Send no `authSig` or `authTimestamp`. |
+| `DELETE /v1/session` with `Authorization: Bearer <token>` | Signs out. Answers `204`. |
+
+The `SIGN-IN-WITH-X` header is base64 of a JSON object: the challenge's `info` fields, plus `address`, `chainId`, `type`, `signatureScheme` and the base58 `signature`.
+
+```js
+const gateway = "https://gateway.example";
+const { data } = await (await fetch(`${gateway}/v1/session/challenge?address=${address}`)).json();
+
+// Check data.message names the gateway, chain and subscription you expect, then sign it as above.
+const payload = { ...data.info, address: data.address, chainId: data.chainId, type: "ed25519", signatureScheme: "siws", signature };
+const res = await fetch(`${gateway}/v1/session`, {
+  method: "POST",
+  headers: { "SIGN-IN-WITH-X": Buffer.from(JSON.stringify(payload)).toString("base64") }
+});
+const { data: session } = await res.json(); // session.token, session.expiresAt (unix seconds)
+```
+
+Calling the gateway directly skips the checks `begin_session` makes on the challenge, so make them yourself before signing. An optional JSON body `{ "ttlSeconds": 900 }` on `POST /v1/session` asks for a shorter session, up to `sessionMaxTtlSeconds` from `GET /v1/info`.
+
+### When it fails
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `sessions_unavailable` | The gateway has sessions disabled | Use x402 rounds, or a gateway with sessions |
+| `invalid_signature` | Not the address's signature over the exact message | Sign `message` as returned, as raw UTF-8 |
+| `invalid_challenge` | Not a `challenge` that `begin_session` returned | Call `begin_session` again |
+| `sign_in_rejected` | The gateway refused the message: expired, or already used | Call `begin_session` again |
+| `forbidden` | No active subscription, out of quota, or no delegate account under that owner | Check `describe_access` |
+| `session_invalid` | The token is unknown, expired or revoked | Sign in again |
+
+`execute_subscription_round` still spends on every call. After an unclear error, read state before trying again.
+
+Try: *"Check with describe_access whether `<my wallet>` can request subscription rounds. If it can, begin a session for it and show me the message to sign. Wait for my signature before going further."*
+
 ## Set it up with a prompt
 
 Paste this into an agent that can run shell commands (Claude Code, Cursor, Codex…). It sets up the build level in dry-run mode and stops before any spending.
@@ -233,4 +375,4 @@ Make no writes and spend nothing.
 - Keep secrets out of chat and out of version control. Prefer Privy or Turnkey for anything that runs unattended.
 - The testnet verifier addresses may change between releases, and the EVM address the SDK reports can be a fallback for an older interface. The skill says how to check; do not treat a `get_capabilities` address as audited.
 
-See also: [README](../README.md) for the full tool reference, and [hosted-http.md](hosted-http.md) for the keyless hosted mode.
+See also: [README](../README.md) for the full tool reference, and [hosted-http.md](hosted-http.md) for the rest of the keyless hosted mode: x402 rounds, Solana submits, and running the server.
