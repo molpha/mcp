@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import "../src/env.js";
 import { parseArgs } from "node:util";
 import { createSolanaClient, requireMethod } from "../src/clients.js";
@@ -6,59 +5,63 @@ import { loadConfig } from "../src/config.js";
 import { getSdkExport } from "../src/sdk.js";
 import { createSigner } from "../src/signer/factory.js";
 
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    plan: { type: "string", default: process.env.MOLPHA_PLAN ?? "Basic" },
-    "max-price-usdc": { type: "string", default: process.env.MAX_PRICE_USDC },
-    "dry-run": { type: "boolean", default: false }
+/** Subscribes to (or extends) a plan with the configured signer. `argv` is what follows `provision`. */
+export async function runProvision(argv: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      plan: { type: "string", default: process.env.MOLPHA_PLAN ?? "Basic" },
+      "max-price-usdc": { type: "string", default: process.env.MAX_PRICE_USDC },
+      "dry-run": { type: "boolean", default: false }
+    }
+  });
+
+  const command = positionals[0] ?? "subscribe";
+
+  if (command !== "subscribe" && command !== "extend") {
+    throw new Error("usage: molpha-mcp provision <subscribe|extend> [--plan Basic] [--max-price-usdc <amount>] [--dry-run]");
   }
-});
 
-const command = positionals[0] ?? "subscribe";
+  const config = loadConfig();
+  const signer = await createSigner(config);
+  const solana = createSolanaClient(config, signer);
 
-if (command !== "subscribe" && command !== "extend") {
-  throw new Error("usage: molpha-provision <subscribe|extend> [--plan Basic] [--max-price-usdc <amount>] [--dry-run]");
-}
+  const planName = values.plan ?? "Basic";
+  const plan = resolvePlanId(planName);
+  const maxPriceUsdc = values["max-price-usdc"];
 
-const config = loadConfig();
-const signer = await createSigner(config);
-const solana = createSolanaClient(config, signer);
+  if (!values["dry-run"] && !maxPriceUsdc) {
+    throw new Error("--max-price-usdc or MAX_PRICE_USDC is required for non-dry-run bootstrap");
+  }
 
-const planName = values.plan ?? "Basic";
-const plan = resolvePlanId(planName);
-const maxPriceUsdc = values["max-price-usdc"];
+  const summary = {
+    command,
+    owner: signer.publicKey,
+    plan: planName,
+    maxPriceUsdc,
+    gatewayEndpoints: config.gatewayEndpoints,
+    solanaRpc: config.solanaRpc,
+    note: "Bootstrap only — rounds and submits run in the MCP runtime with the same OWNER_KEYPAIR. A subscription is optional: execute_x402_round self-funds a round over x402 when unsubscribed."
+  };
 
-if (!values["dry-run"] && !maxPriceUsdc) {
-  throw new Error("--max-price-usdc or MAX_PRICE_USDC is required for non-dry-run bootstrap");
-}
+  if (values["dry-run"]) {
+    console.log(JSON.stringify({ dryRun: true, ...summary }, null, 2));
+    return;
+  }
 
-const summary = {
-  command,
-  owner: signer.publicKey,
-  plan: planName,
-  maxPriceUsdc,
-  gatewayEndpoints: config.gatewayEndpoints,
-  solanaRpc: config.solanaRpc,
-  note: "Bootstrap only — rounds and submits run in the MCP runtime with the same OWNER_KEYPAIR. A subscription is optional: execute_x402_round self-funds a round over x402 when unsubscribed."
-};
+  const getPlan = requireMethod<[unknown], Promise<unknown>>(solana, "getPlan");
+  const selectedPlan = await getPlan(plan);
 
-if (values["dry-run"]) {
-  console.log(JSON.stringify({ dryRun: true, ...summary }, null, 2));
-  process.exit(0);
-}
-
-const getPlan = requireMethod<[unknown], Promise<unknown>>(solana, "getPlan");
-const selectedPlan = await getPlan(plan);
-
-if (command === "subscribe") {
-  const subscribe = requireMethod<[unknown, Record<string, unknown>], Promise<unknown>>(solana, "subscribe");
-  const subscription = await subscribe(plan, { maxPriceUsdc });
-  console.log(stringifyJson({ ...summary, selectedPlan, subscription }));
-} else {
-  const extendSubscription = requireMethod<[Record<string, unknown>], Promise<unknown>>(solana, "extendSubscription");
-  const subscription = await extendSubscription({ maxPriceUsdc });
-  console.log(stringifyJson({ ...summary, selectedPlan, subscription }));
+  if (command === "subscribe") {
+    const subscribe = requireMethod<[unknown, Record<string, unknown>], Promise<unknown>>(solana, "subscribe");
+    const subscription = await subscribe(plan, { maxPriceUsdc });
+    console.log(stringifyJson({ ...summary, selectedPlan, subscription }));
+  } else {
+    const extendSubscription = requireMethod<[Record<string, unknown>], Promise<unknown>>(solana, "extendSubscription");
+    const subscription = await extendSubscription({ maxPriceUsdc });
+    console.log(stringifyJson({ ...summary, selectedPlan, subscription }));
+  }
 }
 
 function resolvePlanId(plan: string): number {

@@ -37,6 +37,8 @@ export interface ToolDependencies {
   config?: MolphaConfig;
   /** Set by the hosted HTTP server: tools take the caller's wallet address and return work for it to sign. */
   hosted?: { challengeKeys?: ChallengeKeys };
+  /** Set by the local server when it holds no signer: only the read tools are offered. `reason` says why. */
+  readOnly?: { reason: string };
 }
 
 export function assertActive(context: RequestContext): void {
@@ -71,6 +73,11 @@ export function getSharedRuntime(env: NodeJS.ProcessEnv = process.env): SharedRu
  * wants a wallet, so it gets one that can only be read from.
  */
 export function createRequestContext(runtime: SharedRuntime, lifecycle?: RequestLifecycle): RequestContext {
+  return { ...createSignerlessContext(runtime), hosted: true, ...(lifecycle ? { lifecycle } : {}) };
+}
+
+/** Chain and gateway access with no signer. The SDK's Solana client wants a wallet, so it gets one that can only be read from. */
+export function createSignerlessContext(runtime: SharedRuntime): RequestContext {
   const refuse = async (): Promise<never> => { throw new Error("Read-only wallet cannot sign"); };
   const solana = createSolanaClient(runtime.config, {
     publicKey: address("11111111111111111111111111111111"),
@@ -79,7 +86,22 @@ export function createRequestContext(runtime: SharedRuntime, lifecycle?: Request
     signTransaction: refuse,
     signAllTransactions: refuse
   }, runtime.connection);
-  return { ...runtime, solana, gateway: createGateway(runtime.config, solana), hosted: true, ...(lifecycle ? { lifecycle } : {}) };
+  return { ...runtime, solana, gateway: createGateway(runtime.config, solana) };
+}
+
+let cachedReadOnlyContextPromise: Promise<RequestContext> | undefined;
+
+/**
+ * The local server's context when it holds no signer. It loads the full environment (so the user's RPC and
+ * gateway settings apply) but never a payer key: a read-only server cannot pay a source, and must not say it can.
+ */
+export function getReadOnlyContext(): Promise<RequestContext> {
+  cachedReadOnlyContextPromise ??= (async () => {
+    const config = loadConfig();
+    if (config.sourcePayment) config.sourcePayment = { ...config.sourcePayment, payerKey: undefined, networks: [] };
+    return createSignerlessContext({ config, connection: new Connection(config.solanaRpc, "confirmed") });
+  })();
+  return cachedReadOnlyContextPromise;
 }
 
 let cachedContextPromise: Promise<MolphaContext> | undefined;

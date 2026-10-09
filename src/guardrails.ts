@@ -184,6 +184,24 @@ export async function withX402DailySpendSerialization<T>(
   }
 }
 
+/**
+ * Whether a write tool runs as a dry run. `MOLPHA_DRY_RUN=true` is a lock: a call cannot opt out of it with
+ * `dryRun: false`, so going live takes a change to the server's config, not to one tool call. Without the lock,
+ * a call's own `dryRun` wins and the default is live.
+ */
+export function resolveDryRun(requested: boolean | undefined, config: GuardrailConfig): boolean {
+  if (config.dryRunDefault) {
+    if (requested === false) {
+      throw Object.assign(
+        new Error("This server is locked to dry-run (MOLPHA_DRY_RUN=true), so dryRun: false is refused. Nothing was signed or sent."),
+        { code: "dry_run_locked" }
+      );
+    }
+    return true;
+  }
+  return requested ?? false;
+}
+
 export interface WritePreview {
   dryRun: true;
   action: string;

@@ -130,9 +130,8 @@
     "signer_backend": {
       "type": "string",
       "title": "Signer backend",
-      "description": "memory (local keypair) or keychain (Privy / Turnkey).",
-      "default": "memory",
-      "required": true
+      "description": "memory (local keypair), keychain (Privy / Turnkey), or none. Leave empty with no keypair for a read-only server that cannot sign or spend.",
+      "required": false
     },
     "owner_keypair": {
       "type": "file",
@@ -238,8 +237,8 @@
     "dry_run": {
       "type": "boolean",
       "title": "Dry run",
-      "description": "Preview all write and spend operations without submitting them.",
-      "default": false,
+      "description": "Preview all write and spend operations without submitting them. While on, a tool call cannot turn it off: to spend, untick this and restart.",
+      "default": true,
       "required": false
     },
     "max_executes_per_day": {

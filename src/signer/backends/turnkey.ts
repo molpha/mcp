@@ -50,7 +50,7 @@ export class TurnkeySigner implements MolphaSigner {
       });
     } catch (error) {
       throw new Error(
-        "@turnkey/sdk-server and @turnkey/solana are not installed. Run `npm install @turnkey/sdk-server @turnkey/solana`.",
+        "@turnkey/sdk-server and @turnkey/solana could not be loaded. They are optional dependencies of @molpha/mcp: reinstall without --omit=optional, or run `npm install @turnkey/sdk-server @turnkey/solana` next to the server, to use KEYCHAIN_BACKEND=turnkey.",
         { cause: error }
       );
     }

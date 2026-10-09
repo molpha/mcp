@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { requireSigner, assertActive, getMolphaContext, requireMethod, type ToolDependencies } from "../clients.js";
 import { parseUsdcAtomic } from "../config.js";
-import { recordSourceSpend, refuseSourcePayment, withSourceSpendSerialization } from "../guardrails.js";
+import { recordSourceSpend, refuseSourcePayment, resolveDryRun, withSourceSpendSerialization } from "../guardrails.js";
 import { toolHandler } from "../mcp.js";
 import {
   authorizePayment, createPayer, describeQuote, disabledError, eligibleSetSizeFor, payerAddress, probeSourceTerms,
@@ -68,7 +68,7 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
       const context = await (dependencies.getContext ?? getMolphaContext)();
       requireSigner(context);
       const { config, gateway } = context;
-      const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
+      const isDryRun = resolveDryRun(dryRun, config.guardrails);
       const sourceId = prepareRound(args);
 
       if (sourcePayment) {

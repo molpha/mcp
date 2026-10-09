@@ -48,7 +48,7 @@ export function registerGetLatestValueTool(server: ToolServer, dependencies: Too
         "readFeed"
       );
       const canonicalSourceId = toCanonicalHex(sourceId, 32, "sourceId");
-      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly for unsigned hosted feed reads."), { code: "submitter_required" });
+      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly: this server has no signer to default to."), { code: "submitter_required" });
       const feedSubmitter = submitter ?? String(signer!.publicKey);
 
       return {

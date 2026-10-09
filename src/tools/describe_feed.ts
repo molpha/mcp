@@ -47,7 +47,7 @@ export function registerDescribeFeedTool(server: ToolServer, dependencies: ToolD
     {
       title: "Describe Molpha feed",
       description:
-        "Read the Solana feed account for (sourceId, signaturesRequired, submitter) — last committed value, canonicalTimestamp, registryVersion, signersBitmap — and this signer's subscription status. Pass sourceId, or apiConfig to derive it (see derive_source_id). Feeds are keyed per submitter: submitter defaults to this server's signer, so pass another wallet's address to read the feed it maintains. A null feed is normal before that submitter's first submit_attestation. `feed.valueKind` is the attested encoding of the stored bytes (\"value\" = raw payload, \"hash\" = keccak digest), NOT a scale hint: Molpha attests no decimals on-chain. When apiConfig is supplied, `valueEncoding` reports the off-chain valueTransform that produced the number, flagged as unattested; with `aggregation` (median tolerance mode) the scale is attested through the sourceId and `valueEncoding.decodedValue` renders the stored signed int256.",
+        "Read the Solana feed account for (sourceId, signaturesRequired, submitter) — last committed value, timestamp, registryVersion, signersBitmap — and this signer's subscription status. Pass sourceId, or apiConfig to derive it (see derive_source_id). Feeds are keyed per submitter: submitter defaults to this server's signer, so pass another wallet's address to read the feed it maintains. A null feed is normal before that submitter's first submit_attestation. `feed.valueKind` is the attested encoding of the stored bytes (\"value\" = raw payload, \"hash\" = keccak digest), NOT a scale hint: Molpha attests no decimals on-chain. When apiConfig is supplied, `valueEncoding` reports the off-chain valueTransform that produced the number, flagged as unattested; with `aggregation` (median tolerance mode) the scale is attested through the sourceId and `valueEncoding.decodedValue` renders the stored signed int256.",
       inputSchema: {
         sourceId: sourceIdSchema.optional(),
         apiConfig: apiConfigSchema.optional(),
@@ -72,7 +72,7 @@ export function registerDescribeFeedTool(server: ToolServer, dependencies: ToolD
     ) => {
       const { config, solana, signer, hosted } = await (dependencies.getContext ?? getMolphaContext)();
       const resolvedSourceId = resolveSourceId(sourceId, apiConfig);
-      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly for unsigned hosted feed reads."), { code: "submitter_required" });
+      if (!submitter && !signer) throw Object.assign(new Error("Pass submitter explicitly: this server has no signer to default to."), { code: "submitter_required" });
       const feedSubmitter = submitter ?? String(signer!.publicKey);
 
       const [onChainFeed, subscription] = await Promise.all([

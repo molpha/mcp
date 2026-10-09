@@ -47,7 +47,7 @@ export class PrivySigner implements MolphaSigner {
       });
     } catch (error) {
       throw new Error(
-        "@privy-io/node is not installed. Run `npm install @privy-io/node` to use SIGNER_BACKEND=keychain with KEYCHAIN_BACKEND=privy.",
+        "@privy-io/node could not be loaded. It is an optional dependency of @molpha/mcp: reinstall without --omit=optional, or run `npm install @privy-io/node` next to the server, to use KEYCHAIN_BACKEND=privy.",
         { cause: error }
       );
     }

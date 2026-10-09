@@ -39,7 +39,7 @@ const sdkAttestation = {
     sourceId: flatResult.sourceId,
     registryVersion: flatResult.registryVersion,
     signaturesRequired: flatResult.signaturesRequired,
-    canonicalTimestamp: flatResult.timestamp
+    timestamp: flatResult.timestamp
   },
   signature: { s: flatResult.s, commitmentAddr: flatResult.commitmentAddr, signersBitmap: flatResult.signersBitmap },
   value: flatResult.value,
@@ -51,7 +51,7 @@ const feedAccount = {
   sourceId: Array(32).fill(0x11),
   value: new Uint8Array(32).fill(0x22),
   valueKind: { value: {} },
-  canonicalTimestamp: new BN(1714300000),
+  timestamp: new BN(1714300000),
   signaturesRequired: 1,
   signersBitmap: [...Array(31).fill(0), 4],
   registryVersion: 7,
@@ -97,7 +97,8 @@ describe("get_capabilities", () => {
     expect(await callTool("get_capabilities", { includeAbi: true })).toMatchObject({
       registryVersion: 7,
       nodeCount: 1,
-      payment: { subscription: "execute_subscription_round", x402: "execute_x402_round" }
+      runLevel: "live",
+      payment: { subscription: "execute_subscription_round", x402: "execute_x402_round", signing: "server" }
     });
 
     gateway.getNodes.mockRejectedValueOnce(new Error("gateway down"));
@@ -114,7 +115,7 @@ describe("feed reads", () => {
 
     expect(await callTool("get_latest_value", { sourceId: flatResult.sourceId, signaturesRequired: 1 })).toMatchObject({
       submitter: signer,
-      feed: { sourceId: `0x${"11".repeat(32)}`, valueKind: "value", canonicalTimestamp: "1714300000" }
+      feed: { sourceId: `0x${"11".repeat(32)}`, valueKind: "value", timestamp: "1714300000" }
     });
 
     solana.readFeed.mockResolvedValueOnce(null);
@@ -125,12 +126,11 @@ describe("feed reads", () => {
 
   it("get_latest_value presents a feed from a program that stores `timestamp` in milliseconds", async () => {
     const { solana } = fakeContext();
-    const { canonicalTimestamp: _seconds, ...rest } = feedAccount;
+    const { timestamp: _seconds, ...rest } = feedAccount;
     solana.readFeed.mockResolvedValueOnce({ ...rest, timestamp: new BN("1791397718000") });
 
     const out = await callTool("get_latest_value", { sourceId: flatResult.sourceId, signaturesRequired: 1 });
     expect(out).toMatchObject({ feed: { timestamp: "1791397718000", valueKind: "value" } });
-    expect((out.feed as Record<string, unknown>).canonicalTimestamp).toBeUndefined();
   });
 
   it("describe_feed reports the feed, the unattested value encoding, and the subscription", async () => {
@@ -184,7 +184,7 @@ describe("execute_subscription_round", () => {
         payload: expect.objectContaining({
           value: `0x${flatResult.valuePacked}`,
           sourceId: `0x${flatResult.sourceId}`,
-          canonicalTimestamp: flatResult.timestamp
+          timestamp: flatResult.timestamp
         }),
         signature: expect.objectContaining({ s: `0x${flatResult.s}`, signersBitmap: expect.stringMatching(/^0x0*4$/) })
       })

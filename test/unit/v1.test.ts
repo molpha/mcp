@@ -99,7 +99,7 @@ describe("toDataUpdateArtifact", () => {
         registryVersion: 42,
         signaturesRequired: 3,
         value: "123",
-        canonicalTimestamp: 1714300000
+        timestamp: 1714300000
       },
       signature: {
         signature: `0x${"0".repeat(60)}5165`,

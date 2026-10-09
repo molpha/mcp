@@ -23,7 +23,8 @@ import { type ToolServer } from "./types.js";
 /**
  * The stdio server holds a signer and offers each operation as one call. The hosted server
  * (`dependencies.hosted`) holds none: the same operations take the caller's wallet address and
- * are split around the one step only that wallet can do, signing.
+ * are split around the one step only that wallet can do, signing. A local server that holds no signer
+ * (`dependencies.readOnly`) offers only the read tools.
  */
 export function registerTools(server: ToolServer, dependencies: ToolDependencies = {}): void {
   registerGetCapabilitiesTool(server, dependencies);
@@ -45,7 +46,7 @@ export function registerTools(server: ToolServer, dependencies: ToolDependencies
     registerExecutePreparedX402RoundTool(server, dependencies);
     registerPrepareSubmitAttestationTool(server, dependencies);
     registerSendSignedTransactionTool(server, dependencies);
-  } else {
+  } else if (!dependencies.readOnly) {
     registerExecuteSubscriptionRoundTool(server, dependencies);
     registerExecuteX402RoundTool(server, dependencies);
     registerSubmitAttestationTool(server, dependencies);

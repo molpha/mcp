@@ -21,9 +21,11 @@ Every operation that needs a signature is therefore split into a step that prepa
 
 The remaining tools need no signature: `get_capabilities`, `derive_source_id`, `build_verifier_calldata`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status`, `list_providers`, `get_provider`, `quote_source_payment`. `describe_feed` and `get_latest_value` need an explicit `submitter`, and `get_x402_status` reports a balance only for a `payer` you name: the server has no wallet of its own to default to.
 
-Requests that still carry the removed `X-Molpha-*` signer headers, or anything shaped like a wallet secret in any header, are refused with `400` before the request is read. Private API secrets (`encryptSecrets`) are refused too: they must not pass through a shared server. Use `npx @molpha/mcp` locally for those, where a local keypair, Privy or Turnkey signer is still supported.
+Requests that still carry the removed `X-Molpha-*` signer headers, or anything shaped like a wallet secret in any header, are refused with `400` before the request is read. Private API secrets (`encryptSecrets`) are refused too: they must not pass through a shared server. Run the local server for those (`npx -y @molpha/mcp`, see [integration.md](integration.md)), where a local keypair, Privy or Turnkey signer is still supported.
 
 ### Subscription rounds: sign in once
+
+A step-by-step walkthrough, with a signing example and delegate setup, is in [integration.md](integration.md#4-sign-in-with-your-own-wallet-siwx).
 
 `begin_session({ address, owner? })` returns a short Sign-In-With-Solana message (the x402 `sign-in-with-x` extension's format). It names the gateway, the program and the subscription owner, states that it moves no funds, and expires in about five minutes. The server checks that the gateway's challenge states exactly the configured gateway's terms before returning it. Sign `message` as UTF-8 text — no prefix, no envelope, no trailing newline. `solana sign-offchain-message` wraps the text in an envelope and will **not** verify.
 
@@ -164,7 +166,7 @@ Hosted capabilities expose only the RPC URL origin, omitting provider API keys i
      molpha-mcp-http
    ```
 
-   The image uses Node 24 and a non-root user. It includes the locked production dependency tree; the Privy and Turnkey signer SDKs are development-only and are not in the image, since the hosted server signs nothing. Docker build context uses an allowlist and excludes local credentials, `.env`, `.git`, and `.mcpb` artifacts. Do not bake runtime secrets into an image.
+   The image uses Node 24 and a non-root user. It includes the locked production dependency tree; the Privy and Turnkey signer SDKs are optional dependencies of the package and are pruned from the image (`npm prune --omit=dev --omit=optional`), since the hosted server signs nothing. Docker build context uses an allowlist and excludes local credentials, `.env`, `.git`, and `.mcpb` artifacts. Do not bake runtime secrets into an image.
 2. Deploy one instance behind a TLS reverse proxy and Cloudflare, route `/mcp` and `/healthz`, and disable caching. No custom headers need to be forwarded. Keep all public hosted policy defaults. Set proxy/LB idle and response timeouts to at least 120 seconds and shutdown grace to at least 95 seconds. Do not automatically retry POSTs.
 3. Restrict origin ingress to your proxy. Configure exact trusted proxy IPs and have the proxy overwrite the client-IP header. Keep local health-check hosts in the Host allowlist. Supply gateway authority pins if the gateway does not publish `/v1/info`. Set `MOLPHA_HTTP_CHALLENGE_SECRET` as a deployment secret.
 4. Configure health-based process/container replacement and an external uptime monitor for `/healthz`. A Docker `HEALTHCHECK` alone marks unhealthy containers; the deployment platform must implement replacement. Alert on unavailable health, increased failures, and timeouts. Store only the safe application fields; disable header/body capture and verbose provider tracing throughout the path. Set operational log retention to 7 days.
