@@ -16,9 +16,10 @@ Molpha has two parts for agents:
 | Build an integration and preview every write | [Build](#2-build-with-a-testnet-wallet) | A testnet wallet |
 | Run real rounds and publish on Solana | [Spend](#3-turn-on-spending) | Devnet SOL and USDC |
 | Run subscription rounds with a wallet the server never holds | [Sign in](#4-sign-in-with-your-own-wallet-siwx) | A wallet that can sign a text message, and access to a subscription |
+| Pay per round or submit to Solana from your own wallet, or run the HTTP server yourself | [Hosted HTTP](#5-the-hosted-http-server) | A wallet that can sign a Solana transaction |
 | Have your agent do the setup | [Prompt](#set-it-up-with-a-prompt) | An agent that can run commands |
 
-All paths need **Node.js 24 or later**.
+Every local path needs **Node.js 24 or later**. The hosted server needs nothing installed.
 
 Your agent can always ask the server where it stands: `get_capabilities` returns a `runLevel` and the reason for it.
 
@@ -57,7 +58,7 @@ One-click install of the same read-only server:
 [Add to Cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=molpha&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBtb2xwaGEvbWNwQDAuMi4wIiwiLS1yZWFkLW9ubHkiXX0%3D) · [Install in VS Code](vscode:mcp/install?%7B%22name%22%3A%22molpha%22%2C%22type%22%3A%22stdio%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40molpha%2Fmcp%400.2.0%22%2C%22--read-only%22%5D%7D)
 <!-- /molpha:generated:explore-links -->
 
-**Hosted (planned).** Nothing to install, and no keys involved. `https://mcp.molpha.io/mcp` is not deployed yet.
+**Hosted.** Nothing to install, and no keys involved.
 
 ```sh
 claude mcp add --transport http molpha https://mcp.molpha.io/mcp
@@ -213,18 +214,11 @@ The local server in sections 2 and 3 holds a signer, so it authenticates subscri
 
 This is Sign-In-With-X (SIWX): the x402 `sign-in-with-x` extension, in its Solana form (Sign-In-With-Solana). The signature is over plain text. It is not a transaction and moves no funds.
 
-x402 pay-per-request rounds need no sign-in: the payment is the authorization. See [hosted-http.md](hosted-http.md#x402-rounds-prepare-sign-execute).
+x402 pay-per-request rounds need no sign-in: the payment is the authorization. See [The hosted HTTP server](#5-the-hosted-http-server).
 
 ### Before you start
 
-- **A hosted server.** `https://mcp.molpha.io/mcp` is not deployed yet **(planned)**. Until it is, run the same keyless server on your machine and connect your client to `http://127.0.0.1:8402/mcp` (client snippets are in [hosted-http.md](hosted-http.md#client-configuration)):
-
-<!-- molpha:generated:hosted-local -->
-```sh
-npx -y @molpha/mcp@0.2.0 --http --port 8402
-```
-<!-- /molpha:generated:hosted-local -->
-
+- **A hosted server.** `https://mcp.molpha.io/mcp` (the client snippets are in [section 1](#1-explore-without-a-wallet)), or [one you run yourself](#run-it-yourself).
 - **A gateway with sessions enabled.** `GET <gateway>/v1/info` must report `"sessionAuth": true`. Against a gateway that reports `false`, `begin_session` answers `sessions_unavailable`: use x402 rounds, or the local server from section 2. If you run the server yourself, its `GATEWAY_ENDPOINTS` entry must be the gateway's `publicOrigin` from the same response: the message is signed for that host, and a challenge for any other is refused.
 - **Access to a subscription.** The wallet is the subscription owner, or a delegate the owner added. `describe_access` tells you which, and under what limits. To create a subscription, see [Turn on spending](#3-turn-on-spending).
 - **A wallet that signs a text message.** An Ed25519 signature over the message's raw UTF-8 bytes: what Solana wallets call `signMessage`.
@@ -348,6 +342,34 @@ Calling the gateway directly skips the checks `begin_session` makes on the chall
 
 Try: *"Check with describe_access whether `<my wallet>` can request subscription rounds. If it can, begin a session for it and show me the message to sign. Wait for my signature before going further."*
 
+## 5. The hosted HTTP server
+
+`https://mcp.molpha.io/mcp` is the same server in HTTP mode. It is **keyless**: it holds no signer and accepts no credentials, so a client is configured with the URL alone ([section 1](#1-explore-without-a-wallet)). Anything that needs a signature comes back for your own wallet to sign.
+
+| Operation | Tools, in order | The wallet signs |
+|---|---|---|
+| Subscription round | `begin_session` → `complete_session` → `execute_subscription_round` ([section 4](#4-sign-in-with-your-own-wallet-siwx)) | A text message, once per session |
+| x402 round | `prepare_x402_round` → `execute_x402_round` | A USDC transfer, not broadcast |
+| Solana submit | `prepare_submit_attestation` → `send_signed_transaction` | The submit transaction |
+
+- **x402 round.** Sign `unsignedTransaction` with the payer's wallet and do **not** broadcast it: the gateway's facilitator co-signs and submits. A prepared payment lives about a minute; after that `execute_x402_round` answers `payment_expired`, so prepare again. One payment buys one round.
+- **Solana submit.** Sign the prepared transaction, then pass it to `send_signed_transaction` or broadcast it yourself.
+- **Reads.** The server has no wallet to default to. Pass `submitter` to `describe_feed` and `get_latest_value`, and `payer` to `get_x402_status`.
+- **Not offered.** `autoSubmit`, `dryRun` and `encryptSecrets`. The prepare steps are already previews, and private API secrets must not pass through a shared server: use the local server for those.
+- **Limits.** There are no daily budgets by default, only the per-round `MOLPHA_X402_MAX_PRICE_USDC` ceiling. Check each `summary` against your wallet's own view of the transaction, and set a spending policy on the wallet.
+
+### Run it yourself
+
+<!-- molpha:generated:hosted-local -->
+```sh
+npx -y @molpha/mcp@0.2.0 --http --port 8402
+```
+<!-- /molpha:generated:hosted-local -->
+
+This serves `POST /mcp` and `GET /healthz` on `127.0.0.1:8402`; point your client at `http://127.0.0.1:8402/mcp`. Set `MOLPHA_HTTP_CHALLENGE_SECRET` (`openssl rand -hex 32`) first, or the prepare tools answer `missing_config`. Claude Desktop connects through `npx -y mcp-remote <url>`, with `--allow-http` for a loopback URL.
+
+The operator reference (configuration, error codes, deployment) is [hosted-http.md](hosted-http.md), and the Vercel runbook is [vercel.md](vercel.md).
+
 ## Set it up with a prompt
 
 Paste this into an agent that can run shell commands (Claude Code, Cursor, Codex…). It sets up the build level in dry-run mode and stops before any spending.
@@ -375,4 +397,4 @@ Make no writes and spend nothing.
 - Keep secrets out of chat and out of version control. Prefer Privy or Turnkey for anything that runs unattended.
 - The testnet verifier addresses may change between releases, and the EVM address the SDK reports can be a fallback for an older interface. The skill says how to check; do not treat a `get_capabilities` address as audited.
 
-See also: [README](../README.md) for the full tool reference, and [hosted-http.md](hosted-http.md) for the rest of the keyless hosted mode: x402 rounds, Solana submits, and running the server.
+See also: [README](../README.md) for the full tool reference, and [hosted-http.md](hosted-http.md) for the hosted server's operator reference.

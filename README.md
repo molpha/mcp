@@ -6,12 +6,73 @@
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI agents fetch signed [Molpha](https://docs.molpha.io/) oracle data, publish it on Solana, and build verifier calldata for EVM and Starknet.
 
-Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet. This server exposes that workflow as MCP tools, with signing behind a local, Privy, or Turnkey wallet, or, on the hosted server, behind your own wallet.
+Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet. This server exposes that workflow as MCP tools, with signing behind a local, Privy, or Turnkey wallet, or, on `mcp.molpha.io`, behind your own wallet.
 
 > [!WARNING]
 > This release targets Solana Devnet and Sepolia verifier networks. Treat it as testnet software, not a production security boundary. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.
 
 ## Quick start
+
+Two recommended ways to connect:
+
+| | [mcp.molpha.io](#mcpmolphaio) | [Local (stdio)](#local-stdio) |
+| --- | --- | --- |
+| Install | Nothing: add the URL to your client | `npx`, Node.js 24 or later |
+| Signer | Your own wallet. The server holds no key. | Local keypair, Privy or Turnkey, held by the server |
+| Subscription rounds | [Sign in with SIWX](#sign-in-with-your-wallet-siwx), then `execute_subscription_round` | `execute_subscription_round` |
+| Spending limits | Your wallet's own policy | Dry-run lock and daily caps in the server |
+| Best for | Getting started, agents that bring their own wallet | Unattended agents, private API sources |
+
+### mcp.molpha.io
+
+Nothing to install, and no keys to hand over. Add the URL to your client.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http molpha https://mcp.molpha.io/mcp
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{ "mcpServers": { "molpha": { "url": "https://mcp.molpha.io/mcp" } } }
+```
+
+The read tools work straight away. The server has no wallet of its own, so name the one you mean: `submitter` for `describe_feed` and `get_latest_value`, `payer` for `get_x402_status`.
+
+Anything that needs a signature is returned for your own wallet to sign, so each such operation is two or three tool calls around one signature:
+
+| Operation | Tools, in order | The wallet signs |
+| --- | --- | --- |
+| Subscription round | `begin_session` → `complete_session` → `execute_subscription_round` | A text message, once per session |
+| x402 round | `prepare_x402_round` → `execute_x402_round` | A USDC transfer, not broadcast |
+| Solana submit | `prepare_submit_attestation` → `send_signed_transaction` | The submit transaction |
+
+`autoSubmit`, `dryRun` and `encryptSecrets` are not offered here. Set spending limits in the wallet's own policy, and use the local server for private API work.
+
+#### Sign in with your wallet (SIWX)
+
+A subscription round on `mcp.molpha.io` is authorized by a **sign-in session**: the wallet signs one Sign-In-With-X text message (the x402 `sign-in-with-x` extension, in its Solana form), and the gateway issues a short-lived bearer token. The message is not a transaction and moves no funds.
+
+| Step | Call | Result |
+| --- | --- | --- |
+| 1 | `describe_access({ address, owner? })` | Whether the wallet is a subscription `owner` or `delegate`, and its limits |
+| 2 | `begin_session({ address, owner? })` | The `message` to sign and an opaque `challenge` |
+| 3 | The wallet signs `message` | An Ed25519 signature over its exact UTF-8 bytes |
+| 4 | `complete_session({ challenge, signature })` | A `sessionToken` and its `expiresAt` |
+| 5 | `execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` | The signed attestation and verifier arguments |
+
+- **Who can sign in.** The subscription owner, or a delegate the owner added with `add_delegate`. A delegate passes the owner's address as `owner`.
+- **How to sign.** The message as returned: raw UTF-8, no prefix, no envelope, no trailing newline. The signature may be base58, base64 or hex. `solana sign-offchain-message` wraps the text and is refused with `invalid_signature`.
+- **What the token is.** A credential for one wallet and one gateway, valid 30 minutes by default and never past the subscription term. It only identifies the caller: the gateway re-reads the subscription and delegate from chain on every round, so `remove_delegate` ends access whatever tokens exist. It passes through this server and is never stored or logged.
+- **What it needs.** A gateway with `sessionAuth: true` in `GET /v1/info`. Otherwise `begin_session` answers `sessions_unavailable` and x402 rounds remain available.
+
+The full walkthrough, with a signing example, delegate setup, gateway routes and error codes, is in [docs/integration.md](docs/integration.md#4-sign-in-with-your-own-wallet-siwx).
+
+### Local (stdio)
+
+The server runs on your machine and holds the signer, so one tool call runs a round or submits to Solana, and `MOLPHA_DRY_RUN` keeps every write a preview until you turn it off.
 
 <!-- molpha:generated:quick-start -->
 Needs Node.js 24 or later. Nothing to clone or build.
@@ -37,14 +98,6 @@ claude mcp add molpha -e SIGNER_BACKEND=keychain -e KEYCHAIN_BACKEND=privy -e PR
 **3. Spend** only when you mean to: fund the wallet, then set `MOLPHA_DRY_RUN=false` in the server's config. The full guide, with Cursor, VS Code, Codex and Claude Desktop, is [docs/integration.md](docs/integration.md).
 <!-- /molpha:generated:quick-start -->
 
-Two ways to run it:
-
-| | Local (stdio) | Hosted (HTTP) |
-| --- | --- | --- |
-| Signer | Local keypair, Privy or Turnkey, held by the server | None: your own wallet signs |
-| Subscription rounds | `execute_subscription_round` | [Sign in with SIWX](#sign-in-with-your-wallet-siwx), then `execute_subscription_round` |
-| Best for | Local development, unattended agents | Nothing to install, no keys in the server |
-
 With no signer configured the server starts **read-only** and offers only the read tools (`runLevel: "read-only"` in `get_capabilities`). `--read-only` or `SIGNER_BACKEND=none` forces it.
 
 ## Tools
@@ -65,9 +118,11 @@ With no signer configured the server starts **read-only** and offers only the re
 | `build_verifier_calldata` | Read, local | Build EVM/Starknet verifier address and `verify()` call arguments. Calldata only: it verifies nothing. |
 | `submit_attestation` | Write | Submit a signed attestation to Solana. Accepts a round tool's output unmodified. |
 
-The hosted server replaces the one-call round and submit tools with prepare/sign/execute pairs ([below](#hosted-http-mode)). Every tool returns `structuredContent` and carries MCP annotations; see [Structured output and annotations](docs/reference.md#structured-output-and-annotations). For tolerance-mode aggregation and the full configuration table, see [docs/reference.md](docs/reference.md).
+On `mcp.molpha.io` the one-call round and submit tools become prepare/sign/execute pairs ([above](#mcpmolphaio)). Every tool returns `structuredContent` and carries MCP annotations; see [Structured output and annotations](docs/reference.md#structured-output-and-annotations). For tolerance-mode aggregation and the full configuration table, see [docs/reference.md](docs/reference.md).
 
 ## Setup
+
+For the [local server](#local-stdio).
 
 **Signer.** Put your settings in a `.env` file and check them with the doctor. It prints a ready-to-paste config for your client with secrets left as placeholders. Use a dedicated testnet wallet.
 
@@ -96,7 +151,7 @@ npx -y @molpha/mcp@0.2.0 provision subscribe --plan Basic --max-price-usdc 20000
 ```
 <!-- /molpha:generated:provision -->
 
-**Client.** Every client launches the server with `npx`. Snippets for Claude Code, Cursor, VS Code, Codex and Claude Desktop are in [docs/integration.md](docs/integration.md), ready-to-edit copies are in [examples](examples), and Claude Desktop users can install the `molpha-mcp.mcpb` bundle attached to each release.
+**Client.** Every client launches the local server with `npx`. Snippets for Claude Code, Cursor, VS Code, Codex and Claude Desktop are in [docs/integration.md](docs/integration.md), ready-to-edit copies are in [examples](examples), and Claude Desktop users can install the `molpha-mcp.mcpb` bundle attached to each release.
 
 ## Example prompts
 
@@ -132,37 +187,6 @@ flowchart LR
 
 The server is an adapter and policy boundary, not a new source of truth. Oracle nodes independently fetch the committed API configuration and produce one aggregate signature after reaching quorum; the server returns that self-contained signed artifact. Consumers trust a value only after verifying the signed payload against its registry version.
 
-## Hosted HTTP mode
-
-Run `molpha-mcp --http --port 8402` to serve stateless Streamable HTTP at `/mcp`, with health checks at `/healthz`. Stdio remains the default. The hosted server is **keyless**: it holds no signer and accepts no credentials, and a client is configured with nothing but the URL. Anything that needs a signature is returned for the caller's own wallet to sign, so each such operation is two or three tool calls around one signature:
-
-| Operation | Hosted tools | The wallet signs |
-| --- | --- | --- |
-| Subscription round | `begin_session` → `complete_session` → `execute_subscription_round` | A text message, once per session |
-| x402 round | `prepare_x402_round` → `execute_x402_round` | A USDC transfer, not broadcast |
-| Solana submit | `prepare_submit_attestation` → `send_signed_transaction` | The submit transaction |
-
-`autoSubmit`, `dryRun` and `encryptSecrets` are not offered over HTTP. Set spending limits in the wallet's own policy, and use local stdio for private API work. The prepare tools need `MOLPHA_HTTP_CHALLENGE_SECRET` on the server. Configuration, client examples and the deployment runbook are in [docs/hosted-http.md](docs/hosted-http.md).
-
-### Sign in with your wallet (SIWX)
-
-A subscription round on the hosted server is authorized by a **sign-in session**: the wallet signs one Sign-In-With-X text message (the x402 `sign-in-with-x` extension, in its Solana form), and the gateway issues a short-lived bearer token. The message is not a transaction and moves no funds.
-
-| Step | Call | Result |
-| --- | --- | --- |
-| 1 | `describe_access({ address, owner? })` | Whether the wallet is a subscription `owner` or `delegate`, and its limits |
-| 2 | `begin_session({ address, owner? })` | The `message` to sign and an opaque `challenge` |
-| 3 | The wallet signs `message` | An Ed25519 signature over its exact UTF-8 bytes |
-| 4 | `complete_session({ challenge, signature })` | A `sessionToken` and its `expiresAt` |
-| 5 | `execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` | The signed attestation and verifier arguments |
-
-- **Who can sign in.** The subscription owner, or a delegate the owner added with `add_delegate`. A delegate passes the owner's address as `owner`.
-- **How to sign.** The message as returned: raw UTF-8, no prefix, no envelope, no trailing newline. The signature may be base58, base64 or hex. `solana sign-offchain-message` wraps the text and is refused with `invalid_signature`.
-- **What the token is.** A credential for one wallet and one gateway, valid 30 minutes by default and never past the subscription term. It only identifies the caller: the gateway re-reads the subscription and delegate from chain on every round, so `remove_delegate` ends access whatever tokens exist. It passes through this server and is never stored or logged.
-- **What it needs.** A gateway with `sessionAuth: true` in `GET /v1/info`. Otherwise `begin_session` answers `sessions_unavailable` and x402 rounds remain available.
-
-The full walkthrough, with a signing example, delegate setup, gateway routes and error codes, is in [docs/integration.md](docs/integration.md#4-sign-in-with-your-own-wallet-siwx).
-
 ## Development
 
 ```bash
@@ -191,8 +215,7 @@ Bug reports and focused pull requests are welcome. For security issues, use [Git
 
 ## Documentation
 
-- [Integration guide](docs/integration.md): install per client, spending, and [signing in with your own wallet (SIWX)](docs/integration.md#4-sign-in-with-your-own-wallet-siwx)
-- [Hosted HTTP mode](docs/hosted-http.md): configuration, client examples, deployment runbook
+- [Integration guide](docs/integration.md): install per client, spending, [signing in with your own wallet (SIWX)](docs/integration.md#4-sign-in-with-your-own-wallet-siwx), and running the HTTP server yourself
 - [Reference](docs/reference.md): sourceId, tolerance mode, x402, providers, configuration, signers
 - [Molpha protocol documentation](https://docs.molpha.io/)
 - [Client configuration examples](examples) and the [MCPB manifest](manifest.json)
