@@ -91,7 +91,8 @@ Sign exactly what was returned, unchanged. Do not broadcast the x402 transfer yo
 | `payment_outcome_unknown` | A payment may have settled | Stop. Do not pay again. Check the memo in the signer's USDC account |
 | `guardrail_exceeded` | A configured cap was reached | Report it; wait or let the user change the cap |
 | `determinism_rejected` | The source looks live-drifting | Use a settled source, or tolerance mode (`references/apiconfig.md`) |
-| `round_timeout` | The upstream timed out | The round may still complete. Read state before any retry |
+| `round_conflict` | HTTP 409: this wallet already has a round for this feed (the same source and quorum) in the current 100 ms tick, or an x402 payment already reserved a round. Requests in one tick share a round; a feed runs at most 10 rounds per second | Wait at least 100 ms, then call again for a new round. An x402 call signs a new payment |
+| `round_timeout` | HTTP 503: usually the gateway's own capacity limit (`gateway at capacity`; nothing was reserved), otherwise too few nodes completed the round. Or the upstream timed out | Wait; do not retry at once. The round may still complete: read state before any retry |
 | `invalid_config` | A setting is wrong, often the gateway URL or authority | Report the message |
 | `session_invalid`, `sign_in_rejected` | Hosted sign-in expired or was refused | Call `begin_session` again |
 | `invalid_challenge`, `payment_expired`, `transaction_expired` | Hosted prepare output is stale or altered | Call the prepare tool again |

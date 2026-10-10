@@ -3,6 +3,7 @@
 Details behind the tools in the [README](../README.md). For setup see [integration.md](integration.md); for the hosted server see [hosted-http.md](hosted-http.md).
 
 - [Structured output and annotations](#structured-output-and-annotations)
+- [Round timing](#round-timing)
 - [How sourceId is derived](#how-sourceid-is-derived)
 - [Tolerance mode](#tolerance-mode)
 - [x402 pay-per-request](#x402-pay-per-request)
@@ -23,13 +24,25 @@ Each tool also carries MCP annotations, so clients can decide what needs confirm
 | `execute_subscription_round`, `execute_x402_round` | `false` | `true` | `false` | `true` |
 | `submit_attestation` | `false` | `false` | `true` | `true` |
 
-The round tools are marked destructive because each call irreversibly spends subscription quota or USDC, and a repeated call pays for another round. `submit_attestation` only ever advances the signer's own feed: the program accepts an attestation only if it is newer than the one the feed holds, so resubmitting the same payload changes nothing.
+The round tools are marked destructive because each call irreversibly spends subscription quota or USDC, and a repeated call pays for another round. There is no idempotency key: a call repeated after a failure is a new round that uses another unit of quota or needs another payment. `submit_attestation` only ever advances the signer's own feed: the program accepts an attestation only if it is newer than the one the feed holds, so resubmitting the same payload changes nothing.
 
 `submit_attestation` and `build_verifier_calldata` take a round tool's response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
 
 `build_verifier_calldata` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `submit_attestation` or a round tool's `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `get_latest_value`.
 
 Solana feed accounts are keyed by `(sourceId, signaturesRequired, submitter)`: every wallet that submits a source maintains its own feed for it, created by that wallet's first `submit_attestation`. `describe_feed` and `get_latest_value` default `submitter` to this server's signer; pass another wallet's address to read the feed it maintains.
+
+## Round timing
+
+Rounds run on a fixed 100 ms tick. It is a protocol constant, not a setting: the gateway stamps each round with its own clock rounded down to a multiple of 100 ms (the attestation's `timestamp`, in unix milliseconds), and nodes reject a round that is off that grid. The caller never supplies the timestamp. It follows that:
+
+- Requests for one feed (the same source, quorum and registry version) inside one tick share a round: the nodes run it once and every caller gets the result.
+- One feed runs at most 10 rounds per second, whatever the request rate.
+- One wallet gets at most one round per tick for a feed. A second request from the same consumer or payer inside the same tick is answered with HTTP 409 before anything is reserved.
+
+`execute_x402_round` and the hosted `execute_subscription_round` repeat a request answered with 409 once, after one full tick plus a small jitter (100 to 120 ms), which lands it in a later tick whatever the offset between the two clocks. A request refused again fails with `round_conflict`: wait at least 100 ms and call again. The local `execute_subscription_round` goes through `@molpha/sdk`, which retries a 409 on its own schedule.
+
+HTTP 503 is reported as `round_timeout` (after an x402 payment was sent, as `payment_outcome_unknown`: see [x402 pay-per-request](#x402-pay-per-request)). The usual cause is the gateway's own capacity limit (`gateway at capacity`): the gateway refuses the request before reading it, so nothing was reserved or spent. Otherwise too few nodes accepted or finished the round, or it timed out; a node refuses a gateway only as a safety limit against one that floods it. The tools do not repeat a request after a 503: wait, read state (`describe_feed`, `get_x402_status`), then call again.
 
 ## How sourceId is derived
 
@@ -80,11 +93,16 @@ A paid round works like this:
    - `asset` is the USDC mint in the on-chain `ProtocolConfig`.
    - `amount` is the protocol price, `x402_round_base + (signaturesRequired + redundancy_buffer) × reward_per_signature`, within `MOLPHA_X402_MAX_PRICE_USDC` and the rest of today's `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC`.
    - `network` is the cluster `SOLANA_RPC` points at.
-   - `extra.memo` is this round's commitment to the program, gateway, source, quorum, registry version, and timestamp.
+   - `extra.memo` is this request's commitment to the program, gateway, source, quorum, and registry version. It does not name a round: the gateway assigns the round's timestamp after it has verified the payment.
    - `extra.feePayer` is an account other than the signer.
 3. The server signs a USDC `TransferChecked` from the signer's token account and repeats the request with the payment in the `PAYMENT-SIGNATURE` header. The gateway verifies the payment before it dispatches the round and settles it before it returns data. The tool result includes a `paymentReceipt` with the settlement transaction.
 
 The daily cap counts every payment the server signs, whether or not its round completes, because a signed transfer can settle until its blockhash expires. When the gateway rejects a payment, the tool fails without paying again. When the gateway's answer leaves the outcome unknown (a 5xx, or a dropped connection after the payment was sent), the tool fails with `payment_outcome_unknown` and the payment's memo; look for that memo in the signer's USDC account before paying for the round again.
+
+What a failed paid request means for its payment:
+
+- **`409`** is raised before anything is reserved, so the payment is unspent. It means this payer already has a round for the feed in the current 100 ms tick (see [Round timing](#round-timing)), or that this payment already reserved a round. The server resends the same payment once, one full tick later, without quoting or signing again. A second 409 fails the tool with `round_conflict`.
+- **Anything else** is never resent. Once the gateway has asked the nodes to work, the payment is spent even if the round fails: it is not settled, but the gateway will not accept it again. That includes a `503` because too few nodes accepted the round. A `503` from the gateway's own capacity limit (`gateway at capacity`) is answered before the request is read and spends nothing, but the server does not tell the two apart by status, so it resends neither and reports `payment_outcome_unknown` with the gateway's message in `details.gatewayMessage`. To run the round again, wait, then call the tool again: it signs a new payment.
 
 Call `get_x402_status` before spending. It returns the quoted price for a quorum, where payment goes (the protocol treasury) and the gateway's pending tickets, the signer's USDC balance, and the remaining daily budget. With `dryRun: true`, `execute_x402_round` quotes and verifies the payment and reports the signer's balance without signing anything. Private API secrets (`encryptSecrets`) are only supported by `execute_subscription_round`.
 

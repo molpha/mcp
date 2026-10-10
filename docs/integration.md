@@ -206,7 +206,12 @@ While `MOLPHA_DRY_RUN=true`, a write call that passes `dryRun: false` is refused
 
 Daily caps are per server process and reset when it restarts. For a hard limit, also set a policy on the wallet itself (Privy and Turnkey both support this).
 
-Round tools spend on **every** call. If one fails with an unclear error, check `describe_feed` or `get_x402_status` before trying again.
+Round tools spend on **every** call. There is no idempotency key: a call repeated after a failure is a new round. If one fails with an unclear error, check `describe_feed` or `get_x402_status` before trying again.
+
+Rounds run on a fixed 100 ms tick: requests for one feed (the same source and quorum) inside one tick share a round, a feed runs at most 10 rounds per second, and one wallet gets at most one round per tick for a feed. Two errors follow from that ([details](reference.md#round-timing)):
+
+- `round_conflict` (HTTP 409): this wallet already has a round for the feed in the current tick. Nothing was reserved. The round tools have already retried the request a tick later; wait at least 100 ms and call again.
+- `round_timeout` with HTTP 503: usually the gateway's own capacity limit (`gateway at capacity`), which refuses a request before reading it, so nothing was reserved. Otherwise too few nodes completed the round. Wait before retrying.
 
 ## 4. Sign in with your own wallet (SIWX)
 

@@ -372,6 +372,21 @@ it("keeps public payment reconciliation on a post-payment schema failure", () =>
   expect(JSON.stringify(result)).not.toContain(canary);
 });
 
+it("reports a duplicate round as such, and as an unknown payment outcome once a payment was sent", () => {
+  const controller = new AbortController();
+  const conflict = { isError: true as const, content: [{ type: "text" as const, text: JSON.stringify({ code: "round_conflict", message: canary, status: 409 }) }] };
+
+  const unpaid = JSON.parse(sanitizeToolResult(conflict, { signal: controller.signal }).content[0]!.text);
+  expect(unpaid).toMatchObject({ code: "round_conflict", status: 409 });
+  expect(unpaid.message).toMatch(/already has a round for this feed \(the same source and quorum\) in the current 100 ms tick/);
+  expect(unpaid.message).toMatch(/Wait at least 100 ms, then call again for a new round/);
+
+  // A paid request refused twice with 409: its payment may already have reserved a round.
+  const paid = sanitizeToolResult(conflict, { signal: controller.signal, reconciliation: { payer: walletA, payTo: walletB, memo: "a".repeat(64), amountAtomicUsdc: "10" } });
+  expect(JSON.parse(paid.content[0]!.text)).toMatchObject({ code: "payment_outcome_unknown", details: { payer: walletA, memo: "a".repeat(64) } });
+  expect(JSON.stringify([unpaid, paid])).not.toContain(canary);
+});
+
 it("does not expose hosted RPC API keys through capabilities", async () => {
   const app = await start({ runtime: getSharedRuntime({ SOLANA_RPC: `https://rpc.example/${canary}?api-key=${canary}` }) });
   const result = await app.call("get_capabilities");

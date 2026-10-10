@@ -13,14 +13,15 @@ import {
 } from "@solana/kit";
 import { Keypair, PublicKey, type AccountInfo } from "@solana/web3.js";
 import { randomBytes } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveDelegatePda, readAccess } from "../../src/access.js";
 import { getMolphaProgramId, type MolphaContext, type ToolDependencies } from "../../src/clients.js";
 import { type MolphaConfig } from "../../src/config.js";
+import { normalizeError } from "../../src/errors.js";
+import { ROUND_TICK_MS } from "../../src/protocol.js";
 import { requireSdkExport } from "../../src/sdk.js";
 import { beginSession, completeSession, executeSessionRound, sessionEndpoint, type SessionContext } from "../../src/session.js";
 import { formatSiwsMessage, siwxStatement, SIWX_HEADER, type SiwxMessageFields } from "../../src/siwx.js";
-import { x402Timing } from "../../src/x402.js";
 import { deriveGatewayPda } from "../../src/x402-payment.js";
 import { callTool, callToolError } from "./tool-harness.js";
 
@@ -154,7 +155,8 @@ async function setup(): Promise<Env> {
         data: {
           attestation: {
             payload: { value: "ab".repeat(32), sourceId, registryVersion: body.registryVersion, signaturesRequired: body.signaturesRequired,
-              timestamp: Math.floor(Date.now() / 1000) * 1000 },
+              // Stamped by the gateway from its own clock, in unix milliseconds on the round tick grid.
+              timestamp: Math.floor(Date.now() / ROUND_TICK_MS) * ROUND_TICK_MS },
             signature: { signature: "11".repeat(32), commitment: "22".repeat(20), signersBitmap: "3" }
           },
           value: "42", fresh: true, configHash: sourceId
@@ -186,9 +188,6 @@ const grant = (env: Env, owner: string, signer: string): void => {
   env.access.set(owner, (env.access.get(owner) ?? new Set()).add(signer));
 };
 
-beforeEach(() => {
-  x402Timing.conflictRetryMs = 0;
-});
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -352,15 +351,62 @@ describe("executeSessionRound", () => {
     await expect(executeSessionRound(env.ctx, { ...round, sessionToken: token })).rejects.toMatchObject({ status: 403 });
   });
 
-  it("retries once when this consumer's tick was taken, and gives up on a second 409", async () => {
+  it("posts once per call: two calls in a row both succeed", async () => {
     const env = await setup();
     const { token } = await signedIn(env);
-    env.onRound = (attempt) => (attempt === 1 ? json(409, { error: "round already reserved" }) : undefined);
+
+    const first = await executeSessionRound(env.ctx, { ...round, sessionToken: token });
+    const second = await executeSessionRound(env.ctx, { ...round, sessionToken: token });
+
+    expect(first).toMatchObject({ sourceId, value: "42" });
+    expect(second).toMatchObject({ sourceId, value: "42" });
+    expect(env.rounds).toHaveLength(2);
+  });
+
+  it("retries once, a full tick after a 409, and gives up on a second 409", async () => {
+    const env = await setup();
+    const { wallet, token } = await signedIn(env);
+    const tick = Math.floor(Date.now() / ROUND_TICK_MS) * ROUND_TICK_MS;
+    const duplicate = { error: `round already reserved at timestamp ${tick} ms for subscription ${wallet.address}; retry` };
+    const postedAt: number[] = [];
+    env.onRound = (attempt) => {
+      postedAt.push(performance.now());
+      return attempt === 1 ? json(409, duplicate) : undefined;
+    };
     await expect(executeSessionRound(env.ctx, { ...round, sessionToken: token })).resolves.toMatchObject({ value: "42" });
     expect(env.rounds).toHaveLength(2);
+    // About one tick apart. The margin allows for timer granularity, not for a shorter wait.
+    expect(postedAt[1]! - postedAt[0]!).toBeGreaterThan(ROUND_TICK_MS - 10);
+    expect(env.rounds[1]!.body).toEqual(env.rounds[0]!.body);
 
-    env.onRound = () => json(409, { error: "round already reserved" });
-    await expect(executeSessionRound(env.ctx, { ...round, sessionToken: token })).rejects.toMatchObject({ status: 409 });
+    env.onRound = () => json(409, duplicate);
+    const error = await executeSessionRound(env.ctx, { ...round, sessionToken: token }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ status: 409 });
+    expect(env.rounds).toHaveLength(4);
+    // The gateway's message names the subscription; that must not make this a subscription problem.
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_conflict", status: 409 });
+    expect(normalized.remediation).toMatch(/already has a round for this feed \(the same source and quorum\) in the current 100 ms tick/);
+    expect(normalized.remediation).toMatch(/Wait at least 100 ms, then call again for a new round/);
+  });
+
+  it.each([
+    ["the gateway is at capacity", "gateway at capacity, retry shortly"],
+    ["too few nodes accepted the round", "nodes busy: node directory unavailable: 1 of 3 dispatched nodes accepted, need 2 (gateway rate budget exhausted)"]
+  ])("does not retry a 503 (%s), and says to wait", async (_label, message) => {
+    const env = await setup();
+    const { token } = await signedIn(env);
+    env.onRound = () => json(503, { error: message });
+
+    const error = await executeSessionRound(env.ctx, { ...round, sessionToken: token }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ status: 503 });
+    expect((error as Error).message).toContain(message);
+    expect(env.rounds).toHaveLength(1);
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_timeout", status: 503 });
+    expect(normalized.remediation).toMatch(/The usual cause is the gateway's own capacity limit \(`gateway at capacity`\)/);
+    expect(normalized.remediation).not.toMatch(/source/);
   });
 
   it("refuses an aggregate for another source, and a caller sourceId that does not match apiConfig", async () => {

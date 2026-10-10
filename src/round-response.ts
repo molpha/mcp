@@ -26,8 +26,9 @@ export interface RoundResponse {
 /**
  * Flattens the gateway's `data` (the signed struct is nested as `data.attestation`) and
  * checks it against the request. The gateway stamps the round itself, in unix
- * milliseconds, so the timestamp can only be checked for plausibility: a value in
- * seconds, or an aggregate replayed from another time, does not pass.
+ * milliseconds on the round tick grid, so the timestamp can only be checked for
+ * plausibility: a value in seconds, or an aggregate replayed from another time, does
+ * not pass.
  */
 export function readRoundResponse(body: Record<string, unknown>, expected: ExpectedRound, startedAtMs: number): RoundResponse {
   const data = flattenAttestation(asRecord(body.data) ?? {});

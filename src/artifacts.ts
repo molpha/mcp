@@ -82,7 +82,7 @@ export function flattenAttestation(input: Record<string, unknown>): Record<strin
     value: input.value,
     valuePacked: payload.value,
     // The gateway stamps `timestamp` (unix ms); the pinned SDK still names it `timestamp`.
-    timestamp: payload.timestamp ?? payload.timestamp,
+    timestamp: payload.timestamp,
     registryVersion: payload.registryVersion,
     signaturesRequired: payload.signaturesRequired,
     signersBitmap: signature.signersBitmap,
@@ -155,7 +155,7 @@ export function toSignedResult(input: Record<string, unknown>): Record<string, u
     sourceId: du.sourceId ?? input.sourceId,
     value: du.value ?? input.value,
     valuePacked: du.valuePacked ?? input.valuePacked,
-    timestamp: du.timestamp ?? du.timestamp ?? input.timestamp,
+    timestamp: du.timestamp ?? input.timestamp,
     registryVersion: du.registryVersion ?? input.registryVersion,
     signaturesRequired: du.signaturesRequired ?? input.signaturesRequired,
     signersBitmap: sig.signersBitmap ?? input.signersBitmap,

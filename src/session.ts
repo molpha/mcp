@@ -27,7 +27,7 @@ import { normalizeSourceId } from "./hex.js";
 import { readRoundResponse } from "./round-response.js";
 import { assertChallenge, encodeSiwxHeader, formatSiwsMessage, SIWX_HEADER, type SiwxMessageFields } from "./siwx.js";
 import { parseSolanaPubkey } from "./solana-address.js";
-import { clusterNetwork, gatewayAuthority, x402Timing } from "./x402.js";
+import { clusterNetwork, conflictRetryDelayMs, gatewayAuthority } from "./x402.js";
 import { deriveGatewayPda } from "./x402-payment.js";
 
 export interface SessionContext {
@@ -236,8 +236,9 @@ export async function executeSessionRound(ctx: SessionContext, opts: SessionRoun
   const startedAtMs = Date.now();
   let res = await post();
   if (res.status === 409) {
-    // This consumer already has a round for this source in the current tick; nothing was reserved.
-    await delay(x402Timing.conflictRetryMs, undefined, ctx.lifecycle ? { signal: ctx.lifecycle.signal } : undefined);
+    // This consumer already has a round for the feed in the current tick. Nothing was reserved,
+    // and one full tick later the request lands in a new one. One retry only.
+    await delay(conflictRetryDelayMs(), undefined, ctx.lifecycle ? { signal: ctx.lifecycle.signal } : undefined);
     res = await post();
   }
 

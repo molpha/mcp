@@ -28,6 +28,7 @@ import {
   x402SpentToday
 } from "./guardrails.js";
 import { normalizeSourceId } from "./hex.js";
+import { ROUND_TICK_MS } from "./protocol.js";
 import { readRoundResponse } from "./round-response.js";
 import type { MolphaSigner } from "./signer/types.js";
 import { parseSolanaPubkey } from "./solana-address.js";
@@ -47,12 +48,18 @@ import {
   type X402Pricing
 } from "./x402-payment.js";
 
+/** Jitter added to one round tick before repeating a request the gateway answered with 409, in ms. */
+const CONFLICT_JITTER_MS = 20;
+
 /**
- * How long to wait before resending a payment the gateway answered with 409. The
- * round grid divides one second, so a second later the gateway is on a new tick.
- * Mutable for tests.
+ * How long to wait before repeating a request the gateway answered with 409. A 409 means this
+ * payer (or consumer) already has a round for the feed in the current tick. The wait is one full
+ * tick, which lands the retry in a later tick whatever the offset between this clock and the
+ * gateway's, so no tick boundary is computed here. The jitter spreads requests that collided.
  */
-export const x402Timing = { conflictRetryMs: 1_000 };
+export function conflictRetryDelayMs(random: () => number = Math.random): number {
+  return ROUND_TICK_MS + random() * CONFLICT_JITTER_MS;
+}
 
 export interface X402RoundOptions {
   apiConfig: ApiConfigLike;
@@ -540,9 +547,12 @@ async function submitPaidRound(
   const startedAtMs = Date.now();
   let outcome = await postPaidExecute(round.endpoint, round.body, paymentHeader, lifecycle?.signal);
   if (outcome.kind === "conflict") {
-    // The gateway reserves a payment and its round together, so a 409 spent nothing. If this
-    // payer's request for the same source took the tick, the same payment authorizes the next one.
-    await delay(x402Timing.conflictRetryMs, undefined, lifecycle ? { signal: lifecycle.signal } : undefined);
+    // The gateway reserves a payment and its round together and raises 409 at that step, before
+    // any node is asked to work: nothing was reserved, so the payment is unspent. If this payer
+    // already has a round for the feed in the current tick, the same payment authorizes a retry
+    // one tick later. One retry only: a second 409 means the payer has a round in that tick too,
+    // or the payment itself already reserved a round.
+    await delay(conflictRetryDelayMs(), undefined, lifecycle ? { signal: lifecycle.signal } : undefined);
     outcome = await postPaidExecute(round.endpoint, round.body, paymentHeader, lifecycle?.signal);
   }
 
@@ -561,6 +571,13 @@ type PaidOutcome =
 /**
  * Only 400, 402, and 409 are raised before the gateway asks its facilitator to
  * settle. Any other answer, or none, can follow a settled payment.
+ *
+ * The same payment is resent only after a 409, which is raised before anything is
+ * reserved. Once the gateway has asked the nodes to work, the payment authorization is
+ * spent even when the round fails (too few nodes accepted it, a timeout, a paywalled
+ * source), so every other retry is a new call that signs a new payment. A 503 from the
+ * gateway's own capacity limit is answered before the request is read and spends nothing,
+ * but a status alone does not tell it from a 503 after dispatch, so it is not resent either.
  */
 async function postPaidExecute(
   endpoint: string,
@@ -607,7 +624,7 @@ function paidOutcomeError(reconciliation: X402Reconciliation, outcome: Exclude<P
     case "conflict":
       return Object.assign(
         new Error(
-          `the gateway refused this x402 payment twice as a duplicate (${outcome.message}); a payment that already paid for a round cannot pay for another`
+          `the gateway refused this x402 payment twice as a duplicate (${outcome.message}): this payer already has a round for the feed in each ${ROUND_TICK_MS} ms tick it was sent in, or the payment already reserved a round and cannot pay for another, so a new round needs a new payment`
         ),
         { status: 409 }
       );

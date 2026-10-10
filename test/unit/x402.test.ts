@@ -13,16 +13,17 @@ import { getMolphaContext, getMolphaProgramId, type MolphaContext } from "../../
 import { type MolphaConfig } from "../../src/config.js";
 import { normalizeError } from "../../src/errors.js";
 import { recordX402Spend, resetGuardrailCounters, x402SpentToday } from "../../src/guardrails.js";
+import { ROUND_TICK_MS } from "../../src/protocol.js";
 import { requireSdkExport } from "../../src/sdk.js";
 import { type MolphaSigner } from "../../src/signer/types.js";
 import {
+  conflictRetryDelayMs,
   executePreparedX402Round,
   executeX402Round,
   fetchX402Status,
   prepareX402Round,
   previewX402Round,
   quoteX402Round,
-  x402Timing,
   X402PaymentOutcomeUnknownError,
   X402PaymentRequiredError,
   type X402PaidRound,
@@ -294,8 +295,8 @@ async function setup(
               sourceId,
               registryVersion: body.registry_version,
               signaturesRequired: body.signatures_required,
-              // Stamped by the gateway on its tick grid, in unix milliseconds.
-              timestamp: Math.floor(Date.now() / 1000) * 1000,
+              // Stamped by the gateway from its own clock, in unix milliseconds on the round tick grid.
+              timestamp: Math.floor(Date.now() / ROUND_TICK_MS) * ROUND_TICK_MS,
               ...gw.data
             },
             signature: { signature: "11".repeat(32), commitment: "22".repeat(20), signersBitmap: "3" }
@@ -354,7 +355,6 @@ const round = { apiConfig, signaturesRequired: 2 };
 
 beforeEach(() => {
   resetGuardrailCounters();
-  x402Timing.conflictRetryMs = 0;
 });
 
 afterEach(() => {
@@ -610,14 +610,46 @@ describe("executeX402Round", () => {
     expect(x402SpentToday()).toBe(PRICE);
   });
 
-  it("resends the same payment once when its tick was taken (409), without quoting or signing again", async () => {
+  it("pays for every call: two in a row both succeed, each with its own quote and payment", async () => {
+    const env = await setup();
+
+    const first = await executeX402Round(env.ctx, round);
+    const second = await executeX402Round(env.ctx, round);
+
+    expect(first.payment.memo).toBe(env.memo);
+    expect(second.payment.memo).toBe(env.memo);
+    expect(env.quotes).toHaveLength(2);
+    expect(env.payments).toHaveLength(2);
+    expect(x402SpentToday()).toBe(2n * PRICE);
+  });
+
+  it("waits one full round tick plus a small jitter before repeating a request answered with 409", () => {
+    expect(conflictRetryDelayMs(() => 0)).toBe(ROUND_TICK_MS);
+    expect(conflictRetryDelayMs(() => 0.5)).toBe(110);
+    expect(conflictRetryDelayMs(() => 0.999)).toBeLessThan(120);
+    for (let i = 0; i < 100; i++) {
+      const wait = conflictRetryDelayMs();
+      expect(wait).toBeGreaterThanOrEqual(ROUND_TICK_MS);
+      expect(wait).toBeLessThan(120);
+    }
+  });
+
+  it("resends the same payment once, a full tick after a 409, without quoting or signing again", async () => {
+    const paidAt: number[] = [];
     const env = await setup({
-      gateway: { onPaid: (attempt) => (attempt === 1 ? jsonResponse(409, { error: "round or payment already reserved" }) : undefined) }
+      gateway: {
+        onPaid: (attempt) => {
+          paidAt.push(performance.now());
+          return attempt === 1 ? jsonResponse(409, { error: "round or payment already reserved" }) : undefined;
+        }
+      }
     });
     const sign = vi.spyOn(env.ctx.signer, "signTransaction");
 
     const { payment } = await executeX402Round(env.ctx, round);
 
+    // About one tick apart. The margin allows for timer granularity, not for a shorter wait.
+    expect(paidAt[1]! - paidAt[0]!).toBeGreaterThan(ROUND_TICK_MS - 10);
     expect(env.quotes).toHaveLength(1);
     expect(sign).toHaveBeenCalledTimes(1);
     expect(env.payments).toHaveLength(2);
@@ -628,23 +660,30 @@ describe("executeX402Round", () => {
     expect(x402SpentToday()).toBe(PRICE);
   });
 
-  it("stops after a second 409: a payment that already bought a round cannot buy another", async () => {
+  it("stops after a second 409: one retry, then the tool fails with round_conflict", async () => {
     const env = await setup({ gateway: { onPaid: () => jsonResponse(409, { error: "round or payment already reserved" }) } });
 
     const error = await executeX402Round(env.ctx, round).catch((caught: unknown) => caught);
 
     expect(error).toMatchObject({ status: 409 });
     expect((error as Error).message).toMatch(/refused this x402 payment twice as a duplicate/);
+    expect((error as Error).message).toMatch(/a new round needs a new payment/);
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_conflict", status: 409 });
+    expect(normalized.remediation).toMatch(/already has a round for this feed \(the same source and quorum\) in the current 100 ms tick/);
     expect(env.payments).toHaveLength(2);
     expect(x402SpentToday()).toBe(PRICE);
   });
 
-  it("reports an unknown payment outcome and never retries after a 503", async () => {
-    const env = await setup({
-      gateway: {
-        onPaid: () => jsonResponse(503, { error: "payment settlement not confirmed; retain payment proof for reconciliation" })
-      }
-    });
+  it.each([
+    // Refused by the gateway's capacity limit before the request was read: nothing was reserved.
+    ["the gateway was at capacity", "gateway at capacity, retry shortly"],
+    // The round was dispatched and failed: the gateway keeps the payment spent without settling it.
+    ["too few nodes accepted the round", "nodes busy: node directory unavailable: 1 of 3 dispatched nodes accepted, need 2 (gateway rate budget exhausted)"],
+    // The round ran and the settlement's outcome is not known.
+    ["settlement was not confirmed", "payment settlement not confirmed; retain payment proof for reconciliation"]
+  ])("reports an unknown payment outcome and never resends the payment after a 503 (%s)", async (_label, message) => {
+    const env = await setup({ gateway: { onPaid: () => jsonResponse(503, { error: message }) } });
 
     const error = await executeX402Round(env.ctx, round).catch((caught: unknown) => caught);
 
@@ -657,9 +696,13 @@ describe("executeX402Round", () => {
       memo: env.memo,
       payerSignature: expect.stringMatching(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/),
       lastValidBlockHeight: 100,
-      httpStatus: 503
+      httpStatus: 503,
+      gatewayMessage: message
     });
-    expect(normalizeError(error)).toMatchObject({ code: "payment_outcome_unknown", details: reconciliation });
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "payment_outcome_unknown", details: reconciliation });
+    expect(normalized.remediation).toMatch(/A retry is a new round and signs a new payment/);
+    expect(normalized.remediation).toMatch(/`gateway at capacity` is the gateway's own capacity limit, which refuses a request before reading it/);
     expect(env.quotes).toHaveLength(1);
     expect(env.payments).toHaveLength(1);
   });
@@ -1142,6 +1185,6 @@ describe("hosted prepare_x402_round and execute_x402_round tools", () => {
     const call = { challenge: prepared.challenge, signedTransaction: sign(env, prepared.unsignedTransaction) };
 
     await callTool("execute_x402_round", call, hosted(env));
-    expect(await callToolError("execute_x402_round", call, hosted(env))).toMatchObject({ status: 409 });
+    expect(await callToolError("execute_x402_round", call, hosted(env))).toMatchObject({ code: "round_conflict", status: 409 });
   });
 });
