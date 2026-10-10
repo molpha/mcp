@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { RequestLifecycle } from "../clients.js";
 import type { JsonToolResult } from "../mcp.js";
+import { ROUND_TICK_MS } from "../protocol.js";
 import type { ToolServer } from "../tools/types.js";
 
 const messages: Record<string, string> = {
@@ -22,7 +23,8 @@ const messages: Record<string, string> = {
   subscription_inactive: "The subscription is unavailable or inactive.",
   payment_required: "The gateway rejected the payment requirements.",
   payment_outcome_unknown: "A payment may have settled. Reconcile the transfer before retrying.",
-  round_timeout: "The upstream request timed out. A submitted operation may still complete; do not retry blindly.",
+  round_conflict: `This wallet already has a round for this feed (the same source and quorum) in the current ${ROUND_TICK_MS} ms tick. Nothing was reserved. Requests for one feed in the same tick share a round, and a feed runs at most ${1000 / ROUND_TICK_MS} rounds per second. Wait at least ${ROUND_TICK_MS} ms, then call again for a new round.`,
+  round_timeout: "The upstream was at capacity or timed out. A gateway answers this way when it reaches its own capacity limit (nothing was reserved), or when too few nodes completed the round. A submitted operation may still complete; wait, and do not retry blindly.",
   unauthorized: "The gateway refused the request's authentication.",
   forbidden: "The gateway denied this operation: the subscription is missing, expired or out of quota, or the delegate has no access. See describe_access.",
   rate_limited: "The upstream service rate limited this request.",
@@ -73,7 +75,8 @@ export function sanitizeToolResult(result: JsonToolResult, lifecycle?: RequestLi
     let error: unknown;
     try { error = JSON.parse(result.content[result.content.length - 1]?.text ?? "{}"); } catch { /* generic error */ }
     let sanitized = safeError(error);
-    if (lifecycle?.reconciliation && ["internal_error", "output_schema_mismatch", "round_timeout"].includes(String(sanitized.code))) {
+    // A payment was sent. A paid request refused twice with 409 may carry a payment that already reserved a round, which may have settled.
+    if (lifecycle?.reconciliation && ["internal_error", "output_schema_mismatch", "round_timeout", "round_conflict"].includes(String(sanitized.code))) {
       sanitized = safeError({ code: "payment_outcome_unknown", details: lifecycle.reconciliation });
     }
     return { isError: true, content: [{ type: "text", text: JSON.stringify(sanitized) }] };

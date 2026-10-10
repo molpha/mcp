@@ -47,7 +47,8 @@ What a session is, and is not:
 Sign `unsignedTransaction` with the payer's wallet and **do not broadcast it**: the facilitator co-signs and submits it. Then call `execute_x402_round({ challenge, signedTransaction })`. The signed transaction is accepted only if it is byte-for-byte the prepared one carrying the payer's valid signature.
 
 - A prepared payment lives about a minute (its blockhash). After that `execute_x402_round` answers `payment_expired`: prepare again. Wallets that need human approval may need more than one attempt.
-- A payment buys one round. Replaying the same challenge and transaction is refused by the gateway.
+- A payment buys one round. Replaying the same challenge and transaction is refused by the gateway. That holds when the round failed after the gateway dispatched it, for example with a 503 because too few nodes accepted it: the payment is not settled, but it cannot be used again, so prepare a new one.
+- Rounds run on a fixed 100 ms tick: requests for one feed (the same source and quorum) inside one tick share a round, a feed runs at most 10 rounds per second, and one wallet gets at most one round per tick for a feed. A request that lands in a tick where the wallet already has a round is answered with HTTP 409 before anything is reserved. `execute_x402_round` and `execute_subscription_round` repeat it once, one full tick later; an x402 round resends the same payment, which a 409 leaves unspent. A request refused again fails with `round_conflict`.
 - The server builds the transaction the wallet signs. Check `summary` against your wallet's own view of the transaction, and set a wallet-side policy that allowlists the treasury token account and the USDC mint with a per-transaction cap. The per-round ceiling `MOLPHA_X402_MAX_PRICE_USDC` applies at both steps.
 
 ### Challenges
@@ -68,6 +69,8 @@ To rotate: set `MOLPHA_HTTP_CHALLENGE_SECRET_PREVIOUS` to the old value and `MOL
 | `session_invalid` | The token is unknown, expired or revoked | Sign in again |
 | `sessions_unavailable` | The gateway has sessions disabled | Use x402, or a gateway with sessions |
 | `forbidden` | No active subscription, out of quota, or the delegate was removed | See `describe_access` |
+| `round_conflict` | HTTP 409, after one retry: this wallet already has a round for this feed (the same source and quorum) in the current 100 ms tick. Nothing was reserved | Wait at least 100 ms and call again; it is a new round |
+| `round_timeout` | HTTP 503: the gateway reached its own capacity limit (`gateway at capacity`; nothing was reserved), or too few nodes completed the round. Or the upstream timed out | Wait, then read state before retrying; a retry is a new round |
 | `payment_outcome_unknown` | A payment was sent and the answer never arrived | Reconcile with `details` before paying again |
 | `missing_config` | The deployment has no challenge secret | Operator: set `MOLPHA_HTTP_CHALLENGE_SECRET` |
 

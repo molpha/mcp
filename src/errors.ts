@@ -1,3 +1,5 @@
+import { ROUND_TICK_MS } from "./protocol.js";
+
 export interface NormalizedToolError {
   code: string;
   message: string;
@@ -78,7 +80,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
       message,
       details: (error as Error & { reconciliation?: unknown }).reconciliation,
       remediation:
-        "Do not pay for this round again yet: the signed USDC transfer may have settled. Its blockhash expires within about two minutes; after that, look for a transfer to details.payTo carrying details.memo in the signer's USDC account before retrying."
+        "Do not pay for this round again yet: the signed USDC transfer may have settled. Its blockhash expires within about two minutes; after that, look for a transfer to details.payTo carrying details.memo in the signer's USDC account before retrying. A retry is a new round and signs a new payment: the gateway does not accept this one again once its round reached the nodes, even if that round failed (for example HTTP 503 because too few nodes accepted it). One case spent nothing: details.httpStatus 503 with details.gatewayMessage `gateway at capacity` is the gateway's own capacity limit, which refuses a request before reading it."
     };
   }
 
@@ -112,7 +114,24 @@ export function normalizeError(error: unknown): NormalizedToolError {
     };
   }
 
-  if (status === 503 || isTimeout(error)) {
+  // Checked before the message is searched for "subscription": the gateway's 409 names the subscription.
+  if (status === 409) {
+    return {
+      ...withStatus("round_conflict", message, status),
+      remediation:
+        `This consumer or payer already has a round for this feed (the same source and quorum) in the current ${ROUND_TICK_MS} ms tick, or (x402) this payment already reserved a round. Nothing was reserved for this request. Rounds run on a ${ROUND_TICK_MS} ms tick: requests for one feed in the same tick share a round, so a feed runs at most ${1000 / ROUND_TICK_MS} rounds per second and one consumer gets at most one round per tick. Wait at least ${ROUND_TICK_MS} ms, then call again for a new round; an x402 call signs a new payment.`
+    };
+  }
+
+  if (status === 503) {
+    return {
+      ...withStatus("round_timeout", message, status),
+      remediation:
+        "The gateway did not complete the round. The usual cause is the gateway's own capacity limit (`gateway at capacity`): it refuses the request before reading it, so nothing was reserved or spent. Otherwise too few nodes accepted or finished the round (a node refuses a gateway only as a safety limit), or the round timed out. Wait before retrying, and read state first (describe_feed, get_x402_status): a retry is a new round."
+    };
+  }
+
+  if (isTimeout(error)) {
     return withStatus("round_timeout", message, status);
   }
 

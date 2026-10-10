@@ -269,6 +269,34 @@ describe("normalizeError", () => {
     expect(normalized.remediation).toContain("execute_x402_round");
   });
 
+  it("maps a gateway 409 to round_conflict, although its message names the subscription", () => {
+    const error = Object.assign(
+      new Error("Gateway error (409): round already reserved at timestamp 1791000000100 ms for subscription 4Nd1mYw4r8kq1mJ6mX7oC1eXo3tVbUeHn7sJ9wGq2kPz; retry"),
+      { status: 409 }
+    );
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_conflict", status: 409 });
+    expect(normalized.remediation).toMatch(/This consumer or payer already has a round for this feed \(the same source and quorum\) in the current 100 ms tick/);
+    expect(normalized.remediation).toMatch(/requests for one feed in the same tick share a round/);
+    expect(normalized.remediation).toMatch(/a feed runs at most 10 rounds per second/);
+    expect(normalized.remediation).toMatch(/Wait at least 100 ms, then call again for a new round/);
+    expect(normalized.remediation).not.toMatch(/millisecond/);
+  });
+
+  it("maps a gateway 503 to round_timeout and names the gateway's capacity limit as the usual cause", () => {
+    const error = Object.assign(new Error("Gateway unavailable (503): gateway at capacity, retry shortly"), { status: 503 });
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_timeout", status: 503 });
+    expect(normalized.remediation).toMatch(/The usual cause is the gateway's own capacity limit \(`gateway at capacity`\)/);
+    expect(normalized.remediation).toMatch(/nothing was reserved or spent/);
+    expect(normalized.remediation).toMatch(/a node refuses a gateway only as a safety limit/);
+    // Nodes do not limit a source.
+    expect(normalized.remediation).not.toMatch(/source/);
+    expect(normalized.remediation).toMatch(/a retry is a new round/);
+    // A plain timeout keeps the code and gets no capacity advice.
+    expect(normalizeError(new Error("request timeout"))).toEqual({ code: "round_timeout", message: "request timeout" });
+  });
+
   it("maps a gateway without GET /v1/info to a GATEWAY_AUTHORITIES fix", () => {
     const error = Object.assign(new Error("GET /v1/info failed (404)"), { status: 404 });
     const normalized = normalizeError(error);

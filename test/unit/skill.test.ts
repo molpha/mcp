@@ -21,7 +21,7 @@ const STRICT = ["SKILL.md", "references/mcp-workflows.md"];
 const ERROR_CODES = new Set([
   "dry_run_locked", "missing_config", "authentication_required", "submitter_required", "subscription_inactive",
   "source_payment_required", "source_payment_refused", "source_payment_disabled", "payment_outcome_unknown",
-  "guardrail_exceeded", "determinism_rejected", "round_timeout", "invalid_config", "session_invalid",
+  "guardrail_exceeded", "determinism_rejected", "round_conflict", "round_timeout", "invalid_config", "session_invalid",
   "sign_in_rejected", "invalid_challenge", "payment_expired", "transaction_expired"
 ]);
 

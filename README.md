@@ -120,6 +120,8 @@ With no signer configured the server starts **read-only** and offers only the re
 
 On `mcp.molpha.io` the one-call round and submit tools become prepare/sign/execute pairs ([above](#mcpmolphaio)). Every tool returns `structuredContent` and carries MCP annotations; see [Structured output and annotations](docs/reference.md#structured-output-and-annotations). For tolerance-mode aggregation and the full configuration table, see [docs/reference.md](docs/reference.md).
 
+**Round timing.** Rounds run on a fixed 100 ms tick. Requests for one feed (the same source and quorum) inside one tick share a round, so a feed runs at most 10 rounds per second, and one wallet gets at most one round per tick for a feed: a second request in the same tick is answered with HTTP 409, which the round tools retry a tick later before failing with `round_conflict`. See [Round timing](docs/reference.md#round-timing).
+
 ## Setup
 
 For the [local server](#local-stdio).
