@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "molpha-mcp",
   "display_name": "Molpha MCP",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Lets AI agents fetch signed Molpha oracle data, publish it on Solana, and build verifier calldata.",
   "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.",
   "author": {
