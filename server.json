@@ -2,31 +2,31 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.molpha/mcp",
   "title": "Molpha MCP",
-  "description": "MCP server that lets AI agents create, fetch, verify, and publish Molpha oracle data.",
+  "description": "Lets AI agents fetch signed Molpha oracle data, publish it on Solana, and build verifier calldata.",
   "repository": {
     "url": "https://github.com/molpha/mcp",
     "source": "github"
   },
   "websiteUrl": "https://docs.molpha.io/",
-  "version": "0.1.2",
+  "version": "0.1.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@molpha/mcp",
-      "version": "0.1.2",
+      "version": "0.1.1",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "SIGNER_BACKEND",
-          "description": "Signing backend: memory (local keypair) or keychain (Privy / Turnkey).",
-          "isRequired": true,
-          "default": "memory",
+          "description": "Signing backend: memory (local keypair), keychain (Privy / Turnkey), or none. Leave unset with no keypair for a read-only server that cannot sign or spend.",
+          "isRequired": false,
           "choices": [
             "memory",
-            "keychain"
+            "keychain",
+            "none"
           ]
         },
         {
@@ -102,6 +102,11 @@
           "isRequired": false
         },
         {
+          "name": "GATEWAY_AUTHORITIES",
+          "description": "Comma-separated base58 gateway authorities, one per GATEWAY_ENDPOINTS entry in the same order. Bound into request signatures; required for gateways that do not serve GET /v1/info.",
+          "isRequired": false
+        },
+        {
           "name": "MOLPHA_EVM_NETWORKS",
           "description": "Comma-separated EVM verifier networks.",
           "isRequired": false,
@@ -115,10 +120,10 @@
         },
         {
           "name": "MOLPHA_DRY_RUN",
-          "description": "Preview all write and spend operations without submitting them.",
+          "description": "Preview all write and spend operations without submitting them. While true, a tool call cannot turn it off.",
           "isRequired": false,
           "format": "boolean",
-          "default": "false"
+          "default": "true"
         },
         {
           "name": "MOLPHA_MAX_EXECUTES_PER_DAY",
@@ -129,20 +134,38 @@
         },
         {
           "name": "MOLPHA_X402_MAX_PRICE_USDC",
-          "description": "Refuse to fund an x402 round priced above this amount (decimal USDC).",
+          "description": "Refuse to pay for an x402 round priced above this amount (decimal USDC).",
           "isRequired": false,
           "default": "1"
         },
         {
           "name": "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC",
-          "description": "Process-local daily x402 spend cap (decimal USDC).",
+          "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
           "isRequired": false,
           "default": "10"
         },
         {
-          "name": "MOLPHA_X402_GATEWAY_PDA",
-          "description": "Optional settling gateway PDA (base58) to skip discovery when the escrow is already funded.",
+          "name": "MOLPHA_SOURCE_PAYER_KEY",
+          "description": "Hex private key of the EVM wallet that pays paywalled sources. Never printed or returned by a tool. Source payment stays off without it.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "MOLPHA_SOURCE_PAYMENT_NETWORKS",
+          "description": "Comma-separated CAIP-2 EVM networks a source may be paid on, e.g. eip155:84532 (Base Sepolia). Empty keeps source payment off, even with a payer key.",
           "isRequired": false
+        },
+        {
+          "name": "MOLPHA_SOURCE_MAX_PER_ROUND_USDC",
+          "description": "Refuse a round whose worst case (price per fetch × the nodes that may fetch) exceeds this (decimal USDC).",
+          "isRequired": false,
+          "default": "0.25"
+        },
+        {
+          "name": "MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC",
+          "description": "Process-local daily cap on USDC committed to paying sources (decimal USDC).",
+          "isRequired": false,
+          "default": "1"
         }
       ]
     }

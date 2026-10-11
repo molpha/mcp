@@ -1,0 +1,14 @@
+{
+  "name": "molpha",
+  "description": "Molpha plugins for Claude Code",
+  "owner": {
+    "name": "Molpha"
+  },
+  "plugins": [
+    {
+      "name": "molpha",
+      "source": "./plugins/molpha",
+      "description": "The Molpha MCP server and skill together. Starts in dry-run, on testnets."
+    }
+  ]
+}

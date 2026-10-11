@@ -24,7 +24,10 @@ export function checkApiConfigDeterminism(apiConfig: Record<string, unknown>): D
     return { ok: false, warnings: ["apiConfig.url is required"] };
   }
 
-  for (const pattern of LIVE_DRIFTING_PATTERNS) {
+  // Median tolerance mode is the supported way to attest a live-drifting source.
+  const tolerance = apiConfig.aggregation !== undefined && apiConfig.aggregation !== null;
+
+  for (const pattern of tolerance ? [] : LIVE_DRIFTING_PATTERNS) {
     if (pattern.test(url)) {
       warnings.push(
         `URL "${url}" may return live-drifting data. Independent nodes must converge on a byte-identical value to co-sign. Prefer settled/finalized sources.`

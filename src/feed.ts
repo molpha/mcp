@@ -6,12 +6,17 @@
  * tool output. Flatten it to a string and say what it means.
  */
 
+import { requireSdkExport } from "./sdk.js";
+
 export type FeedValueKind = "value" | "hash";
 
 const VALUE_KIND_MEANING: Record<FeedValueKind, string> = {
   value: "`value` holds the raw oracle payload (<= 32 bytes), stored verbatim on-chain.",
   hash: "`value` holds a keccak digest of the payload; the preimage lives off-chain."
 };
+
+/** Byte fields Anchor decodes as `number[]`; shown as `0x` hex so they compare against tool output. */
+const BYTE_FIELDS = ["sourceId", "value", "signersBitmap"] as const;
 
 export function decodeFeedValueKind(feed: Record<string, unknown> | null | undefined): FeedValueKind | null {
   const raw = feed?.valueKind ?? (feed as Record<string, unknown> | undefined)?.value_kind;
@@ -28,7 +33,7 @@ export function decodeFeedValueKind(feed: Record<string, unknown> | null | undef
   return null;
 }
 
-/** Feed account with `valueKind` flattened to a string and explained. */
+/** Feed account with byte fields as hex and `valueKind` flattened to a string and explained. */
 export function presentFeed(
   feed: Record<string, unknown> | null | undefined
 ): Record<string, unknown> | null {
@@ -36,13 +41,21 @@ export function presentFeed(
     return null;
   }
 
+  const out: Record<string, unknown> = { ...feed };
+  for (const field of BYTE_FIELDS) {
+    const bytes = asByteArray(feed[field]);
+    if (bytes) {
+      out[field] = `0x${Buffer.from(bytes).toString("hex")}`;
+    }
+  }
+
   const kind = decodeFeedValueKind(feed);
   if (!kind) {
-    return { ...feed };
+    return out;
   }
 
   return {
-    ...feed,
+    ...out,
     valueKind: kind,
     valueKindMeaning: VALUE_KIND_MEANING[kind]
   };
@@ -50,12 +63,31 @@ export function presentFeed(
 
 /**
  * Molpha attests *which encoding* the stored bytes use (`FeedValueKind` is only
- * `value | hash`) but not their scale: there is no decimals field on the Feed
- * account or in the signed DataUpdate. Any scale a consumer applies comes from
- * the off-chain apiConfig that produced the number, so report it as unsigned
- * provenance — verbatim, never parsed into a decimals count we cannot attest.
+ * `value | hash`) but, in exact mode, not their scale: there is no decimals field
+ * on the Feed account or in the signed attestation. Any scale a consumer applies
+ * comes from the off-chain apiConfig that produced the number, so report it as
+ * unsigned provenance — verbatim, never parsed into a decimals count we cannot attest.
+ *
+ * Median tolerance mode is different: `aggregation` is part of the sourceId, which every
+ * signature commits to, so `numeric.decimals` is attested and the 32 stored bytes are a
+ * signed int256 (two's complement) scaled by 10^decimals.
  */
-export function describeValueEncoding(valueTransform: string | undefined): Record<string, unknown> {
+export function describeValueEncoding(
+  valueTransform: string | undefined,
+  aggregation?: { numeric: { type: string; decimals: number } } | undefined
+): Record<string, unknown> {
+  if (aggregation) {
+    return {
+      attested: true,
+      source: "apiConfig.aggregation.numeric (committed by the sourceId, which the signatures cover)",
+      valueTransform: valueTransform ?? null,
+      encoding: aggregation.numeric.type,
+      decimals: aggregation.numeric.decimals,
+      note:
+        "Median tolerance mode: the stored 32 bytes are a signed int256 (two's complement) equal to the median observation scaled by 10^decimals. Leave valueTransform empty: it runs on each node before scaling, and a multiply: transform truncates to an integer first."
+    };
+  }
+
   return {
     attested: false,
     source: "apiConfig.valueTransform (off-chain; not part of the signed payload)",
@@ -63,4 +95,24 @@ export function describeValueEncoding(valueTransform: string | undefined): Recor
     note:
       "Molpha does not attest scale/decimals on-chain — FeedValueKind is only value|hash. A verifier contract must be configured with this feed's scale out of band; do not infer it from the integer alone."
   };
+}
+
+/** Renders a tolerance-mode feed's `0x` hex value as a decimal string at `decimals`; undefined if not 32 bytes. */
+export function decodeToleranceValue(valueHex: unknown, decimals: number): string | undefined {
+  if (typeof valueHex !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(valueHex)) {
+    return undefined;
+  }
+  return requireSdkExport<(value: string, decimals: number) => string>("formatInt256Decimal")(valueHex, decimals);
+}
+
+function asByteArray(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+
+  if (Array.isArray(value) && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    return Uint8Array.from(value as number[]);
+  }
+
+  return undefined;
 }

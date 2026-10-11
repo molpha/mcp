@@ -2,40 +2,71 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { getSdkExport } from "./sdk.js";
+import { assertSourcePaymentNetworkSupported } from "./source-payment-assets.js";
+import { parseSolanaPubkey } from "./solana-address.js";
 
 const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
 const FALLBACK_GATEWAY_ENDPOINT = "https://dev-gateway.molpha.io";
 
 export interface GuardrailConfig {
+  dailyCapsEnabled?: boolean;
   maxExecutesPerDay: number;
   dryRunDefault: boolean;
 }
 
 export interface X402Config {
-  /** Per-round cap in USDC base units (6 decimals). Refuse funding above this. */
+  dailyCapsEnabled?: boolean;
+  /** Per-round cap in USDC base units (6 decimals). Refuse to pay above this. */
   maxPriceUsdcAtomic: bigint;
   /** Daily cumulative spend cap in USDC base units. */
   maxSpendPerDayUsdcAtomic: bigint;
-  /** Optional override for the settling gateway PDA (base58), when known out-of-band. */
-  gatewayPda: string | undefined;
+}
+
+/**
+ * Paying a paywalled API source (a provider's x402 service) from an EVM wallet this server holds. It is off
+ * until BOTH a payer key and at least one allowed network are configured, and every payment is bounded by a
+ * per-round and a per-day cap and by the amount the caller authorizes in that call.
+ */
+export interface SourcePaymentConfig {
+  /** Hex private key of the EVM wallet that pays sources. Never printed, logged or returned by a tool. */
+  payerKey: string | undefined;
+  /** CAIP-2 networks a source may be paid on, e.g. `eip155:84532` (Base Sepolia). Empty disables payment. */
+  networks: string[];
+  /** Most one round may sign away, in USDC base units: its worst case, price per call times the eligible set. */
+  maxPerRoundAtomic: bigint;
+  /** Daily cumulative cap in USDC base units. */
+  maxPerDayAtomic: bigint;
+  dailyCapsEnabled?: boolean;
 }
 
 export interface MolphaConfig {
   gatewayEndpoints: string[];
+  /**
+   * Base58 authority per `gatewayEndpoints` entry. Request auth binds the
+   * gateway's PDA; `undefined` leaves the SDK to discover it via `GET /v1/info`.
+   */
+  gatewayAuthorities: Array<string | undefined>;
   solanaRpc: string;
   ownerKeypair: string | undefined;
   evmNetworks: string[];
   starknetNetworks: string[];
   guardrails: GuardrailConfig;
   x402: X402Config;
+  /** Absent means source payment is off. */
+  sourcePayment?: SourcePaymentConfig;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
   const sdkDefaultGateway = getSdkExport<string>("DEFAULT_GATEWAY_ENDPOINT");
+  const gatewayEndpoints = parseCsv(
+    resolveEnvString(env.GATEWAY_ENDPOINTS) ?? sdkDefaultGateway ?? FALLBACK_GATEWAY_ENDPOINT
+  );
 
   return {
-    gatewayEndpoints: parseCsv(
-      resolveEnvString(env.GATEWAY_ENDPOINTS) ?? sdkDefaultGateway ?? FALLBACK_GATEWAY_ENDPOINT
+    gatewayEndpoints,
+    gatewayAuthorities: parseGatewayAuthorities(
+      resolveEnvString(env.GATEWAY_AUTHORITIES),
+      gatewayEndpoints.length
     ),
     solanaRpc: resolveEnvString(env.SOLANA_RPC) ?? DEFAULT_SOLANA_RPC,
     ownerKeypair: resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR),
@@ -43,16 +74,47 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
     starknetNetworks: parseCsv(resolveEnvString(env.MOLPHA_STARKNET_NETWORKS) ?? "starknet-sepolia"),
     guardrails: {
       maxExecutesPerDay: parsePositiveInt(resolveEnvString(env.MOLPHA_MAX_EXECUTES_PER_DAY), 100),
-      dryRunDefault: (() => {
-        const dryRun = resolveEnvString(env.MOLPHA_DRY_RUN);
-        return dryRun === "1" || dryRun === "true";
-      })()
+      dryRunDefault: parseDryRun(resolveEnvString(env.MOLPHA_DRY_RUN))
     },
     x402: {
       maxPriceUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_PRICE_USDC), 1_000_000n),
-      maxSpendPerDayUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_SPEND_PER_DAY_USDC), 10_000_000n),
-      gatewayPda: resolveEnvString(env.MOLPHA_X402_GATEWAY_PDA)
+      maxSpendPerDayUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_SPEND_PER_DAY_USDC), 10_000_000n)
+    },
+    sourcePayment: loadSourcePayment(env)
+  };
+}
+
+/**
+ * `MOLPHA_DRY_RUN` is a lock on spending, so it fails safe: unset is live, a recognised "off" value is live,
+ * and anything else (a typo, `True`, `yes`) locks to dry-run instead of silently going live.
+ */
+export function parseDryRun(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+
+/** Quarter of a dollar per round and a dollar a day: enough to try a feed, far from enough to hurt. */
+const DEFAULT_SOURCE_MAX_PER_ROUND_ATOMIC = 250_000n;
+const DEFAULT_SOURCE_MAX_PER_DAY_ATOMIC = 1_000_000n;
+
+function loadSourcePayment(env: NodeJS.ProcessEnv): SourcePaymentConfig {
+  const payerKey = resolveEnvString(env.MOLPHA_SOURCE_PAYER_KEY)?.trim();
+  // The message never includes the value: it is a private key.
+  if (payerKey !== undefined && !/^(0x)?[0-9a-fA-F]{64}$/.test(payerKey)) {
+    throw new Error("MOLPHA_SOURCE_PAYER_KEY must be a 32-byte hex private key (64 hex characters, 0x optional)");
+  }
+  const networks = parseCsv(resolveEnvString(env.MOLPHA_SOURCE_PAYMENT_NETWORKS) ?? "");
+  for (const network of networks) {
+    if (!/^eip155:\d+$/.test(network)) {
+      throw new Error(`MOLPHA_SOURCE_PAYMENT_NETWORKS entries are CAIP-2 EVM networks such as eip155:84532, got "${network}"`);
     }
+    assertSourcePaymentNetworkSupported(network);
+  }
+  return {
+    payerKey,
+    networks,
+    maxPerRoundAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_SOURCE_MAX_PER_ROUND_USDC), DEFAULT_SOURCE_MAX_PER_ROUND_ATOMIC),
+    maxPerDayAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC), DEFAULT_SOURCE_MAX_PER_DAY_ATOMIC)
   };
 }
 
@@ -87,8 +149,30 @@ function parseCsv(value: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * GATEWAY_AUTHORITIES pairs with GATEWAY_ENDPOINTS by position; an empty entry
+ * means "discover it". A shifted list would sign every request for the wrong
+ * gateway, so the counts must match exactly.
+ */
+function parseGatewayAuthorities(value: string | undefined, endpointCount: number): Array<string | undefined> {
+  if (!value) {
+    return Array.from({ length: endpointCount }, () => undefined);
+  }
+
+  const entries = value.split(",").map((part) => part.trim());
+  if (entries.length !== endpointCount) {
+    throw new Error(
+      `GATEWAY_AUTHORITIES has ${entries.length} entries but GATEWAY_ENDPOINTS has ${endpointCount}; list one authority per endpoint, in the same order (leave an entry empty to discover it via GET /v1/info)`
+    );
+  }
+
+  return entries.map((entry, index) =>
+    entry ? String(parseSolanaPubkey(entry, `GATEWAY_AUTHORITIES[${index}]`)) : undefined
+  );
+}
+
 /** Parses a decimal USDC amount (e.g. "1.5") into base units (6 decimals). */
-function parseUsdcAtomic(value: string | undefined, fallback: bigint): bigint {
+export function parseUsdcAtomic(value: string | undefined, fallback: bigint): bigint {
   if (!value?.trim()) {
     return fallback;
   }

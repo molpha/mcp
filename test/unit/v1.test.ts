@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { toDataUpdateArtifact, toSignedResult } from "../../src/artifacts.js";
+import { normalizeSignedResult, toAttestationArtifact } from "../../src/artifacts.js";
 import { loadConfig, type MolphaConfig } from "../../src/config.js";
 import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
 import { decodeFeedValueKind, presentFeed } from "../../src/feed.js";
 import { toCanonicalHex } from "../../src/hex.js";
-import { checkX402PerRoundCap, checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
+import {
+  checkX402DailySpendCap,
+  checkX402PerRoundCap,
+  checkX402SpendCap,
+  enforceExecuteCap,
+  recordX402Spend,
+  resetGuardrailCounters,
+  withX402DailySpendSerialization,
+  x402SpentToday
+} from "../../src/guardrails.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
 
 describe("loadConfig", () => {
@@ -68,11 +77,12 @@ describe("toCanonicalHex", () => {
   });
 });
 
-describe("toDataUpdateArtifact", () => {
-  it("shapes gateway result into spec-friendly signed artifact", () => {
-    const artifact = toDataUpdateArtifact({
-      feedId: "0xabc",
+describe("toAttestationArtifact", () => {
+  it("shapes a flat signed result into the gateway's attestation body", () => {
+    const artifact = toAttestationArtifact({
+      sourceId: "0xabc",
       value: "123",
+      valuePacked: "0x7b",
       fresh: true,
       registryVersion: 42,
       signaturesRequired: 3,
@@ -85,25 +95,27 @@ describe("toDataUpdateArtifact", () => {
     expect(artifact).toEqual({
       value: "123",
       fresh: true,
-      dataUpdate: {
-        feedId: `0x${"0".repeat(61)}abc`,
-        registryVersion: 42,
-        signaturesRequired: 3,
-        value: "123",
-        canonicalTimestamp: 1714300000
-      },
-      signature: {
-        signature: `0x${"0".repeat(60)}5165`,
-        commitment: `0x${"0".repeat(37)}c0b`,
-        signersBitmap: `0x${"0".repeat(63)}4`
+      attestation: {
+        payload: {
+          value: `0x${"0".repeat(62)}7b`,
+          sourceId: `0x${"0".repeat(61)}abc`,
+          registryVersion: 42,
+          signaturesRequired: 3,
+          timestamp: 1714300000
+        },
+        signature: {
+          signature: `0x${"0".repeat(60)}5165`,
+          commitment: `0x${"0".repeat(37)}c0b`,
+          signersBitmap: `0x${"0".repeat(63)}4`
+        }
       }
     });
   });
 });
 
-describe("toSignedResult", () => {
+describe("normalizeSignedResult", () => {
   const flat = {
-    feedId: `0x${"1".repeat(64)}`,
+    sourceId: `0x${"1".repeat(64)}`,
     value: "66285",
     valuePacked: `0x${"2".repeat(64)}`,
     timestamp: 1714300000,
@@ -115,27 +127,27 @@ describe("toSignedResult", () => {
     fresh: true
   };
 
-  it("accepts the fetch_verified artifact and the flat shape interchangeably", () => {
-    const artifact = toDataUpdateArtifact(flat);
+  it("accepts the round artifact and the flat shape interchangeably", () => {
+    const artifact = toAttestationArtifact(flat);
 
-    expect(toSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
-      toSignedResult(flat)
+    expect(normalizeSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
+      normalizeSignedResult(flat)
     );
   });
 
   it("canonicalizes the bitmap on both paths", () => {
-    expect(toSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
+    expect(normalizeSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
   });
 
-  it("ignores extra keys carried along from a pasted fetch_verified response", () => {
+  it("ignores extra keys carried along from a pasted round response", () => {
     const pasted = {
-      ...(toDataUpdateArtifact(flat) as unknown as Record<string, unknown>),
+      ...(toAttestationArtifact(flat) as unknown as Record<string, unknown>),
       payment: "x402",
       trustAnchor: "…",
       verifierArgs: { evm: {} }
     };
 
-    expect(toSignedResult(pasted).s).toBe(flat.s);
+    expect(normalizeSignedResult(pasted).s).toBe(flat.s);
   });
 });
 
@@ -151,6 +163,19 @@ describe("decodeFeedValueKind", () => {
     const feed = presentFeed({ valueKind: { value: {} }, registryVersion: 7 });
     expect(feed).toMatchObject({ valueKind: "value", registryVersion: 7 });
     expect(String(feed?.valueKindMeaning)).toContain("raw oracle payload");
+  });
+
+  it("renders the feed's byte arrays as 0x hex so they compare against sourceIds", () => {
+    const feed = presentFeed({
+      sourceId: [0xab, ...new Array<number>(31).fill(0)],
+      value: new Uint8Array([0, 42]),
+      signersBitmap: [0, 7],
+      valueKind: { value: {} }
+    });
+
+    expect(feed?.sourceId).toBe(`0xab${"00".repeat(31)}`);
+    expect(feed?.value).toBe("0x002a");
+    expect(feed?.signersBitmap).toBe("0x0007");
   });
 });
 
@@ -203,12 +228,30 @@ describe("guardrails", () => {
     expect(() => checkX402PerRoundCap(2_000_000n, 1_000_000n)).toThrow(/cap reached/);
     expect(() => checkX402PerRoundCap(1_000_000n, 1_000_000n)).not.toThrow();
   });
+
+  it("serializes concurrent x402 spend cap checks through signing", async () => {
+    resetGuardrailCounters();
+    const amount = 600_000n;
+    const max = 1_000_000n;
+    const run = () =>
+      withX402DailySpendSerialization(true, async () => {
+        checkX402DailySpendCap(amount, max);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        recordX402Spend(amount);
+      });
+
+    const [first, second] = await Promise.allSettled([run(), run()]);
+    const rejected = [first, second].filter((result) => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/daily spend cap reached/);
+    expect(x402SpentToday()).toBe(amount);
+  });
 });
 
 describe("normalizeError", () => {
   it("maps subscription, payment, and config errors with remediation", () => {
     expect(normalizeError(new Error("OWNER_KEYPAIR is required")).code).toBe("missing_config");
-    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("x402");
+    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("execute_x402_round");
     expect(normalizeError(new Error("execute cap reached (10 per day)")).code).toBe("guardrail_exceeded");
     expect(
       normalizeError(new Error("x402 per-round price cap reached: round price (2 USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (1 USDC).")).code
@@ -216,16 +259,59 @@ describe("normalizeError", () => {
   });
 
   it("maps a 402 status to payment_required with remediation", () => {
-    const error = Object.assign(new Error("payment required: escrow ATA underfunded"), { status: 402 });
+    const error = Object.assign(new Error("x402 payment rejected by the gateway: invalid payment"), { status: 402 });
     const normalized = normalizeError(error);
     expect(normalized.code).toBe("payment_required");
     expect(normalized.remediation).toContain("x402");
+  });
+
+  it("maps a gateway 403 to forbidden, pointing at the self-funded round", () => {
+    const error = Object.assign(new Error("Gateway rejected request (403): subscription expired"), { status: 403 });
+    const normalized = normalizeError(error);
+    expect(normalized.code).toBe("forbidden");
+    expect(normalized.remediation).toContain("execute_x402_round");
+  });
+
+  it("maps a gateway 409 to round_conflict, although its message names the subscription", () => {
+    const error = Object.assign(
+      new Error("Gateway error (409): round already reserved at timestamp 1791000000100 ms for subscription 4Nd1mYw4r8kq1mJ6mX7oC1eXo3tVbUeHn7sJ9wGq2kPz; retry"),
+      { status: 409 }
+    );
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_conflict", status: 409 });
+    expect(normalized.remediation).toMatch(/This consumer or payer already has a round for this feed \(the same source and quorum\) in the current 100 ms tick/);
+    expect(normalized.remediation).toMatch(/requests for one feed in the same tick share a round/);
+    expect(normalized.remediation).toMatch(/a feed runs at most 10 rounds per second/);
+    expect(normalized.remediation).toMatch(/Wait at least 100 ms, then call again for a new round/);
+    expect(normalized.remediation).not.toMatch(/millisecond/);
+  });
+
+  it("maps a gateway 503 to round_timeout and names the gateway's capacity limit as the usual cause", () => {
+    const error = Object.assign(new Error("Gateway unavailable (503): gateway at capacity, retry shortly"), { status: 503 });
+    const normalized = normalizeError(error);
+    expect(normalized).toMatchObject({ code: "round_timeout", status: 503 });
+    expect(normalized.remediation).toMatch(/The usual cause is the gateway's own capacity limit \(`gateway at capacity`\)/);
+    expect(normalized.remediation).toMatch(/nothing was reserved or spent/);
+    expect(normalized.remediation).toMatch(/a node refuses a gateway only as a safety limit/);
+    // Nodes do not limit a source.
+    expect(normalized.remediation).not.toMatch(/source/);
+    expect(normalized.remediation).toMatch(/a retry is a new round/);
+    // A plain timeout keeps the code and gets no capacity advice.
+    expect(normalizeError(new Error("request timeout"))).toEqual({ code: "round_timeout", message: "request timeout" });
+  });
+
+  it("maps a gateway without GET /v1/info to a GATEWAY_AUTHORITIES fix", () => {
+    const error = Object.assign(new Error("GET /v1/info failed (404)"), { status: 404 });
+    const normalized = normalizeError(error);
+    expect(normalized.code).toBe("invalid_config");
+    expect(normalized.remediation).toContain("GATEWAY_AUTHORITIES");
   });
 });
 
 describe("buildVerifierArgsForChains", () => {
   const baseConfig: MolphaConfig = {
     gatewayEndpoints: ["http://gateway.test"],
+    gatewayAuthorities: [undefined],
     solanaRpc: "http://solana.test",
     ownerKeypair: undefined,
     evmNetworks: ["evm-sepolia"],
@@ -233,14 +319,13 @@ describe("buildVerifierArgsForChains", () => {
     guardrails: { maxExecutesPerDay: 100, dryRunDefault: false },
     x402: {
       maxPriceUsdcAtomic: 1_000_000n,
-      maxSpendPerDayUsdcAtomic: 10_000_000n,
-      gatewayPda: undefined
+      maxSpendPerDayUsdcAtomic: 10_000_000n
     }
   };
 
   it("includes evm verifier metadata when requested", () => {
     const result = {
-      feedId: "0".repeat(64),
+      sourceId: "0".repeat(64),
       value: "1",
       valuePacked: "0".repeat(64),
       timestamp: 1,
@@ -263,7 +348,7 @@ describe("buildVerifierArgsForChains", () => {
   // keeps callers from having to zero-pad it themselves.
   it("builds args from a gateway result whose signersBitmap is unpadded", () => {
     const raw = {
-      feedId: "0".repeat(64),
+      sourceId: "0".repeat(64),
       value: "66285",
       valuePacked: "0".repeat(64),
       timestamp: 1,
@@ -275,7 +360,7 @@ describe("buildVerifierArgsForChains", () => {
       fresh: true
     };
 
-    const args = buildVerifierArgsForChains(toSignedResult(raw), ["evm"], baseConfig);
+    const args = buildVerifierArgsForChains(normalizeSignedResult(raw), ["evm"], baseConfig);
 
     expect(args.errors).toBeUndefined();
     expect(args.evm).toBeDefined();

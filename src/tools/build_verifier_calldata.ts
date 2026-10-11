@@ -1,0 +1,68 @@
+import type { ToolDependencies } from "../clients.js";
+import { z } from "zod";
+import { attestationSchema, normalizeSignedResult } from "../artifacts.js";
+import { loadConfig } from "../config.js";
+import { toolHandler } from "../mcp.js";
+import { buildVerifierArgsForChains, getVerifierMetadata, type ChainTarget } from "../verifiers.js";
+import { verifierArgs, verifierMetadata } from "./outputs.js";
+import { type ToolServer } from "./types.js";
+
+const chainSchema = z.enum(["evm", "starknet"]);
+
+const outputSchema = z.object({
+  chain: chainSchema,
+  verifierArgs: verifierArgs(),
+  note: z.string(),
+  verifiers: verifierMetadata()
+});
+
+export function registerBuildVerifierCalldataTool(server: ToolServer, dependencies: ToolDependencies = {}): void {
+  server.registerTool(
+    "build_verifier_calldata",
+    {
+      title: "Build Molpha verifier calldata",
+      description:
+        "Build the verifier address and verify() call args for a signed attestation on EVM or Starknet. This tool does not verify anything: it stops at calldata by design, not by omission. The Molpha verifier is stateless, so the agent (or its contract) executes verify() itself, and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the attestation via submit_attestation (or a round tool's autoSubmit) — the program accepts it only if the aggregate signature verifies — and read it back with get_latest_value; there is no separate simulate-verify path. Takes the `attestation` object from execute_subscription_round / execute_x402_round verbatim; short hex fields are zero-padded to their canonical widths server-side. Local computation: no wallet, no network call.",
+      inputSchema: {
+        attestation: attestationSchema.passthrough(),
+        chain: chainSchema,
+        includeAbi: z.boolean().optional(),
+        maxAge: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("verify() maxAge in seconds (EVM and Starknet); omit or 0 for no freshness check. Set your own freshness policy.")
+      },
+      outputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    toolHandler(outputSchema, (
+      {
+        attestation,
+        chain,
+        includeAbi = false,
+        maxAge
+      }: {
+        attestation: Record<string, unknown>;
+        chain: ChainTarget;
+        includeAbi?: boolean;
+        maxAge?: number;
+      }
+    ) => {
+      const config = dependencies.config ?? loadConfig();
+      const result = normalizeSignedResult({ attestation });
+
+      return {
+        chain,
+        verifierArgs: buildVerifierArgsForChains(result, [chain], config, { maxAge }),
+        note:
+          "Calldata only. Execute verify() on-chain with these args; the MCP server does not assert validity." +
+          (!maxAge
+            ? " maxAge is 0, so verify() applies no freshness check; pass maxAge, or enforce freshness in the consuming contract."
+            : ""),
+        verifiers: getVerifierMetadata(config, includeAbi)
+      };
+    })
+  );
+}

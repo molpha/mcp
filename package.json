@@ -1,6 +1,6 @@
 {
   "name": "@molpha/mcp",
-  "version": "0.1.2",
+  "version": "0.1.1",
   "mcpName": "io.github.molpha/mcp",
   "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
   "license": "MIT",
@@ -28,55 +28,66 @@
   ],
   "type": "module",
   "bin": {
-    "molpha-mcp": "dist/src/server.js",
-    "molpha-provision": "dist/cli/provision.js",
-    "molpha-doctor": "dist/cli/doctor.js"
+    "molpha-mcp": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
     "dist/cli",
-    "README.md"
+    "README.md",
+    "docs/hosted-http.md",
+    "docs/vercel.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
-    "doctor": "node --import tsx cli/doctor.ts",
-    "provision": "node --import tsx cli/provision.ts",
+    "start": "node dist/src/server.js --http",
+    "doctor": "node --import tsx src/cli.ts doctor",
+    "provision": "node --import tsx src/cli.ts provision",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "sync-version": "node scripts/sync-version.mjs",
+    "gen:install": "node --import tsx scripts/gen-install.ts",
+    "check:install": "node --import tsx scripts/gen-install.ts --check",
+    "pack:mcpb": "node scripts/pack-mcpb.mjs",
     "changeset": "changeset",
-    "ci:version": "changeset version && npm run sync-version",
-    "ci:publish": "changeset publish"
+    "ci:version": "changeset version && npm run sync-version && npm run gen:install",
+    "ci:publish": "changeset publish",
+    "smoke:pack": "node scripts/smoke-pack.mjs"
   },
   "engines": {
     "node": ">=24.0.0"
   },
   "dependencies": {
     "@anchor-lang/core": "^1.1.2",
-    "@coral-xyz/anchor": "^0.30.1",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha/sdk": "0.1.0",
-    "@privy-io/node": "^0.26.0",
+    "@molpha/sdk": "0.2.0-dev-20261010103545",
+    "@noble/hashes": "^1.8.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.0.0",
-    "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "^1.98.4",
-    "@turnkey/sdk-server": "7.0.0",
-    "@turnkey/solana": "^1.1.31",
     "bn.js": "^5.2.2",
     "dotenv": "^16.6.1",
     "zod": "^3.25.0"
   },
+  "optionalDependencies": {
+    "@privy-io/node": "^0.26.0",
+    "@turnkey/sdk-server": "7.0.0",
+    "@turnkey/solana": "^1.1.31"
+  },
   "overrides": {
     "@privy-io/node": {
       "@solana/kit": "$@solana/kit"
+    },
+    "rpc-websockets": {
+      "uuid": "8.3.2"
     }
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.1",
     "@types/bn.js": "^5.1.6",

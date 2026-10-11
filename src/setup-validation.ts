@@ -9,6 +9,8 @@ import {
   resolveEnvString,
   resolvePath
 } from "./config.js";
+import { SECRET_ENV_NAMES, signerEnv, type Env } from "./install-config.js";
+import { resolveRunMode } from "./run-mode.js";
 import { createSigner } from "./signer/factory.js";
 import { validateSolanaPubkey } from "./solana-address.js";
 
@@ -19,6 +21,11 @@ export interface SetupCheck {
 }
 
 export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCheck[] {
+  const runMode = resolveRunMode([], env);
+  if (runMode.mode === "read-only") {
+    return [{ name: "signer_backend", ok: true, message: `read-only: ${runMode.reason}; write tools are not offered` }];
+  }
+
   const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
   const checks: SetupCheck[] = [
     {
@@ -27,7 +34,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
       message:
         backend === "memory" || backend === "keychain"
           ? `SIGNER_BACKEND=${backend}`
-          : `unsupported SIGNER_BACKEND="${backend}" (expected memory or keychain)`
+          : `unsupported SIGNER_BACKEND="${backend}" (expected memory, keychain or none)`
     }
   ];
 
@@ -39,7 +46,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
         ok: false,
         message: "OWNER_KEYPAIR is required for SIGNER_BACKEND=memory"
       });
-      return appendOptionalPubkeyChecks(checks, env);
+      return checks;
     }
 
     if (isInlineKeypair(ownerKeypair)) {
@@ -60,7 +67,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
               : "OWNER_KEYPAIR inline JSON is invalid"
         });
       }
-      return appendOptionalPubkeyChecks(checks, env);
+      return checks;
     }
 
     const resolved = resolveKeypairPath(ownerKeypair);
@@ -70,7 +77,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
         ok: false,
         message: `OWNER_KEYPAIR file not found: ${resolved}`
       });
-      return appendOptionalPubkeyChecks(checks, env);
+      return checks;
     }
 
     checks.push({
@@ -78,7 +85,7 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
       ok: true,
       message: `OWNER_KEYPAIR=${resolved}`
     });
-    return appendOptionalPubkeyChecks(checks, env);
+    return checks;
   }
 
   const provider = resolveEnvString(env.KEYCHAIN_BACKEND);
@@ -137,23 +144,14 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
     });
   }
 
-  for (const [name, value] of [["MOLPHA_X402_GATEWAY_PDA", resolveEnvString(env.MOLPHA_X402_GATEWAY_PDA)]] as const) {
-    if (!value?.trim()) {
-      continue;
-    }
-
-    const validation = validateSolanaPubkey(value, name);
-    checks.push({
-      name: name.toLowerCase(),
-      ok: validation.ok,
-      message: validation.ok ? `${name} is a valid Solana address` : validation.message
-    });
-  }
-
   return checks;
 }
 
 export async function checkSignerAvailability(): Promise<SetupCheck> {
+  const runMode = resolveRunMode([], process.env);
+  if (runMode.mode === "read-only") {
+    return { name: "signer", ok: true, message: "no signer needed: the server runs read-only" };
+  }
   try {
     const signer = await createSigner(loadConfig());
     const available = await signer.isAvailable();
@@ -218,7 +216,7 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
         continue;
       }
 
-      const probeRes = await fetch(`${base}/v1/agent/execute`, {
+      const probeRes = await fetch(`${base}/v1/x402/execute`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -226,11 +224,11 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
       });
       const probeText = (await probeRes.text()).trim();
       if (probeText.includes('"jsonrpc"') && probeText.includes("Method not found")) {
-        lastError = `${base} returned a Solana JSON-RPC error for POST /v1/agent/execute — this is not a Molpha gateway`;
+        lastError = `${base} returned a Solana JSON-RPC error for POST /v1/x402/execute — this is not a Molpha gateway`;
         continue;
       }
       if (probeRes.status === 404 && probeText.includes("page not found")) {
-        lastError = `${base} serves /v1/nodes but not /v1/agent/execute (signing routes missing — use https://dev-gateway.molpha.io)`;
+        lastError = `${base} serves /v1/nodes but not /v1/x402/execute (signing routes missing — use https://dev-gateway.molpha.io)`;
         continue;
       }
       if (probeRes.status === 400 || probeRes.status === 401 || probeRes.status === 402) {
@@ -241,7 +239,7 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
         };
       }
 
-      lastError = `${base} unexpected POST /v1/agent/execute response (${probeRes.status})`;
+      lastError = `${base} unexpected POST /v1/x402/execute response (${probeRes.status})`;
     } catch (error) {
       lastError = error instanceof Error ? `${base}: ${error.message}` : `${base}: unreachable`;
     }
@@ -271,6 +269,7 @@ export async function checkSolanaRpc(rpc: string): Promise<SetupCheck> {
   }
 }
 
+/** A source checkout runs from `dist`; an installed package is already built, so there is nothing to check. */
 export function checkBuildArtifact(repoRoot = process.cwd()): SetupCheck {
   const built = resolve(repoRoot, "dist/src/server.js");
   return {
@@ -282,15 +281,14 @@ export function checkBuildArtifact(repoRoot = process.cwd()): SetupCheck {
   };
 }
 
-export function resolveServerEntry(repoRoot = process.cwd()): string {
-  return resolve(repoRoot, "dist/src/server.js");
-}
-
 export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const config = loadConfig(env);
   const out: Record<string, string> = {
     SOLANA_RPC: config.solanaRpc,
     GATEWAY_ENDPOINTS: config.gatewayEndpoints.join(","),
+    ...(config.gatewayAuthorities.some(Boolean)
+      ? { GATEWAY_AUTHORITIES: config.gatewayAuthorities.map((authority) => authority ?? "").join(",") }
+      : {}),
     MOLPHA_EVM_NETWORKS: config.evmNetworks.join(","),
     MOLPHA_STARKNET_NETWORKS: config.starknetNetworks.join(","),
     MOLPHA_MAX_EXECUTES_PER_DAY: String(config.guardrails.maxExecutesPerDay),
@@ -298,18 +296,16 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
     MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: formatUsdcAtomic(config.x402.maxSpendPerDayUsdcAtomic)
   };
 
-  if (config.x402.gatewayPda) {
-    out.MOLPHA_X402_GATEWAY_PDA = config.x402.gatewayPda;
-  }
-
   const backend = resolveEnvString(env.SIGNER_BACKEND) ?? "memory";
-  if (backend === "memory") {
+  if (resolveRunMode([], env).mode === "read-only") {
+    out.SIGNER_BACKEND = "none";
+  } else if (backend === "memory") {
     out.SIGNER_BACKEND = "memory";
     const ownerKeypair = resolveEnvString(env.OWNER_KEYPAIR ?? env.AGENT_KEYPAIR);
     if (ownerKeypair) {
       out.OWNER_KEYPAIR = resolveKeypairPath(ownerKeypair);
     }
-  } else {
+  } else if (backend === "keychain") {
     out.SIGNER_BACKEND = "keychain";
     const provider = resolveEnvString(env.KEYCHAIN_BACKEND);
     if (provider) {
@@ -328,71 +324,36 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
             ]
           : [];
 
+    const placeholders = signerEnv(provider === "turnkey" ? "turnkey" : "privy");
     for (const name of passthrough) {
       const value = resolveEnvString(env[name]);
       if (value) {
-        out[name] = value;
+        // A secret is never copied into a snippet that gets pasted into a client config or a chat.
+        out[name] = SECRET_ENV_NAMES.has(name) ? (placeholders[name] ?? `<${name.toLowerCase()}>`) : value;
       }
     }
   }
 
-  if (config.guardrails.dryRunDefault) {
-    out.MOLPHA_DRY_RUN = "true";
+  if (config.sourcePayment?.payerKey) out.MOLPHA_SOURCE_PAYER_KEY = "<evm-payer-private-key>";
+  for (const name of ["MOLPHA_SOURCE_PAYMENT_NETWORKS", "MOLPHA_SOURCE_MAX_PER_ROUND_USDC", "MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC"]) {
+    const value = resolveEnvString(env[name]);
+    if (value) out[name] = value;
   }
+
+  // Always present, so a pasted config says plainly which level it is. Unset means dry-run here, not live:
+  // a snippet is for setting up, and going live is a deliberate edit of this one value.
+  out.MOLPHA_DRY_RUN = config.guardrails.dryRunDefault || resolveEnvString(env.MOLPHA_DRY_RUN) === undefined ? "true" : "false";
 
   return out;
 }
 
-export function buildMcpJsonSnippet(repoRoot = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
-  const serverPath = resolveServerEntry(repoRoot);
-  return JSON.stringify(
-    {
-      mcpServers: {
-        molpha: {
-          command: "node",
-          args: [serverPath],
-          env: buildMcpEnvBlock(env)
-        }
-      }
-    },
-    null,
-    2
-  );
-}
-
-export function buildCodexTomlSnippet(repoRoot = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
-  const serverPath = resolveServerEntry(repoRoot);
-  const envBlock = buildMcpEnvBlock(env);
-  const lines = [
-    "[mcp_servers.molpha]",
-    `command = "node"`,
-    `args = ["${serverPath}"]`,
-    "",
-    "[mcp_servers.molpha.env]"
-  ];
-
-  for (const [key, value] of Object.entries(envBlock)) {
-    lines.push(`${key} = "${value.replaceAll('"', '\\"')}"`);
-  }
-
-  return `${lines.join("\n")}\n`;
-}
-
-function appendOptionalPubkeyChecks(checks: SetupCheck[], env: NodeJS.ProcessEnv): SetupCheck[] {
-  for (const [name, value] of [["MOLPHA_X402_GATEWAY_PDA", resolveEnvString(env.MOLPHA_X402_GATEWAY_PDA)]] as const) {
-    if (!value?.trim()) {
-      continue;
-    }
-
-    const validation = validateSolanaPubkey(value, name);
-    checks.push({
-      name: name.toLowerCase(),
-      ok: validation.ok,
-      message: validation.ok ? `${name} is a valid Solana address` : validation.message
-    });
-  }
-
-  return checks;
+/**
+ * The env a pasted config should carry. When the checks ran against a dotenv file, the config points at that
+ * file and keeps only the level, so no value from it (a secret or not) is copied into a client config or a chat.
+ */
+export function snippetEnv(env: NodeJS.ProcessEnv, envFile: string | undefined): Env {
+  const full = buildMcpEnvBlock(env);
+  return envFile ? { MOLPHA_ENV_FILE: envFile, MOLPHA_DRY_RUN: full.MOLPHA_DRY_RUN ?? "true" } : full;
 }
 
 function resolveKeypairPath(path: string): string {

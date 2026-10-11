@@ -37,3 +37,69 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Versions and install snippets are in sync
+        run: |
+          node scripts/sync-version.mjs --check
+          npm run check:install
+
+  package:
+    name: Smoke-test the packed package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Packs the tarball and runs it the way a user does (`npx -y ./molpha-mcp-*.tgz`) over stdio:
+      # tool list vs manifest.json, instructions, read-only and dry-run behavior, doctor, one bin,
+      # and the optional signer SDKs installed.
+      - name: Pack and smoke-test
+        run: node scripts/smoke-pack.mjs
+
+  mcpb:
+    name: Build and validate the Claude Desktop bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Pack the bundle from an allowlist
+        run: node scripts/pack-mcpb.mjs "$RUNNER_TEMP/molpha-mcp.mcpb"
+
+  container:
+    name: Build and smoke-test hosted container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t molpha-mcp-http:ci .
+      - name: Check HTTP health and the keyless tool surface
+        shell: bash
+        run: |
+          docker run -d --name molpha-http -p 127.0.0.1:8402:8402 molpha-mcp-http:ci
+          trap 'docker rm -f molpha-http' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8402/healthz; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8402/healthz
+          # The hosted server signs nothing, so the optional signer SDKs must not ship in the image.
+          if docker exec molpha-http node -e "require.resolve('@privy-io/node')" 2>/dev/null; then
+            echo "@privy-io/node is present in the hosted image" >&2
+            exit 1
+          fi
+          curl --fail --silent http://127.0.0.1:8402/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' > /tmp/molpha-tools.json
+          node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/molpha-tools.json'));const names=(r.result?.tools??[]).map(t=>t.name);const required=['begin_session','prepare_x402_round','list_providers','get_provider','quote_source_payment'];if(names.length!==17||names.includes('submit_attestation')||required.some(n=>!names.includes(n)))process.exit(1)"

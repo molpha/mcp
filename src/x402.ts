@@ -1,801 +1,827 @@
 /**
- * x402 self-funded pay-per-request client for `POST /v1/agent/execute` and
- * `GET /v1/agent/{payer}/status`. The SDK has no x402 support (it only
- * covers the subscription round path), so this talks to the gateway
- * directly, mirroring the gateway's own Go implementation
- * (gateway/internal/gateway/features/agentexec).
+ * x402 pay-per-request client for `POST /v1/x402/execute` and
+ * `GET /v1/x402/status`. The SDK only covers the subscription round path, so
+ * this talks to the gateway directly.
+ *
+ * A round is first requested without payment; the gateway answers 402 with
+ * x402 `exact` Solana requirements. Those are untrusted: payTo, asset,
+ * amount, network, and memo must equal what this server derives from its own
+ * config and chain reads (see x402-payment.ts) before a payment is built. The
+ * payment is a USDC transfer to the protocol treasury (the ProtocolConfig PDA's
+ * token account), fee-sponsored by the gateway's facilitator and signed only by
+ * the payer: this server's signer in stdio mode, the caller's own wallet in
+ * hosted mode. The request is then repeated with the payment in
+ * `PAYMENT-SIGNATURE`. The gateway verifies the payment before dispatch and
+ * settles it before it returns data.
  */
-import { createHash } from "node:crypto";
-import { address, getAddressEncoder, getProgramDerivedAddress, type Address, type TransactionSigner } from "@solana/kit";
+import { setTimeout as delay } from "node:timers/promises";
+import { address, getBase58Decoder, type Address } from "@solana/kit";
+import type { Connection, VersionedTransaction } from "@solana/web3.js";
+import { assertToleranceQuorum, canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
+import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
+import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
 import {
-  findAssociatedTokenPda,
-  getCreateAssociatedTokenIdempotentInstruction,
-  getTransferInstruction,
-  TOKEN_PROGRAM_ADDRESS
-} from "@solana-program/token";
-import { Transaction, type Connection } from "@solana/web3.js";
-import { canonicalizeApiConfig, deriveApiConfigHash, deriveFeedIdString } from "./apiconfig.js";
-import { getMolphaProgramId, requireMethod } from "./clients.js";
-import { type MolphaConfig } from "./config.js";
-import {
-  checkX402DailySpendCap,
   checkX402PerRoundCap,
   checkX402SpendCap,
-  recordX402Spend
+  recordX402Spend,
+  withX402DailySpendSerialization,
+  x402SpentToday
 } from "./guardrails.js";
-import { normalizeFeedId } from "./hex.js";
-import { requireSdkExport } from "./sdk.js";
-import { toLegacyInstruction, toLegacyPublicKey } from "./solana-compat.js";
+import { normalizeSourceId } from "./hex.js";
+import { ROUND_TICK_MS } from "./protocol.js";
+import { readRoundResponse } from "./round-response.js";
 import type { MolphaSigner } from "./signer/types.js";
+import { parseSolanaPubkey } from "./solana-address.js";
+import {
+  assertSignedPayment,
+  buildPaymentTransaction,
+  computeX402Price,
+  paymentMessageSha256,
+  readPaymentAccounts,
+  readX402Pricing,
+  signPaymentTransaction,
+  verifyPaymentRequirements,
+  x402RequestMemo,
+  type PaymentAccounts,
+  type VerifiedPayment,
+  type X402PaymentRequirements,
+  type X402Pricing
+} from "./x402-payment.js";
 
-const AGENT_REQAUTH_PREFIX = "MOLPHA_AGENT_REQAUTH_V1";
-const MAX_ROUND_ATTEMPTS = 5;
+/** Jitter added to one round tick before repeating a request the gateway answered with 409, in ms. */
+const CONFLICT_JITTER_MS = 20;
 
-export interface ApiConfigInput {
-  url: string;
-  method?: "GET" | "POST" | undefined;
-  headers?: Record<string, string> | undefined;
-  responseParser: string;
-  valueTransform?: string | undefined;
+/**
+ * How long to wait before repeating a request the gateway answered with 409. A 409 means this
+ * payer (or consumer) already has a round for the feed in the current tick. The wait is one full
+ * tick, which lands the retry in a later tick whatever the offset between this clock and the
+ * gateway's, so no tick boundary is computed here. The jitter spreads requests that collided.
+ */
+export function conflictRetryDelayMs(random: () => number = Math.random): number {
+  return ROUND_TICK_MS + random() * CONFLICT_JITTER_MS;
 }
 
-export interface AgentFetchOptions {
-  apiConfig: ApiConfigInput;
+export interface X402RoundOptions {
+  apiConfig: ApiConfigLike;
   signaturesRequired: number;
-  /** When set, must match the feedId derived from apiConfig + signaturesRequired + payer. */
-  feedId?: string;
-  /** Accepted for API symmetry with the subscription path; x402 rounds always run fresh (the gateway has no maxAge/cache concept for /v1/agent/execute). */
-  maxAge?: number;
-  dryRun?: boolean;
+  /** When set, must match the sourceId derived from apiConfig. */
+  sourceId?: string | undefined;
+  /** Accepted for symmetry with the subscription path; x402 rounds always run fresh. */
+  maxAge?: number | undefined;
 }
 
-export interface X402Extra {
-  agent: string;
-  gateway: string;
-  feedId: string;
-  canonicalTimestamp: number;
-  amount: string;
-  payer: string;
-  currentAtaBalance: string;
-  committedAmount: string;
-  note: string;
+export interface X402RoundContext {
+  lifecycle?: RequestLifecycle;
+  config: MolphaConfig;
+  connection: Pick<Connection, "getAccountInfo" | "getMultipleAccountsInfo" | "getGenesisHash" | "getLatestBlockhash">;
+  solana: Record<string, unknown>;
+  gateway: Record<string, unknown>;
 }
 
-export interface X402Accept {
-  scheme: string;
+/** A round context that signs its own payment (stdio mode). */
+export interface X402SignerContext extends X402RoundContext {
+  signer: MolphaSigner;
+}
+
+/**
+ * A verified, payable round: everything the paid request needs once the payer
+ * has signed the transaction `messageSha256` names. Plain JSON, so a hosted
+ * server can hand it to the caller inside a MAC'd challenge instead of keeping it.
+ */
+export interface X402PaidRound {
+  endpoint: string;
   network: string;
-  maxAmountRequired: string;
-  payTo: string;
-  asset: string;
-  resource: string;
-  description: string;
-  maxTimeoutSeconds: number;
-  extra: X402Extra;
+  gatewayPda: Address;
+  payer: Address;
+  feePayer: Address;
+  payTo: Address;
+  asset: Address;
+  amountAtomicUsdc: string;
+  memo: string;
+  /** The offer to echo as the payload's `accepted`, exactly as the gateway made it. */
+  accepted: X402PaymentRequirements;
+  resource?: Record<string, string>;
+  /** The execute request body, resent unchanged with the payment. */
+  body: Record<string, unknown>;
+  /** Bare lowercase hex. */
+  sourceId: string;
+  signaturesRequired: number;
+  registryVersion: number;
+  /** Hex SHA-256 of the unsigned payment transaction's message. */
+  messageSha256: string;
+  /** The payment's blockhash expires after this block height. */
+  lastValidBlockHeight: number;
 }
 
-interface X402PaymentRequiredBody {
-  x402Version: number;
-  error: string;
-  accepts: X402Accept[];
+export interface PreparedX402Round {
+  round: X402PaidRound;
+  /** The unsigned payment; the payer signs it and nothing else, and does not broadcast it. */
+  transaction: VersionedTransaction;
+  payerAta: Address;
+  payToAta: Address;
+  payerBalanceAtomicUsdc: string;
 }
 
+export interface X402PaymentReceipt {
+  endpoint: string;
+  network: string;
+  payer: Address;
+  payTo: Address;
+  asset: Address;
+  amountAtomicUsdc: string;
+  feePayer: Address;
+  memo: string;
+  /** Settlement transaction from the gateway's PAYMENT-RESPONSE, when sent. */
+  transaction?: string;
+}
+
+export interface X402RoundResult {
+  /** The gateway's signed aggregate, in the shape buildRoundResult consumes. */
+  result: Record<string, unknown>;
+  payment: X402PaymentReceipt;
+}
+
+/** The gateway refused the payment before anything settled. */
 export class X402PaymentRequiredError extends Error {
   readonly status = 402;
-  readonly x402: X402PaymentRequiredBody;
+  readonly x402: unknown;
 
-  constructor(message: string, x402: X402PaymentRequiredBody) {
+  constructor(message: string, x402: unknown) {
     super(message);
     this.name = "X402PaymentRequiredError";
     this.x402 = x402;
   }
 }
 
-export interface AgentStatus {
-  payer?: string;
-  gateway?: string;
-  escrow: string;
-  exists: boolean;
-  authority?: string;
-  status?: string;
-  ataAddress: string;
-  ataExists: boolean;
-  ataBalance: string;
-  committedAmount: string;
-  quotedNextPrice: string;
-  unsettledRounds: number;
-}
-
-/** In-memory cache of the settling gateway PDA per endpoint — revealed via status or a 402 body. */
-const gatewayPdaCache = new Map<string, string>();
-
-/**
- * Escrow PDA: `["molpha_agent", payer, gateway]`.
- * Escrows are per (payer, gateway); the gateway seed is the settling gateway PDA.
- */
-export async function deriveAgentEscrow(
-  payer: Address,
-  gateway: Address,
-  programId: Address
-): Promise<Address> {
-  const encoder = getAddressEncoder();
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: programId,
-    seeds: [Buffer.from("molpha_agent"), Buffer.from(encoder.encode(payer)), Buffer.from(encoder.encode(gateway))]
-  });
-  return pda;
-}
-
-/** Escrow USDC ATA (associated token account owned by the agent escrow PDA). */
-export async function deriveAgentEscrowAta(escrow: Address, usdcMint: Address): Promise<Address> {
-  const [ata] = await findAssociatedTokenPda({
-    owner: escrow,
-    mint: usdcMint,
-    tokenProgram: TOKEN_PROGRAM_ADDRESS
-  });
-  return ata;
-}
-
-export interface VerifyX402FundingContext {
+export interface X402Reconciliation {
+  endpoint: string;
   payer: Address;
-  programId: Address;
-  usdcMint: Address;
-  /** When set, 402 `extra.gateway` must match (config pin, status, or prior discovery). */
-  knownGateway?: Address | string | undefined;
-  maxPriceUsdcAtomic: bigint;
-  maxSpendPerDayUsdcAtomic: bigint;
+  payTo: Address;
+  asset: Address;
+  amountAtomicUsdc: string;
+  /** Commits to the request, not to one round: several payments can carry the same memo. */
+  memo: string;
+  sourceId: string;
+  /**
+   * The payer's signature on the payment transaction, base58. It is the transaction's second
+   * signature; the transaction id is the facilitator's.
+   */
+  payerSignature: string;
+  /** Past this block height the payment can no longer settle. */
+  lastValidBlockHeight: number;
+  httpStatus?: number;
+  gatewayMessage?: string;
 }
 
-export interface VerifiedX402Funding {
-  gateway: Address;
-  escrow: Address;
-  escrowAta: Address;
-  usdcMint: Address;
-  fundAmount: bigint;
-  roundPrice: bigint;
+/** A payment was sent and the gateway's answer does not say whether it settled. */
+export class X402PaymentOutcomeUnknownError extends Error {
+  readonly reconciliation: X402Reconciliation;
+
+  constructor(message: string, reconciliation: X402Reconciliation) {
+    super(message);
+    this.name = "X402PaymentOutcomeUnknownError";
+    this.reconciliation = reconciliation;
+  }
 }
 
 /**
- * Treat a 402 `accepts[0]` as untrusted: derive escrow + USDC ATA, pin the mint
- * to on-chain protocol config, and cap the transfer amount before signing.
+ * The gateway's advisory `GET /v1/x402/status`. Payments go to the protocol
+ * treasury (`payTo`, the ProtocolConfig PDA; `treasuryAta` is its USDC account),
+ * not to the gateway, so the gateway holds no float for callers to cover.
  */
-export async function verifyX402FundingAccept(
-  accept: X402Accept,
-  ctx: VerifyX402FundingContext
-): Promise<VerifiedX402Funding> {
-  if (accept.extra.payer !== String(ctx.payer)) {
-    throw new Error(
-      `x402 402 response payer mismatch: expected ${ctx.payer}, got ${accept.extra.payer}`
-    );
-  }
-
-  const gateway = address(accept.extra.gateway);
-  if (ctx.knownGateway !== undefined && String(ctx.knownGateway) !== String(gateway)) {
-    throw new Error(
-      `x402 402 response gateway mismatch: expected ${ctx.knownGateway}, got ${gateway}`
-    );
-  }
-
-  const escrow = await deriveAgentEscrow(ctx.payer, gateway, ctx.programId);
-  if (accept.extra.agent !== String(escrow)) {
-    throw new Error(
-      `x402 402 response agent (escrow) mismatch: expected derived ${escrow}, got ${accept.extra.agent}`
-    );
-  }
-
-  if (accept.asset !== String(ctx.usdcMint)) {
-    throw new Error(
-      `x402 402 response asset mismatch: expected protocol USDC mint ${ctx.usdcMint}, got ${accept.asset}`
-    );
-  }
-
-  const escrowAta = await deriveAgentEscrowAta(escrow, ctx.usdcMint);
-  if (accept.payTo !== String(escrowAta)) {
-    throw new Error(
-      `x402 402 response payTo mismatch: expected derived escrow ATA ${escrowAta}, got ${accept.payTo}`
-    );
-  }
-
-  const roundPrice = BigInt(accept.extra.amount);
-  const fundAmount = BigInt(accept.maxAmountRequired);
-
-  checkX402PerRoundCap(roundPrice, ctx.maxPriceUsdcAtomic);
-  if (fundAmount > 0n) {
-    checkX402DailySpendCap(fundAmount, ctx.maxSpendPerDayUsdcAtomic);
-  }
-
-  if (fundAmount > roundPrice) {
-    throw new Error(
-      `x402 402 response maxAmountRequired (${fundAmount}) exceeds round price extra.amount (${roundPrice})`
-    );
-  }
-
-  return {
-    gateway,
-    escrow,
-    escrowAta,
-    usdcMint: ctx.usdcMint,
-    fundAmount,
-    roundPrice
-  };
+export interface X402GatewayStatus {
+  gateway: string;
+  authority: string;
+  payTo: string;
+  treasuryAta: string;
+  quotedNextPrice: string;
+  /** Rounds the gateway still owes an on-chain `submit_ticket` for. */
+  pendingTickets: number;
 }
 
-/** Advisory status for one payer at this gateway. Escrow is derived server-side. */
-export async function fetchAgentStatus(
+export async function fetchX402Status(
   config: MolphaConfig,
-  payer: Address,
-  signaturesRequired: number
-): Promise<AgentStatus> {
-  const path = `/v1/agent/${payer}/status?signatures_required=${signaturesRequired}`;
-  return getFirstReachable<AgentStatus>(config.gatewayEndpoints, path);
-}
+  signaturesRequired?: number,
+  signal?: AbortSignal
+): Promise<{ endpoint: string; status: X402GatewayStatus }> {
+  const query = signaturesRequired === undefined ? "" : `?signatures_required=${signaturesRequired}`;
+  let lastError = "no gateway endpoint configured";
 
-export interface AgentFetchContext {
-  config: MolphaConfig;
-  connection: Connection;
-  signer: MolphaSigner;
-  solana: Record<string, unknown>;
-}
-
-export async function agentFetch(
-  ctx: AgentFetchContext,
-  opts: AgentFetchOptions
-): Promise<Record<string, unknown>> {
-  const { config, connection, signer, solana } = ctx;
-  const payer = signer.publicKey;
-  const apiConfig = canonicalizeApiConfig(opts.apiConfig);
-  const apiConfigHash = deriveApiConfigHash(apiConfig);
-  const expectedFeedId = deriveFeedIdString(payer, apiConfigHash, opts.signaturesRequired);
-  assertFeedIdMatch(expectedFeedId, opts.feedId);
-
-  const endpointKey = config.gatewayEndpoints[0] ?? "";
-  const programId = getMolphaProgramId();
-  const { usdcMint: usdcMintRaw } = await requireMethod<
-    [],
-    Promise<{ usdcMint: Address | string; treasury?: Address | string }>
-  >(solana, "fetchProtocolTokens")();
-  const usdcMint = address(String(usdcMintRaw));
-
-  const registryVersion = await requireMethod<[], Promise<number>>(solana, "getRegistryVersion")();
-
-  // Status is advisory, so a failure must not abort the round — but it is the
-  // only source of the settling gateway PDA when nothing is pinned or cached,
-  // so keep the reason around for the error message that needs it.
-  let statusError: string | undefined;
-  const status = await fetchAgentStatus(config, payer, opts.signaturesRequired).catch(
-    (error: unknown) => {
-      statusError = error instanceof Error ? error.message : String(error);
-      return undefined;
+  for (const endpoint of config.gatewayEndpoints) {
+    let res: Response;
+    try {
+      res = await fetch(`${trimSlash(endpoint)}/v1/x402/status${query}`, { method: "GET", ...(signal ? { signal } : {}) });
+    } catch (error) {
+      lastError = `${endpoint}: ${errorMessage(error)}`;
+      continue;
     }
-  );
-  let gatewayPda =
-    config.x402.gatewayPda ?? gatewayPdaCache.get(endpointKey) ?? status?.gateway ?? undefined;
-  if (gatewayPda) cacheGatewayPda(endpointKey, gatewayPda);
-  let priceAtomic = status ? BigInt(status.quotedNextPrice) : undefined;
-  let availableAtomic = status
-    ? bigIntMax(0n, BigInt(status.ataBalance) - BigInt(status.committedAmount))
-    : 0n;
-  let escrowStr =
-    gatewayPda !== undefined
-      ? String(await deriveAgentEscrow(payer, address(gatewayPda), programId))
-      : "";
+    if (res.ok) {
+      return { endpoint, status: parseGatewayStatus(await res.json()) };
+    }
+    const message = await readErrorMessage(res);
+    if (res.status === 400) {
+      throw Object.assign(new Error(`GET /v1/x402/status rejected: ${message}`), { status: 400 });
+    }
+    lastError = `${endpoint}: HTTP ${res.status}: ${message}`;
+  }
 
-  const fundingVerifyCtx = (knownGateway: string | undefined): VerifyX402FundingContext => ({
-    payer,
-    programId,
-    usdcMint,
-    knownGateway,
-    maxPriceUsdcAtomic: config.x402.maxPriceUsdcAtomic,
-    maxSpendPerDayUsdcAtomic: config.x402.maxSpendPerDayUsdcAtomic
+  throw new Error(`GET /v1/x402/status failed on every gateway (${lastError})`);
+}
+
+/** Unsigned quote: no payer accounts, signature, payment, or attestation. */
+export async function quoteX402Round(ctx: X402RoundContext, opts: X402RoundOptions): Promise<Record<string, unknown>> {
+  ctx.lifecycle?.signal.throwIfAborted();
+  const plan = await planRound(ctx, opts);
+  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan), ctx.lifecycle?.signal);
+  const envelope = asRecord(required);
+  if (!envelope || !Array.isArray(envelope.accepts) || envelope.accepts.length === 0 || envelope.x402Version !== 2) {
+    throw new Error("Invalid payment-required envelope");
+  }
+  // Exclude gateway diagnostic text/extensions: only the protocol quote is returned.
+  const accepts = envelope.accepts.map(value => {
+    const item = asRecord(value);
+    if (!item || ["scheme", "network", "asset", "amount", "payTo"].some(key => typeof item[key] !== "string")) {
+      throw new Error("Invalid payment requirements");
+    }
+    if (item.scheme !== "exact" || !/^solana:[1-9A-HJ-NP-Za-km-z]+$/.test(String(item.network)) || !/^\d+$/.test(String(item.amount))) {
+      throw new Error("Unsupported payment requirements");
+    }
+    parseSolanaPubkey(String(item.asset), "quote asset");
+    parseSolanaPubkey(String(item.payTo), "quote payTo");
+    if (item.maxTimeoutSeconds !== undefined && (typeof item.maxTimeoutSeconds !== "number" || !Number.isInteger(item.maxTimeoutSeconds) || item.maxTimeoutSeconds <= 0)) {
+      throw new Error("Invalid quote timeout");
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of ["scheme", "network", "asset", "amount", "payTo", "maxTimeoutSeconds"]) {
+      if (item[key] !== undefined) out[key] = item[key];
+    }
+    const extra = asRecord(item.extra);
+    if (extra) {
+      if (extra.feePayer !== undefined) parseSolanaPubkey(String(extra.feePayer), "quote feePayer");
+      if (extra.memo !== undefined && (typeof extra.memo !== "string" || !/^[a-fA-F0-9]{64}$/.test(extra.memo))) throw new Error("Invalid quote memo");
+      out.extra = Object.fromEntries(["feePayer", "memo"].filter(key => typeof extra[key] === "string").map(key => [key, extra[key]]));
+    }
+    return out;
   });
-
-  if (opts.dryRun) {
-    if (priceAtomic === undefined || gatewayPda === undefined) {
-      const discovery = await discover(config, {
-        payer,
-        apiConfig,
-        signaturesRequired: opts.signaturesRequired,
-        registryVersion,
-        timestamp: Math.floor(Date.now() / 1000)
-      });
-      if (discovery.kind === "already_funded") {
-        // The escrow covers the round; the 400 quote carries no addresses, so
-        // report whatever the pinned/cached gateway PDA can still derive.
-        const escrow = gatewayPda
-          ? String(await deriveAgentEscrow(payer, address(gatewayPda), programId))
-          : "unknown";
-        const ata =
-          escrow !== "unknown"
-            ? String(await deriveAgentEscrowAta(address(escrow), usdcMint))
-            : "unknown";
-        checkX402PerRoundCap(discovery.roundPrice, config.x402.maxPriceUsdcAtomic);
-        return dryRunPreview(expectedFeedId, escrow, ata, discovery.roundPrice, discovery.roundPrice);
-      }
-
-      const verified = await verifyX402FundingAccept(discovery.accept, fundingVerifyCtx(gatewayPda));
-      assertFeedIdMatch(expectedFeedId, discovery.accept.extra.feedId);
-      cacheGatewayPda(endpointKey, String(verified.gateway));
-      availableAtomic = bigIntMax(
-        0n,
-        BigInt(discovery.accept.extra.currentAtaBalance) -
-          BigInt(discovery.accept.extra.committedAmount)
-      );
-      return dryRunPreview(
-        expectedFeedId,
-        String(verified.escrow),
-        String(verified.escrowAta),
-        verified.roundPrice,
-        availableAtomic
-      );
-    }
-
-    const escrowAta =
-      escrowStr !== ""
-        ? String(await deriveAgentEscrowAta(address(escrowStr), usdcMint))
-        : (status?.ataAddress ?? "unknown");
-
-    return dryRunPreview(
-      expectedFeedId,
-      escrowStr || "unknown",
-      escrowAta,
-      priceAtomic,
-      availableAtomic
-    );
-  }
-
-  let timestamp = Math.floor(Date.now() / 1000);
-  let feedIdHex = expectedFeedId;
-  let lastPaymentRequired: X402PaymentRequiredBody | undefined;
-  let walletSpendRecordedForRound = false;
-
-  for (let attempt = 0; attempt < MAX_ROUND_ATTEMPTS; attempt++) {
-    const needsQuoteOrFunding = priceAtomic === undefined || availableAtomic < priceAtomic;
-    const needsGateway = gatewayPda === undefined;
-
-    if (needsQuoteOrFunding || needsGateway) {
-      // Unsigned discovery (amount: 0) only works while underfunded. If the
-      // escrow already covers the quoted price but we lack the gateway PDA,
-      // refresh status instead — a funded amount:0 request returns 400.
-      if (!needsQuoteOrFunding && needsGateway) {
-        const refreshed = await fetchAgentStatus(config, payer, opts.signaturesRequired).catch(
-          () => undefined
-        );
-        if (!refreshed?.gateway) {
-          throw new Error(gatewayPdaUnknownMessage(statusError));
-        }
-        gatewayPda = refreshed.gateway;
-        cacheGatewayPda(endpointKey, gatewayPda);
-        escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
-        priceAtomic = BigInt(refreshed.quotedNextPrice);
-        availableAtomic = bigIntMax(
-          0n,
-          BigInt(refreshed.ataBalance) - BigInt(refreshed.committedAmount)
-        );
-      } else {
-        timestamp = Math.floor(Date.now() / 1000);
-        const discovery = await discover(config, {
-          payer,
-          apiConfig,
-          signaturesRequired: opts.signaturesRequired,
-          registryVersion,
-          timestamp
-        });
-
-        if (discovery.kind === "already_funded") {
-          // Status was unavailable so we assumed an empty escrow, but the
-          // gateway says it is funded. Nothing to fund — take the quote and
-          // sign, provided the gateway PDA is known from a pin or the cache.
-          if (!gatewayPda) {
-            throw new Error(gatewayPdaUnknownMessage(statusError));
-          }
-          priceAtomic = discovery.roundPrice;
-          availableAtomic = discovery.roundPrice;
-          escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
-          feedIdHex = expectedFeedId;
-        } else {
-          const verified = await verifyX402FundingAccept(discovery.accept, fundingVerifyCtx(gatewayPda));
-          assertFeedIdMatch(expectedFeedId, discovery.accept.extra.feedId);
-          gatewayPda = String(verified.gateway);
-          cacheGatewayPda(endpointKey, gatewayPda);
-          priceAtomic = verified.roundPrice;
-
-          if (verified.fundAmount > 0n) {
-            await fundEscrow(connection, signer, {
-              mint: verified.usdcMint,
-              escrow: verified.escrow,
-              escrowAta: verified.escrowAta,
-              amountAtomic: verified.fundAmount
-            });
-            recordX402Spend(verified.fundAmount);
-            walletSpendRecordedForRound = true;
-          }
-
-          timestamp = discovery.accept.extra.canonicalTimestamp;
-          feedIdHex = expectedFeedId;
-          escrowStr = String(verified.escrow);
-          availableAtomic = priceAtomic;
-        }
-      }
-    }
-
-    if (!gatewayPda || !escrowStr || priceAtomic === undefined) {
-      throw new Error("x402 agent execute missing gateway PDA, escrow, or round price after discovery");
-    }
-
-    if (walletSpendRecordedForRound) {
-      checkX402PerRoundCap(priceAtomic, config.x402.maxPriceUsdcAtomic);
-    } else {
-      checkX402SpendCap(
-        priceAtomic,
-        config.x402.maxPriceUsdcAtomic,
-        config.x402.maxSpendPerDayUsdcAtomic
-      );
-    }
-
-    const sig = await signAgentRequestAuth(signer, {
-      agent: address(escrowStr),
-      gateway: address(gatewayPda),
-      feedId: hexToBytesLocal(feedIdHex),
-      canonicalTimestamp: timestamp,
-      amount: priceAtomic
-    });
-
-    const outcome = await postAgentExecute(config.gatewayEndpoints, {
-      payer,
-      canonical_timestamp: timestamp,
-      signatures_required: opts.signaturesRequired,
-      amount: Number(priceAtomic),
-      registry_version: registryVersion,
-      agent_request_auth_sig: bytesToHex0xLocal(sig),
-      apiConfig
-    });
-
-    if (outcome.kind === "ok") {
-      return mapAgentResponse(outcome.body);
-    }
-
-    if (outcome.kind === "payment_required") {
-      lastPaymentRequired = outcome.body;
-      const accept = outcome.body.accepts[0];
-      if (accept?.extra.gateway) {
-        if (gatewayPda !== undefined && accept.extra.gateway !== gatewayPda) {
-          throw new Error(
-            `x402 402 response gateway mismatch: expected ${gatewayPda}, got ${accept.extra.gateway}`
-          );
-        }
-        gatewayPda = accept.extra.gateway;
-        cacheGatewayPda(endpointKey, gatewayPda);
-        escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
-      }
-      priceAtomic = undefined;
-      availableAtomic = 0n;
-      continue;
-    }
-
-    if (outcome.kind === "amount_mismatch") {
-      // Price moved between the quote and the signed request. The rejection
-      // carries the current price, so re-sign against it directly; only fall
-      // back to status when the gateway did not name one.
-      if (outcome.quotedPrice !== undefined) {
-        priceAtomic = outcome.quotedPrice;
-        availableAtomic = outcome.quotedPrice;
-        timestamp = Math.floor(Date.now() / 1000);
-        continue;
-      }
-
-      const refreshed = await fetchAgentStatus(config, payer, opts.signaturesRequired).catch(
-        () => undefined
-      );
-      if (refreshed) {
-        priceAtomic = BigInt(refreshed.quotedNextPrice);
-        availableAtomic = bigIntMax(
-          0n,
-          BigInt(refreshed.ataBalance) - BigInt(refreshed.committedAmount)
-        );
-        if (refreshed.gateway) {
-          gatewayPda = refreshed.gateway;
-          cacheGatewayPda(endpointKey, gatewayPda);
-        }
-        if (gatewayPda) {
-          escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
-        }
-        timestamp = Math.floor(Date.now() / 1000);
-        continue;
-      }
-      priceAtomic = undefined;
-      availableAtomic = 0n;
-      continue;
-    }
-
-    if (outcome.kind === "bad_request") {
-      // Stale registry version, clock skew, malformed apiConfig — none of
-      // these are fixed by retrying the same request.
-      throw new Error(`x402 agent execute rejected: ${outcome.message}`);
-    }
-
-    if (outcome.kind === "conflict") {
-      // canonical_timestamp already reserved — bump and re-sign.
-      timestamp += 1;
-      continue;
-    }
-
-    if (outcome.kind === "unavailable") {
-      timestamp = Math.floor(Date.now() / 1000);
-      continue;
-    }
-
-    throw new Error(`x402 agent execute failed: ${outcome.message}`);
-  }
-
-  if (lastPaymentRequired) {
-    throw new X402PaymentRequiredError(
-      lastPaymentRequired.error || "payment required: escrow ATA underfunded after retries",
-      lastPaymentRequired
-    );
-  }
-
-  throw new Error("x402 agent round failed after retries (payment/timestamp conflicts did not resolve)");
+  return { payment: "x402", dryRun: true, quoteOnly: true, action: "execute_x402_round",
+    sourceId: `0x${plan.sourceId}`, endpoint, paymentRequired: { x402Version: 2, accepts },
+    note: "Unsigned gateway quote; no payer-specific verification, signature, payment, or attestation." };
 }
 
-function dryRunPreview(
-  feedId: string,
-  escrow: string,
-  ata: string,
-  priceAtomic: bigint,
-  availableAtomic: bigint
-): Record<string, unknown> {
-  const shortfall = bigIntMax(0n, priceAtomic - availableAtomic);
+/** Quotes and verifies a round's payment without signing or spending anything. */
+export async function previewX402Round(
+  ctx: X402SignerContext,
+  opts: X402RoundOptions
+): Promise<Record<string, unknown>> {
+  ctx.lifecycle?.signal.throwIfAborted();
+  const plan = await planRound(ctx, opts);
+  const { endpoint, verified, accounts } = await preparePayment(ctx, plan, ctx.signer.publicKey);
+  const shortfall = verified.amount > accounts.payerBalance ? verified.amount - accounts.payerBalance : 0n;
+
   return {
     dryRun: true,
-    action: "x402_agent_execute",
-    feedId,
-    escrow,
-    ata,
-    priceAtomicUsdc: priceAtomic.toString(),
-    availableAtomicUsdc: availableAtomic.toString(),
+    action: "execute_x402_round",
+    sourceId: `0x${plan.sourceId}`,
+    gateway: { endpoint, authority: accounts.authority, pda: accounts.gatewayPda },
+    payTo: verified.payTo,
+    network: plan.network,
+    asset: verified.asset,
+    priceAtomicUsdc: verified.amount.toString(),
+    feePayer: verified.feePayer,
+    memo: verified.memo,
+    payer: ctx.signer.publicKey,
+    payerUsdcAta: accounts.payerAta,
+    payerBalanceAtomicUsdc: accounts.payerBalance.toString(),
     shortfallAtomicUsdc: shortfall.toString(),
+    ...(ctx.config.x402.dailyCapsEnabled !== false ? { spentTodayAtomicUsdc: x402SpentToday().toString() } : {}),
     note:
       shortfall > 0n
-        ? "Escrow is underfunded for this round; a live call would fund the ATA before requesting data."
-        : "Escrow already covers this round's price; a live call would request data immediately."
+        ? "The signer's USDC balance does not cover this round; a live call would refuse before signing."
+        : "A live call would sign a USDC transfer of priceAtomicUsdc to the protocol treasury (network fee paid by feePayer) and then request the round."
   };
 }
 
-function gatewayPdaUnknownMessage(statusError: string | undefined): string {
-  return [
-    "x402 escrow appears funded but the settling gateway PDA is unknown; set MOLPHA_X402_GATEWAY_PDA or ensure GET /v1/agent/{payer}/status returns gateway.",
-    statusError ? ` (status lookup failed: ${statusError})` : ""
-  ].join("");
+/** Pays for and runs one round, returning the signed aggregate and its payment receipt. */
+export async function executeX402Round(ctx: X402SignerContext, opts: X402RoundOptions): Promise<X402RoundResult> {
+  ctx.lifecycle?.signal.throwIfAborted();
+  const plan = await planRound(ctx, opts);
+  const dailyCapsEnabled = ctx.config.x402.dailyCapsEnabled !== false;
+
+  const { round, signed } = await withX402DailySpendSerialization(dailyCapsEnabled, async () => {
+    const prepared = await buildPayableRound(ctx, plan, ctx.signer.publicKey);
+    ctx.lifecycle?.signal.throwIfAborted();
+    const signedPayment = await signPaymentTransaction(ctx.signer, prepared.transaction, prepared.round.feePayer);
+    ctx.lifecycle?.signal.throwIfAborted();
+    if (dailyCapsEnabled) recordX402Spend(BigInt(prepared.round.amountAtomicUsdc));
+    return { round: prepared.round, signed: signedPayment };
+  });
+
+  return submitPaidRound(ctx.lifecycle, round, signed);
 }
 
-function assertFeedIdMatch(expected: string, provided: string | undefined): void {
-  if (provided === undefined) return;
-  if (normalizeFeedId(provided) !== normalizeFeedId(expected)) {
-    throw new Error(
-      `feedId does not match apiConfig + signaturesRequired for this signer: expected ${expected}, got ${provided}`
-    );
+/**
+ * Quotes and verifies a round for `payer` and builds its unsigned payment.
+ * Nothing is signed or spent: the payer signs the returned transaction with its
+ * own wallet and hands it to {@link executePreparedX402Round}.
+ */
+export async function prepareX402Round(
+  ctx: X402RoundContext,
+  opts: X402RoundOptions,
+  payer: Address
+): Promise<PreparedX402Round> {
+  ctx.lifecycle?.signal.throwIfAborted();
+  return buildPayableRound(ctx, await planRound(ctx, opts), payer);
+}
+
+/**
+ * Sends a prepared round's payment once its payer has signed it. `round` must be
+ * exactly what {@link prepareX402Round} returned; a caller that takes it back from
+ * outside this process authenticates it first.
+ */
+export async function executePreparedX402Round(
+  ctx: Pick<X402RoundContext, "lifecycle" | "config">,
+  round: X402PaidRound,
+  signed: VersionedTransaction
+): Promise<X402RoundResult> {
+  ctx.lifecycle?.signal.throwIfAborted();
+  if (!ctx.config.gatewayEndpoints.includes(round.endpoint)) {
+    throw new Error(`x402 round was prepared for ${round.endpoint}, which is not a configured gateway endpoint`);
   }
-}
+  await assertSignedPayment({ messageSha256: round.messageSha256, feePayer: round.feePayer, payer: round.payer }, signed);
 
-function hexToBytesLocal(hex: string): Uint8Array {
-  return requireSdkExport<(hex: string) => Uint8Array>("hexToBytes")(hex);
-}
-
-function bytesToHex0xLocal(bytes: Uint8Array): string {
-  return requireSdkExport<(bytes: Uint8Array) => string>("bytesToHex0x")(bytes);
-}
-
-function u64le(value: number | bigint): Uint8Array {
-  return requireSdkExport<(value: number | bigint) => Uint8Array>("u64le")(value);
-}
-
-export interface AgentRequestAuthParams {
-  agent: Address;
-  gateway: Address;
-  feedId: Uint8Array;
-  canonicalTimestamp: number;
-  amount: bigint;
-}
-
-/**
- * `sha256("MOLPHA_AGENT_REQAUTH_V1" || agent(32) || gateway(32) || feedId(32) || canonicalTimestamp_le(8) || amount_le(8))`.
- * Must stay byte-identical with the gateway's `agentauth.AgentRequestAuth.Hash()`
- * (tmp/gateway/internal/gateway/features/agentexec/agentauth/agentauth.go) and
- * the Solana program's `state/receipt.rs::hash_agent_request_auth`.
- */
-export function agentRequestAuthMessage(params: AgentRequestAuthParams): Uint8Array {
-  const addressEncoder = getAddressEncoder();
-  const borsh = Buffer.concat([
-    Buffer.from(addressEncoder.encode(params.agent)),
-    Buffer.from(addressEncoder.encode(params.gateway)),
-    Buffer.from(params.feedId),
-    Buffer.from(u64le(params.canonicalTimestamp)),
-    Buffer.from(u64le(params.amount))
-  ]);
-  return new Uint8Array(
-    createHash("sha256").update(Buffer.concat([Buffer.from(AGENT_REQAUTH_PREFIX, "utf8"), borsh])).digest()
-  );
-}
-
-async function signAgentRequestAuth(signer: MolphaSigner, params: AgentRequestAuthParams): Promise<Uint8Array> {
-  return signer.signMessage(agentRequestAuthMessage(params));
-}
-
-function addressSigner<T extends string>(addr: Address<T>): TransactionSigner<T> {
-  // Only `.address` is read when Codama builds the instruction meta — actual
-  // signing goes through MolphaSigner.signTransaction, never through Kit.
-  return { address: addr } as unknown as TransactionSigner<T>;
-}
-
-/**
- * Build + send the escrow ATA create/transfer. Callers must pass addresses and
- * amounts already verified by {@link verifyX402FundingAccept} — never raw 402 fields.
- */
-async function fundEscrow(
-  connection: Connection,
-  signer: MolphaSigner,
-  args: { mint: Address; escrow: Address; escrowAta: Address; amountAtomic: bigint }
-): Promise<string> {
-  const [payerAta] = await findAssociatedTokenPda({
-    owner: signer.publicKey,
-    mint: args.mint,
-    tokenProgram: TOKEN_PROGRAM_ADDRESS
+  const amount = BigInt(round.amountAtomicUsdc);
+  const { maxPriceUsdcAtomic, maxSpendPerDayUsdcAtomic } = ctx.config.x402;
+  const dailyCapsEnabled = ctx.config.x402.dailyCapsEnabled !== false;
+  await withX402DailySpendSerialization(dailyCapsEnabled, async () => {
+    if (dailyCapsEnabled) {
+      checkX402SpendCap(amount, maxPriceUsdcAtomic, maxSpendPerDayUsdcAtomic);
+      recordX402Spend(amount);
+    } else {
+      checkX402PerRoundCap(amount, maxPriceUsdcAtomic);
+    }
   });
 
-  const createAtaIx = getCreateAssociatedTokenIdempotentInstruction({
-    payer: addressSigner(signer.publicKey),
-    ata: args.escrowAta,
-    owner: args.escrow,
-    mint: args.mint
-  });
-  const transferIx = getTransferInstruction({
-    source: payerAta,
-    destination: args.escrowAta,
-    authority: addressSigner(signer.publicKey),
-    amount: args.amountAtomic
-  });
-
-  const tx = new Transaction().add(toLegacyInstruction(createAtaIx), toLegacyInstruction(transferIx));
-  tx.feePayer = toLegacyPublicKey(signer.publicKey);
-
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-  tx.recentBlockhash = blockhash;
-
-  const signed = await signer.signTransaction(tx);
-  const signature = await connection.sendRawTransaction(signed.serialize());
-  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-  return signature;
+  return submitPaidRound(ctx.lifecycle, round, signed);
 }
 
-interface DiscoverArgs {
-  payer: Address;
+interface RoundPlan {
   apiConfig: Record<string, unknown>;
+  /** Bare lowercase hex. */
+  sourceId: string;
+  sourceIdBytes: Uint8Array;
   signaturesRequired: number;
   registryVersion: number;
-  timestamp: number;
+  network: string;
+  programId: Address;
+  pricing: X402Pricing;
+  priceAtomic: bigint;
 }
 
-/**
- * The gateway checks funding before the amount lock, so an unsigned `amount: 0`
- * probe only yields a 402 quote while the escrow is underfunded. Once it is
- * funded the same probe falls through to the amount lock and comes back as a
- * 400 that still carries the round price — which is a quote, not a failure.
- */
-type DiscoveryOutcome =
-  | { kind: "quote"; accept: X402Accept }
-  | { kind: "already_funded"; roundPrice: bigint };
-
-async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<DiscoveryOutcome> {
-  const outcome = await postAgentExecute(config.gatewayEndpoints, {
-    payer: args.payer,
-    canonical_timestamp: args.timestamp,
-    signatures_required: args.signaturesRequired,
-    amount: 0,
-    registry_version: args.registryVersion,
-    apiConfig: args.apiConfig
-  });
-
-  if (outcome.kind === "amount_mismatch" && outcome.quotedPrice !== undefined) {
-    return { kind: "already_funded", roundPrice: outcome.quotedPrice };
+async function planRound(ctx: X402RoundContext, opts: X402RoundOptions): Promise<RoundPlan> {
+  assertToleranceQuorum(opts.apiConfig, opts.signaturesRequired);
+  const sourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
+  if (opts.sourceId !== undefined && normalizeSourceId(opts.sourceId) !== sourceId) {
+    throw new Error(`sourceId does not match apiConfig: expected ${sourceId}, got ${opts.sourceId}`);
   }
 
-  if (outcome.kind !== "payment_required") {
+  const programId = getMolphaProgramId();
+  const [registry, network, pricing] = await Promise.all([
+    requireMethod<[], Promise<{ registryVersion: number; redundancyBuffer: number; nodeCount: number }>>(
+      ctx.solana,
+      "getRegistrySelectionConfig"
+    )(),
+    clusterNetwork(ctx.connection),
+    readX402Pricing(ctx.connection, programId)
+  ]);
+
+  const { signaturesRequired } = opts;
+  if (signaturesRequired < pricing.minSigners) {
+    throw new Error(`signaturesRequired ${signaturesRequired} is below the protocol min_signers ${pricing.minSigners}`);
+  }
+  if (signaturesRequired > registry.nodeCount) {
     throw new Error(
-      `unsigned discovery request failed (expected a 402 quote), got ${outcome.kind}: ${
-        "message" in outcome ? outcome.message : ""
-      }`
+      `signaturesRequired ${signaturesRequired} exceeds the ${registry.nodeCount} nodes of registry version ${registry.registryVersion}`
     );
   }
 
-  const accept = outcome.body.accepts[0];
-  if (!accept) {
-    throw new Error("gateway 402 response is missing accepts[0]");
-  }
+  const priceAtomic = computeX402Price(pricing, signaturesRequired, registry.redundancyBuffer);
+  // Refuse an over-cap round before contacting any gateway.
+  checkX402PerRoundCap(priceAtomic, ctx.config.x402.maxPriceUsdcAtomic);
 
-  return { kind: "quote", accept };
+  return {
+    apiConfig: canonicalizeApiConfig(opts.apiConfig),
+    sourceId,
+    sourceIdBytes: Buffer.from(sourceId, "hex"),
+    signaturesRequired,
+    registryVersion: registry.registryVersion,
+    network,
+    programId,
+    pricing,
+    priceAtomic
+  };
 }
 
-type PostOutcome =
-  | { kind: "ok"; body: Record<string, unknown> }
-  | { kind: "payment_required"; body: X402PaymentRequiredBody }
-  | { kind: "amount_mismatch"; message: string; quotedPrice?: bigint }
-  | { kind: "bad_request"; message: string }
-  | { kind: "unauthorized"; message: string }
-  | { kind: "conflict"; message: string }
-  | { kind: "unavailable"; message: string }
-  | { kind: "error"; message: string };
+interface PreparedPayment {
+  endpoint: string;
+  required: unknown;
+  verified: VerifiedPayment;
+  accounts: PaymentAccounts;
+}
+
+async function preparePayment(ctx: X402RoundContext, plan: RoundPlan, payer: Address): Promise<PreparedPayment> {
+  const { endpoint, required } = await requestQuote(ctx.config.gatewayEndpoints, executeBody(plan), ctx.lifecycle?.signal);
+  const authority = await gatewayAuthority(ctx, endpoint);
+  const accounts = await readPaymentAccounts(ctx.connection, {
+    programId: plan.programId,
+    usdcMint: plan.pricing.usdcMint,
+    payer,
+    authority
+  });
+
+  const verified = verifyPaymentRequirements(required, {
+    network: plan.network,
+    payTo: accounts.payTo,
+    asset: plan.pricing.usdcMint,
+    amount: plan.priceAtomic,
+    payer,
+    memo: x402RequestMemo({
+      programId: plan.programId,
+      gatewayPda: accounts.gatewayPda,
+      sourceId: plan.sourceIdBytes,
+      signaturesRequired: plan.signaturesRequired,
+      registryVersion: plan.registryVersion
+    })
+  });
+  if (ctx.config.x402.dailyCapsEnabled !== false) {
+    checkX402SpendCap(verified.amount, ctx.config.x402.maxPriceUsdcAtomic, ctx.config.x402.maxSpendPerDayUsdcAtomic);
+  } else {
+    checkX402PerRoundCap(verified.amount, ctx.config.x402.maxPriceUsdcAtomic);
+  }
+
+  return { endpoint, required, verified, accounts };
+}
+
+/** The verified quote as a payable round, with the unsigned transaction that pays for it. */
+async function buildPayableRound(ctx: X402RoundContext, plan: RoundPlan, payer: Address): Promise<PreparedX402Round> {
+  const { endpoint, required, verified, accounts } = await preparePayment(ctx, plan, payer);
+  if (accounts.payerBalance < verified.amount) {
+    throw new Error(
+      `insufficient USDC for this x402 round: ${payer} holds ${formatUsdcAtomic(accounts.payerBalance)} USDC in ${accounts.payerAta}, the round costs ${formatUsdcAtomic(verified.amount)} USDC`
+    );
+  }
+
+  const { blockhash, lastValidBlockHeight } = await ctx.connection.getLatestBlockhash();
+  const transaction = buildPaymentTransaction({
+    payer,
+    feePayer: verified.feePayer,
+    payerAta: accounts.payerAta,
+    payToAta: accounts.payToAta,
+    mint: verified.asset,
+    decimals: accounts.decimals,
+    amount: verified.amount,
+    memo: verified.memo,
+    recentBlockhash: blockhash
+  });
+  const resource = describedResource(required);
+
+  return {
+    round: {
+      endpoint,
+      network: plan.network,
+      gatewayPda: accounts.gatewayPda,
+      payer,
+      feePayer: verified.feePayer,
+      payTo: verified.payTo,
+      asset: verified.asset,
+      amountAtomicUsdc: verified.amount.toString(),
+      memo: verified.memo,
+      accepted: verified.accepted,
+      ...(resource ? { resource } : {}),
+      body: executeBody(plan),
+      sourceId: plan.sourceId,
+      signaturesRequired: plan.signaturesRequired,
+      registryVersion: plan.registryVersion,
+      messageSha256: paymentMessageSha256(transaction),
+      lastValidBlockHeight
+    },
+    transaction,
+    payerAta: accounts.payerAta,
+    payToAta: accounts.payToAta,
+    payerBalanceAtomicUsdc: accounts.payerBalance.toString()
+  };
+}
 
 /**
- * The gateway returns 400 for several unrelated validation failures
- * (`amount`, `registry_version`, `canonical_timestamp`, …). Only the amount
- * lock is retryable by re-quoting; treating every 400 as an amount mismatch
- * hid stale-registry and clock-skew errors behind five pointless retries.
+ * Posts the paid request and returns the round. From here on the payment may
+ * settle, so the request's lifecycle carries what is needed to find it.
  */
-function classifyBadRequest(message: string): PostOutcome {
-  if (!/^amount:/.test(message)) {
-    return { kind: "bad_request", message };
+async function submitPaidRound(
+  lifecycle: RequestLifecycle | undefined,
+  round: X402PaidRound,
+  signed: VersionedTransaction
+): Promise<X402RoundResult> {
+  const paymentHeader = Buffer.from(
+    JSON.stringify({
+      x402Version: 2,
+      ...(round.resource ? { resource: round.resource } : {}),
+      accepted: round.accepted,
+      payload: { transaction: Buffer.from(signed.serialize()).toString("base64") }
+    })
+  ).toString("base64");
+  const reconciliation: X402Reconciliation = {
+    endpoint: round.endpoint,
+    payer: round.payer,
+    payTo: round.payTo,
+    asset: round.asset,
+    amountAtomicUsdc: round.amountAtomicUsdc,
+    memo: round.memo,
+    sourceId: round.sourceId,
+    payerSignature: getBase58Decoder().decode(signed.signatures[1] ?? new Uint8Array(64)),
+    lastValidBlockHeight: round.lastValidBlockHeight
+  };
+  if (lifecycle) {
+    lifecycle.effectStarted = true;
+    lifecycle.reconciliation = { ...reconciliation };
   }
-  const quoted = /round price (\d+)/.exec(message);
-  return quoted
-    ? { kind: "amount_mismatch", message, quotedPrice: BigInt(quoted[1]!) }
-    : { kind: "amount_mismatch", message };
+
+  const startedAtMs = Date.now();
+  let outcome = await postPaidExecute(round.endpoint, round.body, paymentHeader, lifecycle?.signal);
+  if (outcome.kind === "conflict") {
+    // The gateway reserves a payment and its round together and raises 409 at that step, before
+    // any node is asked to work: nothing was reserved, so the payment is unspent. If this payer
+    // already has a round for the feed in the current tick, the same payment authorizes a retry
+    // one tick later. One retry only: a second 409 means the payer has a round in that tick too,
+    // or the payment itself already reserved a round.
+    await delay(conflictRetryDelayMs(), undefined, lifecycle ? { signal: lifecycle.signal } : undefined);
+    outcome = await postPaidExecute(round.endpoint, round.body, paymentHeader, lifecycle?.signal);
+  }
+
+  if (outcome.kind === "ok") {
+    return completeRound(round, outcome, startedAtMs);
+  }
+  throw paidOutcomeError(reconciliation, outcome);
 }
 
-async function postAgentExecute(endpoints: string[], body: Record<string, unknown>): Promise<PostOutcome> {
-  let lastError: PostOutcome = { kind: "error", message: "no reachable gateway endpoint" };
+type PaidOutcome =
+  | { kind: "ok"; body: Record<string, unknown>; receipt: Record<string, unknown> | undefined }
+  | { kind: "payment_rejected"; status: 402; message: string; required: unknown }
+  | { kind: "rejected" | "conflict"; status: number; message: string }
+  | { kind: "unknown"; status?: number; message: string };
+
+/**
+ * Only 400, 402, and 409 are raised before the gateway asks its facilitator to
+ * settle. Any other answer, or none, can follow a settled payment.
+ *
+ * The same payment is resent only after a 409, which is raised before anything is
+ * reserved. Once the gateway has asked the nodes to work, the payment authorization is
+ * spent even when the round fails (too few nodes accepted it, a timeout, a paywalled
+ * source), so every other retry is a new call that signs a new payment. A 503 from the
+ * gateway's own capacity limit is answered before the request is read and spends nothing,
+ * but a status alone does not tell it from a 503 after dispatch, so it is not resent either.
+ */
+async function postPaidExecute(
+  endpoint: string,
+  body: Record<string, unknown>,
+  paymentHeader: string,
+  signal?: AbortSignal
+): Promise<PaidOutcome> {
+  let res: Response;
+  try {
+    res = await postExecute(endpoint, body, paymentHeader, signal);
+  } catch (error) {
+    return { kind: "unknown", message: errorMessage(error) };
+  }
+
+  if (res.status === 200) {
+    try {
+      return { kind: "ok", body: asRecord(await res.json()) ?? {}, receipt: decodeHeader(res.headers.get("PAYMENT-RESPONSE")) };
+    } catch (error) {
+      return { kind: "unknown", status: 200, message: `unreadable response: ${errorMessage(error)}` };
+    }
+  }
+  if (res.status === 402) {
+    const required = await readPaymentRequired(res);
+    const reason = asRecord(required)?.error;
+    return { kind: "payment_rejected", status: 402, message: typeof reason === "string" && reason ? reason : "payment rejected", required };
+  }
+
+  const message = await readErrorMessage(res);
+  if (res.status === 409) {
+    return { kind: "conflict", status: 409, message };
+  }
+  if (res.status === 400) {
+    return { kind: "rejected", status: 400, message };
+  }
+  return { kind: "unknown", status: res.status, message };
+}
+
+function paidOutcomeError(reconciliation: X402Reconciliation, outcome: Exclude<PaidOutcome, { kind: "ok" }>): Error {
+  switch (outcome.kind) {
+    case "payment_rejected":
+      return new X402PaymentRequiredError(`x402 payment rejected by the gateway: ${outcome.message}`, outcome.required);
+    case "rejected":
+      return Object.assign(new Error(`x402 execute rejected: ${outcome.message}`), { status: 400 });
+    case "conflict":
+      return Object.assign(
+        new Error(
+          `the gateway refused this x402 payment twice as a duplicate (${outcome.message}): this payer already has a round for the feed in each ${ROUND_TICK_MS} ms tick it was sent in, or the payment already reserved a round and cannot pay for another, so a new round needs a new payment`
+        ),
+        { status: 409 }
+      );
+    case "unknown": {
+      const response = outcome.status === undefined ? "no response" : `HTTP ${outcome.status}`;
+      return new X402PaymentOutcomeUnknownError(
+        `x402 round failed after its payment was sent (${response}: ${outcome.message}); the payment may have settled`,
+        {
+          ...reconciliation,
+          ...(outcome.status !== undefined ? { httpStatus: outcome.status } : {}),
+          gatewayMessage: outcome.message
+        }
+      );
+    }
+  }
+}
+
+function completeRound(
+  round: X402PaidRound,
+  outcome: Extract<PaidOutcome, { kind: "ok" }>,
+  startedAtMs: number
+): X402RoundResult {
+  const transaction = outcome.receipt?.transaction;
+  const receipt: X402PaymentReceipt = {
+    endpoint: round.endpoint,
+    network: round.network,
+    payer: round.payer,
+    payTo: round.payTo,
+    asset: round.asset,
+    amountAtomicUsdc: round.amountAtomicUsdc,
+    feePayer: round.feePayer,
+    memo: round.memo,
+    ...(typeof transaction === "string" && transaction ? { transaction } : {})
+  };
+
+  const { matches, result } = readRoundResponse(
+    outcome.body,
+    { sourceId: round.sourceId, registryVersion: round.registryVersion, signaturesRequired: round.signaturesRequired },
+    startedAtMs
+  );
+  if (!matches) {
+    // Paid for by now: report the settled payment instead of returning a foreign aggregate.
+    throw new Error(
+      `the gateway settled x402 payment ${receipt.transaction ?? `(memo ${receipt.memo})`} but returned an aggregate for a different round (sourceId ${String(result.sourceId)}, timestamp ${String(result.timestamp)})`
+    );
+  }
+
+  return { result, payment: receipt };
+}
+
+/** The first endpoint that quotes the round; the paid request goes to that endpoint only. */
+async function requestQuote(
+  endpoints: string[],
+  body: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<{ endpoint: string; required: unknown }> {
+  let lastError = "no gateway endpoint configured";
 
   for (const endpoint of endpoints) {
     let res: Response;
     try {
-      res = await fetch(`${endpoint.replace(/\/$/, "")}/v1/agent/execute`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body)
-      });
+      signal?.throwIfAborted();
+      res = await postExecute(endpoint, body, undefined, signal);
     } catch (error) {
-      lastError = { kind: "unavailable", message: error instanceof Error ? error.message : String(error) };
+      lastError = `${endpoint}: ${errorMessage(error)}`;
       continue;
-    }
-
-    if (res.status === 200) {
-      return { kind: "ok", body: (await res.json()) as Record<string, unknown> };
     }
     if (res.status === 402) {
-      return { kind: "payment_required", body: (await res.json()) as X402PaymentRequiredBody };
+      return { endpoint, required: await readPaymentRequired(res) };
     }
+    const message = await readErrorMessage(res);
     if (res.status === 400) {
-      return classifyBadRequest(await readErrorMessage(res));
+      // Stale registry version, clock skew, malformed apiConfig: every gateway agrees.
+      throw Object.assign(new Error(`x402 execute rejected: ${message}`), { status: 400 });
     }
-    if (res.status === 401) {
-      return { kind: "unauthorized", message: await readErrorMessage(res) };
-    }
-    if (res.status === 409) {
-      return { kind: "conflict", message: await readErrorMessage(res) };
-    }
-    if (res.status === 503) {
-      lastError = { kind: "unavailable", message: await readErrorMessage(res) };
-      continue;
-    }
-
-    return { kind: "error", message: await readErrorMessage(res) };
+    lastError = `${endpoint}: HTTP ${res.status}: ${message}`;
   }
 
-  return lastError;
+  throw new Error(`no gateway returned an x402 payment quote (${lastError})`);
 }
 
-async function getFirstReachable<T>(endpoints: string[], path: string): Promise<T> {
-  let lastError: unknown;
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(`${endpoint.replace(/\/$/, "")}${path}`, { method: "GET" });
-      if (res.ok) {
-        return (await res.json()) as T;
-      }
-      lastError = new Error(`GET ${path} failed (${res.status})`);
-    } catch (error) {
-      lastError = error;
-    }
+// Cache only public resolved addresses, never promises closing over request clients.
+const discoveredAuthorities = new Map<string, Address>();
+
+/** The authority whose Gateway PDA an endpoint serves: pinned in config, else read once from its `GET /v1/info`. */
+export async function gatewayAuthority(
+  ctx: Pick<X402RoundContext, "config" | "gateway">,
+  endpoint: string
+): Promise<Address> {
+  const pinned = ctx.config.gatewayAuthorities[ctx.config.gatewayEndpoints.indexOf(endpoint)];
+  if (pinned) return address(pinned);
+  const cached = discoveredAuthorities.get(endpoint);
+  if (cached) return cached;
+  const info = await requireMethod<[string], Promise<{ gatewayAuthority: string }>>(ctx.gateway, "fetchGatewayInfo")(endpoint);
+  const authority = parseSolanaPubkey(info.gatewayAuthority, "gateway authority");
+  discoveredAuthorities.set(endpoint, authority);
+  return authority;
+}
+
+const clusterNetworks = new WeakMap<object, Promise<string>>();
+
+/** CAIP-2 id of the SOLANA_RPC cluster: `solana:` + the first 32 chars of its genesis hash. */
+export function clusterNetwork(connection: Pick<Connection, "getGenesisHash">): Promise<string> {
+  let pending = clusterNetworks.get(connection);
+  if (!pending) {
+    pending = connection.getGenesisHash().then((hash) => `solana:${hash.slice(0, 32)}`);
+    pending.catch(() => clusterNetworks.delete(connection));
+    clusterNetworks.set(connection, pending);
   }
-  throw lastError instanceof Error ? lastError : new Error(`GET ${path} failed`);
+  return pending;
+}
+
+/** The gateway assigns the round's timestamp; a caller sends none. */
+function executeBody(plan: RoundPlan): Record<string, unknown> {
+  return {
+    signatures_required: plan.signaturesRequired,
+    registry_version: plan.registryVersion,
+    apiConfig: plan.apiConfig
+  };
+}
+
+function postExecute(endpoint: string, body: Record<string, unknown>, paymentHeader?: string, signal?: AbortSignal): Promise<Response> {
+  return fetch(`${trimSlash(endpoint)}/v1/x402/execute`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(paymentHeader ? { "PAYMENT-SIGNATURE": paymentHeader } : {})
+    },
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {})
+  });
+}
+
+/** The PAYMENT-REQUIRED header is canonical; the body carries the same object. */
+async function readPaymentRequired(res: Response): Promise<unknown> {
+  const fromHeader = decodeHeader(res.headers.get("PAYMENT-REQUIRED"));
+  if (fromHeader) {
+    return fromHeader;
+  }
+  try {
+    return await res.json();
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeHeader(value: string | null): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return asRecord(JSON.parse(Buffer.from(value, "base64").toString("utf8")));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The 402's resource description, echoed in the payload; descriptive only. */
+function describedResource(required: unknown): Record<string, string> | undefined {
+  const resource = asRecord(asRecord(required)?.resource);
+  if (typeof resource?.url !== "string") {
+    return undefined;
+  }
+  const out: Record<string, string> = { url: resource.url };
+  for (const field of ["description", "mimeType"]) {
+    const value = resource[field];
+    if (typeof value === "string") out[field] = value;
+  }
+  return out;
+}
+
+function parseGatewayStatus(raw: unknown): X402GatewayStatus {
+  const record = asRecord(raw) ?? {};
+  const text = (field: string): string => {
+    const value = record[field];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(`GET /v1/x402/status returned a malformed ${field}`);
+    }
+    return value;
+  };
+  const quotedNextPrice = text("quotedNextPrice");
+  if (!/^\d+$/.test(quotedNextPrice)) {
+    throw new Error("GET /v1/x402/status returned a malformed quotedNextPrice");
+  }
+  const pendingTickets = record.pendingTickets;
+  if (typeof pendingTickets !== "number" || !Number.isInteger(pendingTickets) || pendingTickets < 0) {
+    throw new Error("GET /v1/x402/status returned a malformed pendingTickets");
+  }
+
+  return {
+    gateway: text("gateway"),
+    authority: text("authority"),
+    payTo: text("payTo"),
+    treasuryAta: text("treasuryAta"),
+    quotedNextPrice,
+    pendingTickets
+  };
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -815,26 +841,16 @@ async function readErrorMessage(res: Response): Promise<string> {
   }
 }
 
-function mapAgentResponse(body: Record<string, unknown>): Record<string, unknown> {
-  const data = (body.data ?? {}) as Record<string, unknown>;
-  return {
-    feedId: data.feedId,
-    value: data.value,
-    valuePacked: data.valuePacked,
-    timestamp: data.timestamp,
-    registryVersion: data.registryVersion,
-    signaturesRequired: data.signaturesRequired,
-    signersBitmap: data.signersBitmap,
-    s: data.s,
-    commitmentAddr: data.commitmentAddr,
-    fresh: data.fresh ?? true
-  };
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
-function cacheGatewayPda(endpointKey: string, gatewayPda: string): void {
-  gatewayPdaCache.set(endpointKey, gatewayPda);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function bigIntMax(a: bigint, b: bigint): bigint {
-  return a > b ? a : b;
+function trimSlash(endpoint: string): string {
+  return endpoint.replace(/\/$/, "");
 }

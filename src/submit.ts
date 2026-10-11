@@ -1,36 +1,42 @@
 /**
- * The single Solana settle path, shared by `molpha_execute` and
- * `molpha_fetch_verified`'s `autoSubmit` leg — one guardrail check, one shape
- * normalization, one place that knows what `submit_data_update` requires.
+ * The single Solana settle path, shared by `submit_attestation` and the round
+ * tools' `autoSubmit` leg — one guardrail check, one shape normalization, one
+ * place that knows what the program's `submit_attestation` requires.
  */
 
-import { toSignedResult } from "./artifacts.js";
-import { getMolphaContext, requireMethod } from "./clients.js";
+import { normalizeSignedResult, toSdkAttestation } from "./artifacts.js";
+import { getMolphaContext, requireMethod, requireSigner, assertActive, type RequestContext } from "./clients.js";
 import { enforceExecuteCap, previewWrite } from "./guardrails.js";
 
 export interface SubmitOutcome {
   chain: "solana";
-  action: "submit_data_update";
-  feedId: string;
+  action: "submit_attestation";
+  sourceId: string;
+  signaturesRequired: number;
+  /** Wallet that paid for the write; Solana feeds are keyed per submitter. */
+  submitter: string;
+  /** Feed PDA `["molpha_feed", sourceId, [signaturesRequired], submitter]`. */
+  feed: string;
   signature: string;
 }
 
 /**
- * Accepts the `molpha_fetch_verified` artifact or the flat signed result, and
- * returns the flat shape `submitDataUpdate` expects.
+ * Accepts a round tool's artifact or the flat signed result, and returns the flat shape
+ * this server works with; it is converted to the SDK's `Attestation` at the submit call.
  */
 export function prepareSignedResult(input: Record<string, unknown>): Record<string, unknown> {
-  const result = toSignedResult(input);
+  const result = normalizeSignedResult(input);
 
-  if (!result.feedId) {
-    throw new Error("signed result is missing `feedId`");
+  if (!result.sourceId) {
+    throw new Error("signed result is missing `sourceId`");
   }
 
-  // `buildSubmitArgs` packs `valuePacked` as the on-chain value; `value` is the
-  // decimal rendering and is not interchangeable with it.
+  // The program stores the packed value (`attestation.payload.value`, `valuePacked`
+  // on the flat shape) as the on-chain value; the decimal `value` is not
+  // interchangeable with it.
   if (!result.valuePacked) {
     throw new Error(
-      "signed result is missing `valuePacked` (the on-chain encoding of `value`); re-run molpha_fetch_verified and pass its output through unmodified"
+      "signed result is missing the packed value (`attestation.payload.value`, or `valuePacked` on the flat shape); re-run the round and pass its output through unmodified"
     );
   }
 
@@ -44,29 +50,37 @@ export function previewSubmit(
 ): ReturnType<typeof previewWrite> {
   return previewWrite(action, {
     chain: "solana",
-    action: "submit_data_update",
-    feedId: result.feedId,
+    action: "submit_attestation",
+    sourceId: result.sourceId,
+    signaturesRequired: result.signaturesRequired,
     registryVersion: result.registryVersion,
     submitter
   });
 }
 
 /** Enforces the daily execute cap, then submits. Callers must pass a prepared result. */
-export async function submitSignedResult(result: Record<string, unknown>): Promise<SubmitOutcome> {
-  const { config, solana } = await getMolphaContext();
+export async function submitSignedResult(result: Record<string, unknown>, context?: RequestContext): Promise<SubmitOutcome> {
+  const ctx = context ?? await getMolphaContext();
+  requireSigner(ctx);
+  const { config, solana, signer } = ctx;
   enforceExecuteCap(config.guardrails);
 
-  const submitDataUpdate = requireMethod<
+  const submitAttestation = requireMethod<
     [Record<string, unknown>],
-    Promise<{ signature: string }>
-  >(solana, "submitDataUpdate");
+    Promise<{ signature: string; feed: unknown }>
+  >(solana, "submitAttestation");
 
-  const tx = await submitDataUpdate(result);
+  assertActive(ctx);
+  if (ctx.lifecycle) ctx.lifecycle.effectStarted = true;
+  const tx = await submitAttestation(toSdkAttestation(result));
 
   return {
     chain: "solana",
-    action: "submit_data_update",
-    feedId: String(result.feedId),
+    action: "submit_attestation",
+    sourceId: String(result.sourceId),
+    signaturesRequired: Number(result.signaturesRequired),
+    submitter: String(signer.publicKey),
+    feed: String(tx.feed),
     signature: tx.signature
   };
 }

@@ -1,18 +1,22 @@
 {
   "mcpServers": {
     "molpha": {
-      "command": "node",
-      "args": ["/absolute/path/to/molpha-mcp/dist/src/server.js"],
+      "command": "npx",
+      "args": [
+        "-y",
+        "@molpha/mcp@0.2.0"
+      ],
       "env": {
         "SIGNER_BACKEND": "keychain",
         "KEYCHAIN_BACKEND": "privy",
-        "PRIVY_APP_ID": "<your-privy-app-id>",
-        "PRIVY_APP_SECRET": "<your-privy-app-secret>",
-        "PRIVY_WALLET_ID": "<your-privy-wallet-id>",
+        "PRIVY_APP_ID": "<privy-app-id>",
+        "PRIVY_APP_SECRET": "<privy-app-secret>",
+        "PRIVY_WALLET_ID": "<privy-wallet-id>",
         "PRIVY_WALLET_ADDRESS": "<base58-solana-address>",
         "SOLANA_RPC": "https://api.devnet.solana.com",
         "MOLPHA_EVM_NETWORKS": "evm-sepolia",
-        "MOLPHA_STARKNET_NETWORKS": "starknet-sepolia"
+        "MOLPHA_STARKNET_NETWORKS": "starknet-sepolia",
+        "MOLPHA_DRY_RUN": "true"
       }
     }
   }

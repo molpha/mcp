@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "molpha-mcp",
   "display_name": "Molpha MCP",
-  "version": "0.1.2",
-  "description": "MCP server that lets AI agents create, fetch, verify, and publish Molpha oracle data.",
-  "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL and may consume subscription quota or x402 escrow funds unless dry-run mode is enabled.",
+  "version": "0.1.1",
+  "description": "Lets AI agents fetch signed Molpha oracle data, publish it on Solana, and build verifier calldata.",
+  "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL, and round tools may consume subscription quota or pay USDC for x402 rounds, unless dry-run mode is enabled.",
   "author": {
     "name": "Molpha",
     "url": "https://molpha.io"
@@ -48,48 +48,72 @@
         "TURNKEY_WALLET_ADDRESS": "${user_config.turnkey_wallet_address}",
         "SOLANA_RPC": "${user_config.solana_rpc}",
         "GATEWAY_ENDPOINTS": "${user_config.gateway_endpoints}",
+        "GATEWAY_AUTHORITIES": "${user_config.gateway_authorities}",
         "MOLPHA_EVM_NETWORKS": "${user_config.evm_networks}",
         "MOLPHA_STARKNET_NETWORKS": "${user_config.starknet_networks}",
         "MOLPHA_MAX_EXECUTES_PER_DAY": "${user_config.max_executes_per_day}",
         "MOLPHA_DRY_RUN": "${user_config.dry_run}",
         "MOLPHA_X402_MAX_PRICE_USDC": "${user_config.x402_max_price_usdc}",
         "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC": "${user_config.x402_max_spend_per_day_usdc}",
-        "MOLPHA_X402_GATEWAY_PDA": "${user_config.x402_gateway_pda}"
+        "MOLPHA_SOURCE_PAYER_KEY": "${user_config.source_payer_key}",
+        "MOLPHA_SOURCE_PAYMENT_NETWORKS": "${user_config.source_payment_networks}",
+        "MOLPHA_SOURCE_MAX_PER_ROUND_USDC": "${user_config.source_max_per_round_usdc}",
+        "MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC": "${user_config.source_max_spend_per_day_usdc}"
       }
     }
   },
   "tools": [
     {
-      "name": "molpha_get_capabilities",
-      "description": "Return the registry version, node set, gateways, chains, verifier metadata, and x402 caps."
+      "name": "get_capabilities",
+      "description": "Return the program id, registry version, node set, gateways, chains, verifier metadata, and the round tool for each payment path."
     },
     {
-      "name": "molpha_describe_feed",
-      "description": "Read a feed's on-chain state and subscription status."
+      "name": "derive_source_id",
+      "description": "Derive a sourceId locally: keccak256 of the apiConfig's canonical JSON (fixed key order, not JCS). No transaction or wallet."
     },
     {
-      "name": "molpha_derive_feed",
-      "description": "Locally derive a feedId from apiConfig + signaturesRequired. No transaction."
+      "name": "describe_feed",
+      "description": "Read the Solana feed for (sourceId, quorum, submitter) and the signer's subscription status."
     },
     {
-      "name": "molpha_agent_status",
-      "description": "Read the x402 agent escrow balance, committed amount, and quoted next price."
+      "name": "get_latest_value",
+      "description": "Read the latest attested value stored in a Solana feed account."
     },
     {
-      "name": "molpha_fetch_verified",
-      "description": "Run a signing round and return the signed artifact plus verifier arguments. autoSubmit settles the Solana leg in the same call."
+      "name": "describe_access",
+      "description": "Read from chain whether a wallet is a subscription owner or delegate, and its plan and round limits."
     },
     {
-      "name": "molpha_get_latest",
-      "description": "Read the latest value stored in a Solana feed account."
+      "name": "list_providers",
+      "description": "List the data providers the gateway integrates (for example TickerLayer) and the access flows it serves for each."
     },
     {
-      "name": "molpha_verify",
-      "description": "Build EVM/Starknet verifier address and call arguments. Calldata only — the agent executes verify() itself."
+      "name": "get_provider",
+      "description": "Describe one integrated provider: flows, required aggregation, disclosure, and ready-made feeds with a complete apiConfig and sourceId."
     },
     {
-      "name": "molpha_execute",
-      "description": "Submit a signed data update to Solana. Accepts the molpha_fetch_verified output unmodified."
+      "name": "quote_source_payment",
+      "description": "Read a paywalled source's price with one unpaid request: price per fetch, the nodes that will fetch, the worst-case total, and whether this server would pay it."
+    },
+    {
+      "name": "get_x402_status",
+      "description": "Quote the next x402 round and read where payment goes, a payer's USDC balance (the signer's by default), and the remaining daily x402 budget."
+    },
+    {
+      "name": "execute_subscription_round",
+      "description": "Run a subscription-paid signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
+    },
+    {
+      "name": "execute_x402_round",
+      "description": "Run an x402 pay-per-request signing round and return the signed attestation plus verifier arguments. autoSubmit settles the Solana leg in the same call."
+    },
+    {
+      "name": "build_verifier_calldata",
+      "description": "Build EVM/Starknet verifier address and verify() call arguments. Calldata only: it verifies nothing — the agent executes verify() itself."
+    },
+    {
+      "name": "submit_attestation",
+      "description": "Submit a signed attestation to Solana. Accepts a round tool's output unmodified."
     }
   ],
   "compatibility": {
@@ -99,16 +123,15 @@
       "linux"
     ],
     "runtimes": {
-      "node": ">=20.0.0"
+      "node": ">=24.0.0"
     }
   },
   "user_config": {
     "signer_backend": {
       "type": "string",
       "title": "Signer backend",
-      "description": "memory (local keypair) or keychain (Privy / Turnkey).",
-      "default": "memory",
-      "required": true
+      "description": "memory (local keypair), keychain (Privy / Turnkey), or none. Leave empty with no keypair for a read-only server that cannot sign or spend.",
+      "required": false
     },
     "owner_keypair": {
       "type": "file",
@@ -190,6 +213,13 @@
       "default": "",
       "required": false
     },
+    "gateway_authorities": {
+      "type": "string",
+      "title": "Gateway authorities",
+      "description": "Comma-separated base58 gateway authorities, one per gateway endpoint in the same order. Required for gateways that do not serve GET /v1/info.",
+      "default": "",
+      "required": false
+    },
     "evm_networks": {
       "type": "string",
       "title": "EVM networks",
@@ -207,8 +237,8 @@
     "dry_run": {
       "type": "boolean",
       "title": "Dry run",
-      "description": "Preview all write and spend operations without submitting them.",
-      "default": false,
+      "description": "Preview all write and spend operations without submitting them. While on, a tool call cannot turn it off: to spend, untick this and restart.",
+      "default": true,
       "required": false
     },
     "max_executes_per_day": {
@@ -223,21 +253,43 @@
     "x402_max_price_usdc": {
       "type": "string",
       "title": "x402 max price (USDC)",
-      "description": "Refuse to fund an x402 round priced above this amount (decimal USDC).",
+      "description": "Refuse to pay for an x402 round priced above this amount (decimal USDC).",
       "default": "1",
       "required": false
     },
     "x402_max_spend_per_day_usdc": {
       "type": "string",
       "title": "x402 max spend per day (USDC)",
-      "description": "Process-local daily x402 spend cap (decimal USDC).",
+      "description": "Process-local daily cap on USDC signed for x402 rounds (decimal USDC).",
       "default": "10",
       "required": false
     },
-    "x402_gateway_pda": {
+    "source_payer_key": {
       "type": "string",
-      "title": "x402 gateway PDA",
-      "description": "Optional settling gateway PDA (base58) to skip discovery when the escrow is already funded.",
+      "title": "Source payer key",
+      "description": "Hex private key of the EVM wallet that pays paywalled sources (for example a provider x402 feed). Never printed or returned by a tool. Source payment stays off without it and without allowed networks.",
+      "sensitive": true,
+      "required": false
+    },
+    "source_payment_networks": {
+      "type": "string",
+      "title": "Source payment networks",
+      "description": "Comma-separated CAIP-2 EVM networks a source may be paid on, e.g. eip155:84532 (Base Sepolia). Empty keeps source payment off, even with a payer key.",
+      "default": "",
+      "required": false
+    },
+    "source_max_per_round_usdc": {
+      "type": "string",
+      "title": "Source max per round (USDC)",
+      "description": "Refuse a round whose worst case (price per fetch × the nodes that may fetch) exceeds this (decimal USDC).",
+      "default": "0.25",
+      "required": false
+    },
+    "source_max_spend_per_day_usdc": {
+      "type": "string",
+      "title": "Source max spend per day (USDC)",
+      "description": "Process-local daily cap on USDC committed to paying sources (decimal USDC).",
+      "default": "1",
       "required": false
     }
   }

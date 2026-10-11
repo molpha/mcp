@@ -53,6 +53,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Gate the publish on what would actually ship: the packed package must start under npx and expose
+      # the documented tools, and the Desktop bundle must pack from an allowlist and validate.
+      - name: Smoke-test the packed package
+        run: node scripts/smoke-pack.mjs
+
+      - name: Build the Claude Desktop bundle
+        run: node scripts/pack-mcpb.mjs "$RUNNER_TEMP/molpha-mcp.mcpb"
+
       - name: Create Version Packages PR or publish to npm
         id: changesets
         uses: changesets/action@v1
@@ -62,6 +70,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
+
+      # The bundle is attached only after npm accepted the version, so a failed pack can never strand a
+      # published package, and a failed publish never leaves a bundle for a version that does not exist.
+      - name: Attach the Claude Desktop bundle to the GitHub release
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          gh release upload "v${version}" "$RUNNER_TEMP/molpha-mcp.mcpb" --clobber
 
       - name: Install mcp-publisher
         if: steps.changesets.outputs.published == 'true' || inputs.publish_mcp_registry == true

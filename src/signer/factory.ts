@@ -1,4 +1,4 @@
-import { loadOwnerKeypair } from "../config.js";
+import { loadOwnerKeypair, resolveEnvString } from "../config.js";
 import type { MolphaConfig } from "../config.js";
 import { MemorySigner } from "./backends/memory.js";
 import { PrivySigner } from "./backends/privy.js";
@@ -6,17 +6,25 @@ import { TurnkeySigner } from "./backends/turnkey.js";
 import type { MolphaSigner } from "./types.js";
 
 export async function createSigner(config: MolphaConfig): Promise<MolphaSigner> {
-  const backend = process.env["SIGNER_BACKEND"] ?? "memory";
+  const backend = resolveEnvString(process.env["SIGNER_BACKEND"]) ?? "memory";
 
   if (backend === "keychain") {
     return createKeychainSigner();
+  }
+
+  if (backend === "none") {
+    throw new Error("SIGNER_BACKEND=none runs the server without a signer, so there is nothing to sign with.");
+  }
+
+  if (backend !== "memory") {
+    throw new Error(`Unknown SIGNER_BACKEND="${backend}". Supported values: memory, keychain, none`);
   }
 
   return MemorySigner.fromSecretKey(loadOwnerKeypair(config));
 }
 
 function createKeychainSigner(): MolphaSigner {
-  const provider = process.env["KEYCHAIN_BACKEND"];
+  const provider = resolveEnvString(process.env["KEYCHAIN_BACKEND"]);
 
   if (provider === "privy") {
     return new PrivySigner({
@@ -42,7 +50,7 @@ function createKeychainSigner(): MolphaSigner {
 }
 
 function requireEnv(name: string): string {
-  const value = process.env[name];
+  const value = resolveEnvString(process.env[name]);
   if (!value) throw new Error(`${name} is required for SIGNER_BACKEND=keychain`);
   return value;
 }

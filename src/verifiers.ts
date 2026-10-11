@@ -1,3 +1,4 @@
+import { toSdkAttestation } from "./artifacts.js";
 import { type MolphaConfig } from "./config.js";
 import { getSdkExport } from "./sdk.js";
 
@@ -26,14 +27,24 @@ export function getVerifierMetadata(config: MolphaConfig, includeAbi = false): V
   };
 }
 
-export function buildVerifierArgs(result: unknown): {
+export interface VerifierArgOptions {
+  /**
+   * `verify(attestation, maxAge)` freshness bound in seconds, for EVM and Starknet; 0 disables it.
+   * A valid signature does not replace the consumer's own freshness policy, so callers should set one.
+   */
+  maxAge?: number | undefined;
+}
+
+export function buildVerifierArgs(result: unknown, options: VerifierArgOptions = {}): {
   evm?: unknown;
   starknet?: unknown;
   errors: Array<{ target: string; message: string }>;
 } {
   const errors: Array<{ target: string; message: string }> = [];
-  const evm = callBuilder("buildEvmVerifierArgs", result, errors);
-  const starknet = callBuilder("buildStarknetVerifierArgs", result, errors);
+  const attestation = toSdkAttestation(result as Record<string, unknown>);
+  const bound = { maxAge: options.maxAge ?? 0 };
+  const evm = callBuilder("buildEvmVerifierArgs", attestation, errors, bound);
+  const starknet = callBuilder("buildStarknetVerifierArgs", attestation, errors, bound);
 
   return {
     ...(evm !== undefined ? { evm } : {}),
@@ -45,9 +56,10 @@ export function buildVerifierArgs(result: unknown): {
 export function buildVerifierArgsForChains(
   result: unknown,
   chains: ChainTarget[],
-  config: MolphaConfig
+  config: MolphaConfig,
+  options: VerifierArgOptions = {}
 ): Record<string, unknown> {
-  const built = buildVerifierArgs(result);
+  const built = buildVerifierArgs(result, options);
   const out: Record<string, unknown> = {};
 
   if (chains.includes("evm") && built.evm !== undefined) {
@@ -86,7 +98,7 @@ export function buildVerifierArgsForChains(
 function resolveEvmVerifierAddress(network: string): { network: string; address?: string; error?: string } {
   const address = getSdkExport<string>("MOLPHA_VERIFIER_ADDRESS");
   if (!address) {
-    return { network, error: "MOLPHA_VERIFIER_ADDRESS is not exported by @molpha-oracle/sdk" };
+    return { network, error: "MOLPHA_VERIFIER_ADDRESS is not exported by @molpha/sdk" };
   }
 
   return { network, address };
@@ -95,7 +107,7 @@ function resolveEvmVerifierAddress(network: string): { network: string; address?
 function resolveVerifierAddress(exportName: string, network: string): { network: string; address?: string; error?: string } {
   const resolver = getSdkExport<(...args: string[]) => string | undefined>(exportName);
   if (typeof resolver !== "function") {
-    return { network, error: `${exportName} is not exported by @molpha-oracle/sdk` };
+    return { network, error: `${exportName} is not exported by @molpha/sdk` };
   }
 
   try {
@@ -112,16 +124,17 @@ function resolveVerifierAddress(exportName: string, network: string): { network:
 function callBuilder(
   exportName: string,
   result: unknown,
-  errors: Array<{ target: string; message: string }>
+  errors: Array<{ target: string; message: string }>,
+  options?: Record<string, unknown>
 ): unknown | undefined {
-  const builder = getSdkExport<(result: unknown) => unknown>(exportName);
+  const builder = getSdkExport<(result: unknown, options?: Record<string, unknown>) => unknown>(exportName);
   if (typeof builder !== "function") {
-    errors.push({ target: exportName, message: `${exportName} is not exported by @molpha-oracle/sdk` });
+    errors.push({ target: exportName, message: `${exportName} is not exported by @molpha/sdk` });
     return undefined;
   }
 
   try {
-    return builder(result);
+    return options ? builder(result, options) : builder(result);
   } catch (error) {
     errors.push({
       target: exportName,
