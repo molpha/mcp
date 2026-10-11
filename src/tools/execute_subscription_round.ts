@@ -25,8 +25,8 @@ const outputSchema = z.object({
   ...roundOutputShape("subscription"),
   sourcePayment: sourcePaymentResultSchema.optional(),
   action: z.literal("execute_subscription_round").optional().describe("Preview only."),
-  sourceId: z.string().optional().describe("Preview only; a live round carries it in dataUpdate."),
-  signaturesRequired: z.number().int().optional().describe("Preview only; a live round carries it in dataUpdate.")
+  sourceId: z.string().optional().describe("Preview only; a live round carries it in attestation.payload."),
+  signaturesRequired: z.number().int().optional().describe("Preview only; a live round carries it in attestation.payload.")
 });
 
 export function registerExecuteSubscriptionRoundTool(server: ToolServer, dependencies: ToolDependencies = {}): void {

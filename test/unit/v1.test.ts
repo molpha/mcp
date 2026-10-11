@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toDataUpdateArtifact, toSignedResult } from "../../src/artifacts.js";
+import { normalizeSignedResult, toAttestationArtifact } from "../../src/artifacts.js";
 import { loadConfig, type MolphaConfig } from "../../src/config.js";
 import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
@@ -77,11 +77,12 @@ describe("toCanonicalHex", () => {
   });
 });
 
-describe("toDataUpdateArtifact", () => {
-  it("shapes gateway result into spec-friendly signed artifact", () => {
-    const artifact = toDataUpdateArtifact({
+describe("toAttestationArtifact", () => {
+  it("shapes a flat signed result into the gateway's attestation body", () => {
+    const artifact = toAttestationArtifact({
       sourceId: "0xabc",
       value: "123",
+      valuePacked: "0x7b",
       fresh: true,
       registryVersion: 42,
       signaturesRequired: 3,
@@ -94,23 +95,25 @@ describe("toDataUpdateArtifact", () => {
     expect(artifact).toEqual({
       value: "123",
       fresh: true,
-      dataUpdate: {
-        sourceId: `0x${"0".repeat(61)}abc`,
-        registryVersion: 42,
-        signaturesRequired: 3,
-        value: "123",
-        timestamp: 1714300000
-      },
-      signature: {
-        signature: `0x${"0".repeat(60)}5165`,
-        commitment: `0x${"0".repeat(37)}c0b`,
-        signersBitmap: `0x${"0".repeat(63)}4`
+      attestation: {
+        payload: {
+          value: `0x${"0".repeat(62)}7b`,
+          sourceId: `0x${"0".repeat(61)}abc`,
+          registryVersion: 42,
+          signaturesRequired: 3,
+          timestamp: 1714300000
+        },
+        signature: {
+          signature: `0x${"0".repeat(60)}5165`,
+          commitment: `0x${"0".repeat(37)}c0b`,
+          signersBitmap: `0x${"0".repeat(63)}4`
+        }
       }
     });
   });
 });
 
-describe("toSignedResult", () => {
+describe("normalizeSignedResult", () => {
   const flat = {
     sourceId: `0x${"1".repeat(64)}`,
     value: "66285",
@@ -125,26 +128,26 @@ describe("toSignedResult", () => {
   };
 
   it("accepts the round artifact and the flat shape interchangeably", () => {
-    const artifact = toDataUpdateArtifact(flat);
+    const artifact = toAttestationArtifact(flat);
 
-    expect(toSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
-      toSignedResult(flat)
+    expect(normalizeSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
+      normalizeSignedResult(flat)
     );
   });
 
   it("canonicalizes the bitmap on both paths", () => {
-    expect(toSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
+    expect(normalizeSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
   });
 
   it("ignores extra keys carried along from a pasted round response", () => {
     const pasted = {
-      ...(toDataUpdateArtifact(flat) as unknown as Record<string, unknown>),
+      ...(toAttestationArtifact(flat) as unknown as Record<string, unknown>),
       payment: "x402",
       trustAnchor: "…",
       verifierArgs: { evm: {} }
     };
 
-    expect(toSignedResult(pasted).s).toBe(flat.s);
+    expect(normalizeSignedResult(pasted).s).toBe(flat.s);
   });
 });
 
@@ -357,7 +360,7 @@ describe("buildVerifierArgsForChains", () => {
       fresh: true
     };
 
-    const args = buildVerifierArgsForChains(toSignedResult(raw), ["evm"], baseConfig);
+    const args = buildVerifierArgsForChains(normalizeSignedResult(raw), ["evm"], baseConfig);
 
     expect(args.errors).toBeUndefined();
     expect(args.evm).toBeDefined();

@@ -441,7 +441,7 @@ describe("hosted session tools", () => {
     const live = await callTool("execute_subscription_round", { sessionToken: opened.sessionToken, apiConfig, signaturesRequired: 2, chains: ["evm"] }, env.hosted);
     expect(live).toMatchObject({
       payment: "subscription", value: "42",
-      dataUpdate: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 },
+      attestation: { payload: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 } },
       verifierArgs: { evm: { args: {} } }
     });
     expect(JSON.stringify(live)).not.toContain(String(opened.sessionToken));

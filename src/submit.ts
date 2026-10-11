@@ -4,7 +4,7 @@
  * place that knows what the program's `submit_attestation` requires.
  */
 
-import { toSdkAttestation, toSignedResult } from "./artifacts.js";
+import { normalizeSignedResult, toSdkAttestation } from "./artifacts.js";
 import { getMolphaContext, requireMethod, requireSigner, assertActive, type RequestContext } from "./clients.js";
 import { enforceExecuteCap, previewWrite } from "./guardrails.js";
 
@@ -25,17 +25,18 @@ export interface SubmitOutcome {
  * this server works with; it is converted to the SDK's `Attestation` at the submit call.
  */
 export function prepareSignedResult(input: Record<string, unknown>): Record<string, unknown> {
-  const result = toSignedResult(input);
+  const result = normalizeSignedResult(input);
 
   if (!result.sourceId) {
     throw new Error("signed result is missing `sourceId`");
   }
 
-  // The program stores `valuePacked` as the on-chain value; `value` is the
-  // decimal rendering and is not interchangeable with it.
+  // The program stores the packed value (`attestation.payload.value`, `valuePacked`
+  // on the flat shape) as the on-chain value; the decimal `value` is not
+  // interchangeable with it.
   if (!result.valuePacked) {
     throw new Error(
-      "signed result is missing `valuePacked` (the on-chain encoding of `value`); re-run the round and pass its output through unmodified"
+      "signed result is missing the packed value (`attestation.payload.value`, or `valuePacked` on the flat shape); re-run the round and pass its output through unmodified"
     );
   }
 

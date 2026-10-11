@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it } from "vitest";
-import { signedArtifactSchema, toDataUpdateArtifact } from "../../src/artifacts.js";
+import { signedArtifactSchema, toAttestationArtifact } from "../../src/artifacts.js";
 import { registerTools } from "../../src/tools/index.js";
 import { callTool, collectTools } from "./tool-harness.js";
 
@@ -277,11 +277,11 @@ describe("derive_source_id", () => {
 
 describe("build_verifier_calldata", () => {
   const tool = collectTools().find((candidate) => candidate.name === "build_verifier_calldata")!;
-  const { dataUpdate, signature } = toDataUpdateArtifact(flatResult);
+  const { attestation } = toAttestationArtifact(flatResult);
 
-  it("builds calldata from a round's dataUpdate/signature verbatim, with no wallet configured", async () => {
-    const evm = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "evm" });
-    const starknet = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "starknet" });
+  it("builds calldata from a round's attestation verbatim, with no wallet configured", async () => {
+    const evm = await callTool("build_verifier_calldata", { attestation, chain: "evm" });
+    const starknet = await callTool("build_verifier_calldata", { attestation, chain: "starknet" });
 
     expect(evm).toMatchObject({
       chain: "evm",
@@ -307,20 +307,21 @@ describe("build_verifier_calldata", () => {
     const evmPayload = (evm.verifierArgs as { evm: { args: { attestation: { payload: Record<string, unknown> } } } }).evm.args.attestation.payload;
     expect(String(evmPayload.timestamp ?? evmPayload.timestamp)).toBe(String(flatResult.timestamp));
     expect(String(evm.note)).toContain("no freshness check");
-    const evmBounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "evm", maxAge: 300 });
+    const evmBounded = await callTool("build_verifier_calldata", { attestation, chain: "evm", maxAge: 300 });
     expect(evmBounded).toMatchObject({ verifierArgs: { evm: { args: { maxAge: "300" } } } });
     expect((evm.verifierArgs as Record<string, unknown>).errors).toBeUndefined();
     expect(starknet).toMatchObject({ chain: "starknet", verifierArgs: { starknet: { args: { attestation: { payload: { registry_version: 7 } }, maxAge: 0 } } } });
-    const bounded = await callTool("build_verifier_calldata", { dataUpdate, signature, chain: "starknet", maxAge: 300 });
+    const bounded = await callTool("build_verifier_calldata", { attestation, chain: "starknet", maxAge: 300 });
     expect(bounded).toMatchObject({ verifierArgs: { starknet: { args: { maxAge: 300 } } } });
     expect(String(bounded.note)).not.toContain("no freshness check");
   });
 
   it("takes the canonical attestation shape as input", () => {
     const input = tool.config.inputSchema;
-    expect(input.dataUpdate!.safeParse(dataUpdate).success).toBe(true);
-    expect(input.signature!.safeParse(signature).success).toBe(true);
-    expect(input.signature!.safeParse({ s: signature.signature }).success).toBe(false);
+    expect(input.attestation!.safeParse(attestation).success).toBe(true);
+    expect(input.attestation!.safeParse({ ...attestation, signature: { s: attestation.signature.signature } }).success).toBe(false);
+    expect(input.dataUpdate).toBeUndefined();
+    expect(input.signature).toBeUndefined();
   });
 
   it("says it does not verify", () => {

@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostedHttpServer, loadHttpConfig, type HostedServerOptions } from "../../src/http/server.js";
-import { toDataUpdateArtifact } from "../../src/artifacts.js";
+import { toAttestationArtifact } from "../../src/artifacts.js";
 import { sealChallenge } from "../../src/challenge.js";
 import { getSharedRuntime, type RequestContext } from "../../src/clients.js";
 import { sanitizeToolResult } from "../../src/http/policy.js";
@@ -147,8 +147,8 @@ describe("tier behavior and isolation", () => {
       solanaSubmit: ["prepare_submit_attestation", "send_signed_transaction"] } });
     const derived = (await app.call("derive_source_id", { apiConfig })).body.result.structuredContent;
     expect(derived.sourceId).toMatch(/^[0-9a-fx]{64,66}$/);
-    const artifact = toDataUpdateArtifact(flatResult);
-    expect((await app.call("build_verifier_calldata", { dataUpdate: artifact.dataUpdate, signature: artifact.signature, chain: "evm" })).body.result.structuredContent.chain).toBe("evm");
+    const { attestation } = toAttestationArtifact(flatResult);
+    expect((await app.call("build_verifier_calldata", { attestation, chain: "evm" })).body.result.structuredContent.chain).toBe("evm");
   });
   it.each(["describe_feed", "get_latest_value"])("%s needs an explicit submitter and reports no subscription", async name => {
     const app = await start();

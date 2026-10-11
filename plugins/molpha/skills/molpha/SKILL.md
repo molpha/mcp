@@ -51,7 +51,7 @@ Load only the file the task needs. Ask the user which chain if it is not clear; 
 
 This skill was written from the source checkouts, not from a deployment. Before telling a user an address or interface is live:
 
-- **EVM.** The consumer library and the `verify(Attestation, uint64)` interface exist in source, but no deployment of that interface is recorded: the library's address constant is the zero address and its deployment file is marked provisional. The address the SDK or `get_capabilities` returns may belong to an older interface (`verify(DataUpdate, ...)`). Check the contract on a block explorer, or call `verify` and see whether the selector exists, before building on it.
+- **EVM.** The consumer library and the `verify(Attestation, uint64)` interface exist in source, but no deployment of that interface is recorded: the library's address constant is the zero address and its deployment file is marked provisional. The address the SDK or `get_capabilities` returns may belong to an older interface that predates the `Attestation` struct. Check the contract on a block explorer, or call `verify` and see whether the selector exists, before building on it.
 - **Starknet.** The recorded deployment predates the latest interface change. Whether the deployed class matches is not known from the source.
 - **Solana.** The devnet program is upgradeable and changes often. Confirm the program id with `get_capabilities` and read the account owner before trusting a feed.
 

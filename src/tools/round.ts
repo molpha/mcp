@@ -6,7 +6,7 @@
 import { z } from "zod";
 import type { RequestContext } from "../clients.js";
 import { assertToleranceQuorum, resolveSourceId } from "../apiconfig.js";
-import { normalizeSignedResult, signedArtifactSchema, toDataUpdateArtifact } from "../artifacts.js";
+import { normalizeSignedResult, signedArtifactSchema, toAttestationArtifact } from "../artifacts.js";
 import { type MolphaConfig } from "../config.js";
 import { settle } from "../errors.js";
 import { prepareSignedResult, submitSignedResult } from "../submit.js";
@@ -93,13 +93,13 @@ export async function buildRoundResult(
   // back as "4"), which both the verifier-arg builders and submit_attestation
   // reject at their fixed widths.
   const normalized = normalizeSignedResult(result);
-  const artifact = toDataUpdateArtifact(normalized);
+  const artifact = toAttestationArtifact(normalized);
 
   const out: Record<string, unknown> = {
     payment,
     ...artifact,
     trustAnchor:
-      "Consume the signed dataUpdate + signature (and verify or forward). Do not trust `value` alone.",
+      "Consume the signed attestation (payload + signature), and verify or forward it. Do not trust `value` alone.",
     verifierArgs: buildVerifierArgsForChains(normalized, chains, config, { maxAge })
   };
 

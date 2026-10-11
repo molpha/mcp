@@ -13,7 +13,7 @@ Details behind the tools in the [README](../README.md). For setup see [integrati
 
 ## Structured output and annotations
 
-Every tool declares an `outputSchema` and returns its result as `structuredContent`, with the same JSON in a text block for clients that do not read structured content. The round tools' `value`, `fresh`, `dataUpdate`, and `signature` fields follow one canonical signed-artifact schema — the same shape `submit_attestation` and `build_verifier_calldata` accept — so a round's output passes to either without remapping. If a result ever fails to match its schema, the tool still returns it in full, flagged as an error, rather than dropping it — so a schema mismatch cannot discard a paid round's signed artifact.
+Every tool declares an `outputSchema` and returns its result as `structuredContent`, with the same JSON in a text block for clients that do not read structured content. The round tools' `value`, `fresh`, and `attestation` (`payload` + `signature`) fields follow one canonical signed-artifact schema. It is the gateway's round body, and the shape `submit_attestation` and `build_verifier_calldata` accept, so a round's output passes to either without remapping. If a result ever fails to match its schema, the tool still returns it in full, flagged as an error, rather than dropping it — so a schema mismatch cannot discard a paid round's signed artifact.
 
 Each tool also carries MCP annotations, so clients can decide what needs confirmation:
 
@@ -26,7 +26,7 @@ Each tool also carries MCP annotations, so clients can decide what needs confirm
 
 The round tools are marked destructive because each call irreversibly spends subscription quota or USDC, and a repeated call pays for another round. There is no idempotency key: a call repeated after a failure is a new round that uses another unit of quota or needs another payment. `submit_attestation` only ever advances the signer's own feed: the program accepts an attestation only if it is newer than the one the feed holds, so resubmitting the same payload changes nothing.
 
-`submit_attestation` and `build_verifier_calldata` take a round tool's response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
+`submit_attestation` takes a round tool's response as-is and `build_verifier_calldata` takes its `attestation`: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
 
 `build_verifier_calldata` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `submit_attestation` or a round tool's `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `get_latest_value`.
 
