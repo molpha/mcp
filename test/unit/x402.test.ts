@@ -979,7 +979,7 @@ describe("execute_x402_round and get_x402_status tools", () => {
     expect(live).toMatchObject({
       payment: "x402",
       value: "42",
-      dataUpdate: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 },
+      attestation: { payload: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 } },
       verifierArgs: { evm: { args: {} } },
       paymentReceipt: { payTo: env.treasuryOwner, amountAtomicUsdc: String(PRICE), transaction: SETTLEMENT_TX }
     });
@@ -1099,7 +1099,7 @@ describe("hosted prepare_x402_round and execute_x402_round tools", () => {
     expect(live).toMatchObject({
       payment: "x402",
       value: "42",
-      dataUpdate: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 },
+      attestation: { payload: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 } },
       verifierArgs: { evm: { args: {} } },
       paymentReceipt: { payer: env.payer, payTo: env.treasuryOwner, amountAtomicUsdc: String(PRICE), transaction: SETTLEMENT_TX }
     });

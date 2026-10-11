@@ -1,6 +1,6 @@
 import type { ToolDependencies } from "../clients.js";
 import { z } from "zod";
-import { signedDataUpdateSchema, signedSignatureSchema, toSignedResult } from "../artifacts.js";
+import { attestationSchema, normalizeSignedResult } from "../artifacts.js";
 import { loadConfig } from "../config.js";
 import { toolHandler } from "../mcp.js";
 import { buildVerifierArgsForChains, getVerifierMetadata, type ChainTarget } from "../verifiers.js";
@@ -22,10 +22,9 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
     {
       title: "Build Molpha verifier calldata",
       description:
-        "Build the verifier address and verify() call args for a signed attestation on EVM or Starknet. This tool does not verify anything: it stops at calldata by design, not by omission. The Molpha verifier is stateless, so the agent (or its contract) executes verify() itself, and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the attestation via submit_attestation (or a round tool's autoSubmit) — the program accepts it only if the aggregate signature verifies — and read it back with get_latest_value; there is no separate simulate-verify path. Takes the dataUpdate/signature objects from execute_subscription_round / execute_x402_round verbatim; short hex fields are zero-padded to their canonical widths server-side. Local computation: no wallet, no network call.",
+        "Build the verifier address and verify() call args for a signed attestation on EVM or Starknet. This tool does not verify anything: it stops at calldata by design, not by omission. The Molpha verifier is stateless, so the agent (or its contract) executes verify() itself, and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the attestation via submit_attestation (or a round tool's autoSubmit) — the program accepts it only if the aggregate signature verifies — and read it back with get_latest_value; there is no separate simulate-verify path. Takes the `attestation` object from execute_subscription_round / execute_x402_round verbatim; short hex fields are zero-padded to their canonical widths server-side. Local computation: no wallet, no network call.",
       inputSchema: {
-        dataUpdate: signedDataUpdateSchema.passthrough(),
-        signature: signedSignatureSchema.passthrough(),
+        attestation: attestationSchema.passthrough(),
         chain: chainSchema,
         includeAbi: z.boolean().optional(),
         maxAge: z
@@ -40,21 +39,19 @@ export function registerBuildVerifierCalldataTool(server: ToolServer, dependenci
     },
     toolHandler(outputSchema, (
       {
-        dataUpdate,
-        signature,
+        attestation,
         chain,
         includeAbi = false,
         maxAge
       }: {
-        dataUpdate: Record<string, unknown>;
-        signature: Record<string, unknown>;
+        attestation: Record<string, unknown>;
         chain: ChainTarget;
         includeAbi?: boolean;
         maxAge?: number;
       }
     ) => {
       const config = dependencies.config ?? loadConfig();
-      const result = toSignedResult({ dataUpdate, signature });
+      const result = normalizeSignedResult({ attestation });
 
       return {
         chain,

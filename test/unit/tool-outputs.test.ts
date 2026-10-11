@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getMolphaContext, type MolphaContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
 import { resetGuardrailCounters } from "../../src/guardrails.js";
+import { signedResultSchema } from "../../src/tools/submit_attestation.js";
 import { callTool } from "./tool-harness.js";
 
 vi.mock("../../src/clients.js", async (importOriginal) => ({
@@ -172,8 +173,10 @@ describe("execute_subscription_round", () => {
     expect(out).toMatchObject({
       payment: "subscription",
       value: "66285",
-      dataUpdate: { sourceId: `0x${flatResult.sourceId}`, valuePacked: `0x${flatResult.valuePacked}` },
-      signature: { signersBitmap: `0x${"0".repeat(63)}4` },
+      attestation: {
+        payload: { sourceId: `0x${flatResult.sourceId}`, value: `0x${flatResult.valuePacked}` },
+        signature: { signersBitmap: `0x${"0".repeat(63)}4` }
+      },
       verifierArgs: { evm: {}, starknet: {} },
       submitted: { chain: "solana", action: "submit_attestation", submitter: signer, feed: feedPda }
     });
@@ -197,7 +200,7 @@ describe("execute_subscription_round", () => {
 
     const out = await callTool("execute_subscription_round", { ...args, autoSubmit: true });
 
-    expect(out.dataUpdate).toBeDefined();
+    expect(out.attestation).toBeDefined();
     expect(out.submitted).toMatchObject({ ok: false, message: "FeedNotNewer", retry: expect.any(String) });
   });
 });
@@ -225,7 +228,22 @@ describe("a round's output, passed on verbatim", () => {
     });
 
     expect(
-      await callTool("build_verifier_calldata", { dataUpdate: round.dataUpdate, signature: round.signature, chain: "evm" })
+      await callTool("build_verifier_calldata", { attestation: round.attestation, chain: "evm" })
     ).toMatchObject({ verifierArgs: { evm: { args: {} } } });
+  });
+
+  it("is the gateway's attestation body, and the retired dataUpdate shape is refused", async () => {
+    fakeContext();
+    const round = await callTool("execute_subscription_round", { apiConfig, chains: ["solana"] });
+    const { payload, signature } = round.attestation as { payload: Record<string, unknown>; signature: Record<string, unknown> };
+
+    expect(Object.keys(payload).sort()).toEqual(["registryVersion", "signaturesRequired", "sourceId", "timestamp", "value"]);
+    expect(Object.keys(signature).sort()).toEqual(["commitment", "signature", "signersBitmap"]);
+    expect(round.dataUpdate).toBeUndefined();
+    expect(round.signature).toBeUndefined();
+
+    const retired = { dataUpdate: { ...payload, valuePacked: payload.value }, signature };
+    expect(signedResultSchema.safeParse(retired).success).toBe(false);
+    expect(signedResultSchema.safeParse(round).success).toBe(true);
   });
 });

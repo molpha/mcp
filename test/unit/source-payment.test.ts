@@ -222,7 +222,7 @@ describe("execute_subscription_round with sourcePayment", () => {
     expect(sent.sourcePayment.signer.address).toMatch(/^0x[0-9a-fA-F]{40}$/);
 
     expect(out.sourcePayment).toMatchObject({ paid: true, network: "eip155:84532", authorizations: 4, pricePerCallUsdc: "0.01", upToUsdc: "0.04" });
-    expect(out.dataUpdate).toBeDefined(); // the signed round is still returned
+    expect(out.attestation).toBeDefined(); // the signed round is still returned
     expect(sourceSpentToday()).toBe(40_000n);
     expect(everything(out)).not.toContain(PAYER_KEY.slice(2));
   });

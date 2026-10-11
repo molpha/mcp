@@ -12,7 +12,7 @@ const outputSchema = z.object({
   paymentReceipt: x402PaymentReceipt().optional().describe("Live rounds: the USDC payment the round settled."),
   // Preview only: the verified quote, nothing signed.
   action: z.literal("execute_x402_round").optional(),
-  sourceId: z.string().optional().describe("Preview only; a live round carries it in dataUpdate."),
+  sourceId: z.string().optional().describe("Preview only; a live round carries it in attestation.payload."),
   gateway: z.object({ endpoint: z.string(), authority: z.string(), pda: z.string() }).optional(),
   payTo: z
     .string()

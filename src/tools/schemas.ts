@@ -44,7 +44,7 @@ export type ApiConfigSchema = z.infer<typeof apiConfigSchema>;
 export const sourceIdSchema = z
   .string()
   .regex(/^(0[xX])?[0-9a-fA-F]{64}$/, "expected a 32-byte sourceId as 64 hex chars (0x optional)")
-  .describe("32-byte sourceId as hex (0x optional), from derive_source_id or a round's dataUpdate.");
+  .describe("32-byte sourceId as hex (0x optional), from derive_source_id or a round's attestation.payload.");
 
 export const signaturesRequiredSchema = z.number().int().positive().max(255);
 
