@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/molpha/mcp/issues"
   },
-  "homepage": "https://docs.molpha.io/",
+  "homepage": "https://molpha.io/",
   "keywords": [
     "mcp",
     "ai",
@@ -64,7 +64,7 @@
   "dependencies": {
     "@anchor-lang/core": "^1.1.2",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha/sdk": "0.2.0-dev-20261010103545",
+    "@molpha/sdk": "0.2.0",
     "@noble/hashes": "^1.8.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.0.0",
