@@ -180,13 +180,14 @@ token) into a complete source, so common values need no hand-written source. `li
 each has a tool of its own (`get_pool_price`, `get_lst_rate`, `get_aave_health_factor`, ...), and `read_data`
 takes any of them by id, or a raw source.
 
-- **Unsigned** (the default): the Molpha Data service reads the chain itself and answers with the value, the full
-  `source` it read and its read context. Free and rate limited; no signature. Decide with it, do not settle with it.
-- **Signed** (`attest: true`): the service derives the source, this server re-hashes it (a source that does not hash
-  to its `sourceId` is refused), and the round runs through `execute_subscription_round` (default) or
-  `execute_x402_round` (`payment: "x402"`) with their dry-run lock, spend caps and treasury checks. The answer's
-  `round` is that tool's output. On the hosted server, and on a read-only one, `attest: true` returns the derived
-  `source` only.
+- **Read** (every server, read-only): the Molpha Data service reads the chain itself and answers with the value,
+  the full `source` it read and its read context. Free and rate limited; no signature. Decide with it, do not settle
+  with it.
+- **Sign** (`execute_data_round`, servers with a signer): the service derives the source, this server re-hashes it
+  (a source that does not hash to its `sourceId` is refused), and the round runs through
+  `execute_subscription_round` (default) or `execute_x402_round` (`payment: "x402"`) with their dry-run lock, spend
+  caps and treasury checks. The answer's `round` is that tool's output. On the hosted server, pass a read tool's
+  `source` to the session or x402 tools.
 
 The tool set comes from `src/data-catalog.generated.ts`, a snapshot of the service's catalog taken when the release
 was built (`npm run sync:data-catalog`; `npm run check:data-catalog` compares it with a running service), so a new

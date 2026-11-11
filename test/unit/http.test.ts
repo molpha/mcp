@@ -24,7 +24,7 @@ const source = priceSource({ url: "https://example.com/finalized", path: "$.valu
 const walletA = Keypair.generate().publicKey.toBase58();
 const walletB = Keypair.generate().publicKey.toBase58();
 const canary = "CANARY_NEVER_LOG_882197";
-// 17 session, x402 and read tools, plus Molpha Data: list_data_templates, read_data and 21 template tools.
+// 17 session, x402 and read tools, plus the Molpha Data read tools: list_data_templates, read_data and 21 template tools.
 const HOSTED_TOOLS = 17 + 23;
 /** What a client configured for the removed per-request signer scheme still sends. */
 function legacySignerHeaders(wallet = walletA) {

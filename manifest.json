@@ -121,91 +121,95 @@
     },
     {
       "name": "read_data",
-      "description": "Read a Molpha Data template or raw source: unsigned from the service by default, or with attest: true as a signed round through this server's round tools."
+      "description": "Read a Molpha Data template or raw source, unsigned: the service's own read with the source it read, re-hashed here. Signs nothing."
     },
     {
       "name": "get_balance",
-      "description": "Account balance (account.balance@1): A wallet's native balance (EVM) or token balance (ERC-20, Starknet token, or the wallet's associated SPL token account). Unsigned by default; attest: true signs it."
+      "description": "Account balance (account.balance@1): A wallet's native balance (EVM) or token balance (ERC-20, Starknet token, or the wallet's associated SPL token account). An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_chain_head",
-      "description": "Pinned block (chain.head@1): The block (EVM, Starknet) or slot (Solana) a source of this chain and finality reads at, from the source format's $block. Unsigned by default; attest: true signs it."
+      "description": "Pinned block (chain.head@1): The block (EVM, Starknet) or slot (Solana) a source of this chain and finality reads at, from the source format's $block. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_curve_oracle_price",
-      "description": "Curve EMA price oracle (curve.priceOracle@1): A Curve pool's exponential moving average price (price_oracle) of coin i+1 in coin 0. Unsigned by default; attest: true signs it."
+      "description": "Curve EMA price oracle (curve.priceOracle@1): A Curve pool's exponential moving average price (price_oracle) of coin i+1 in coin 0. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_pool_price",
-      "description": "Pool spot price (dex.pool.price@1): A concentrated-liquidity pool's current price from its square-root price, adjusted for both tokens' decimals. Unsigned by default; attest: true signs it."
+      "description": "Pool spot price (dex.pool.price@1): A concentrated-liquidity pool's current price from its square-root price, adjusted for both tokens' decimals. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_pool_reserve",
-      "description": "Pool reserve (dex.pool.reserves@1): One side of a pool's reserves: getReserves of a Uniswap v2-style pair, the token balance of a v3-style pool, or a Whirlpool's token vault. Unsigned by default; attest: true signs it."
+      "description": "Pool reserve (dex.pool.reserves@1): One side of a pool's reserves: getReserves of a Uniswap v2-style pair, the token balance of a v3-style pool, or a Whirlpool's token vault. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_pool_snapshot",
-      "description": "Pool state snapshot (dex.pool.snapshot@1): A concentrated-liquidity pool's state under one signature: square-root price, tick, active liquidity and fee (Uniswap v3 family), or the Whirlpool account up to its fee growth. Unsigned by default; attest: true signs it."
+      "description": "Pool state snapshot (dex.pool.snapshot@1): A concentrated-liquidity pool's state under one signature: square-root price, tick, active liquidity and fee (Uniswap v3 family), or the Whirlpool account up to its fee growth. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_pool_twap",
-      "description": "Pool TWAP (mean tick) (dex.pool.twap@1): The arithmetic mean tick over a window, from the pool's own oracle (observe), rounded as Uniswap's OracleLibrary rounds. Unsigned by default; attest: true signs it."
+      "description": "Pool TWAP (mean tick) (dex.pool.twap@1): The arithmetic mean tick over a window, from the pool's own oracle (observe), rounded as Uniswap's OracleLibrary rounds. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_vault_share_price",
-      "description": "Vault share price (erc4626.sharePrice@1): Assets per vault share, from the vault's own convertToAssets. Unsigned by default; attest: true signs it."
+      "description": "Vault share price (erc4626.sharePrice@1): Assets per vault share, from the vault's own convertToAssets. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_storage_slot",
-      "description": "Storage slot (evm.storage@1): The 32 bytes of one storage slot of a contract at the pinned block. Unsigned by default; attest: true signs it."
+      "description": "Storage slot (evm.storage@1): The 32 bytes of one storage slot of a contract at the pinned block. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_aave_reserve",
-      "description": "Aave v3 reserve rate or index (lending.aave.reserve@1): One of an Aave v3 (or Spark) reserve's current rates or indexes, from Pool.getReserveData. Unsigned by default; attest: true signs it."
+      "description": "Aave v3 reserve rate or index (lending.aave.reserve@1): One of an Aave v3 (or Spark) reserve's current rates or indexes, from Pool.getReserveData. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_aave_totals",
-      "description": "Aave v3 reserve totals (lending.aave.totals@1): An Aave v3 (or Spark) reserve's total supplied (aToken supply) or borrowed (variable debt token supply), or its utilization. Unsigned by default; attest: true signs it."
+      "description": "Aave v3 reserve totals (lending.aave.totals@1): An Aave v3 (or Spark) reserve's total supplied (aToken supply) or borrowed (variable debt token supply), or its utilization. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_morpho_market",
-      "description": "Morpho Blue market totals (lending.morpho.market@1): A Morpho Blue market's total supplied or borrowed assets, or its utilization, from market(id). Unsigned by default; attest: true signs it."
+      "description": "Morpho Blue market totals (lending.morpho.market@1): A Morpho Blue market's total supplied or borrowed assets, or its utilization, from market(id). An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_lst_rate",
-      "description": "Liquid staking token exchange rate (lst.rate@1): How much of the base asset one liquid staking token is worth, read from the token's own contract or stake pool. Unsigned by default; attest: true signs it."
+      "description": "Liquid staking token exchange rate (lst.rate@1): How much of the base asset one liquid staking token is worth, read from the token's own contract or stake pool. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "compare_oracles",
-      "description": "Two oracle prices compared (oracle.compare@1): The deviation between two price feeds on one chain (Chainlink aggregators or Pyth price feeds), refusing a feed older than maxAge; or whether they agree within a bound. Unsigned by default; attest: true signs it."
+      "description": "Two oracle prices compared (oracle.compare@1): The deviation between two price feeds on one chain (Chainlink aggregators or Pyth price feeds), refusing a feed older than maxAge; or whether they agree within a bound. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_aave_health_factor",
-      "description": "Aave v3 health factor (position.aave.health@1): An account's health factor on an Aave v3 (or Spark) market, from Pool.getUserAccountData. Unsigned by default; attest: true signs it."
+      "description": "Aave v3 health factor (position.aave.health@1): An account's health factor on an Aave v3 (or Spark) market, from Pool.getUserAccountData. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_aave_liquidation_distance",
-      "description": "Aave v3 distance to liquidation (position.aave.liquidationDistance@1): How far an account's collateral value can fall, debt unchanged, before the position can be liquidated: 1 - 1/healthFactor. Unsigned by default; attest: true signs it."
+      "description": "Aave v3 distance to liquidation (position.aave.liquidationDistance@1): How far an account's collateral value can fall, debt unchanged, before the position can be liquidated: 1 - 1/healthFactor. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_morpho_health_factor",
-      "description": "Morpho Blue health factor (position.morpho.health@1): A borrower's health on a Morpho Blue market, computed as Morpho computes it: collateral at the market's oracle price times LLTV, over the borrow assets of the borrower's shares. Unsigned by default; attest: true signs it."
+      "description": "Morpho Blue health factor (position.morpho.health@1): A borrower's health on a Morpho Blue market, computed as Morpho computes it: collateral at the market's oracle price times LLTV, over the borrow assets of the borrower's shares. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_median_price",
-      "description": "Median price across pools (price.median@1): The median price of a token in a quote token across two to four concentrated-liquidity pools of that pair, optionally refusing pools below a liquidity floor. Unsigned by default; attest: true signs it."
+      "description": "Median price across pools (price.median@1): The median price of a token in a quote token across two to four concentrated-liquidity pools of that pair, optionally refusing pools below a liquidity floor. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "reconcile_supply",
-      "description": "Bridged supply against its lockbox (supply.reconcile@1): A canonical token's balance locked in a bridge, less the total supply of its bridged copies on up to three other chains. Unsigned by default; attest: true signs it."
+      "description": "Bridged supply against its lockbox (supply.reconcile@1): A canonical token's balance locked in a bridge, less the total supply of its bridged copies on up to three other chains. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_token_snapshot",
-      "description": "Token snapshot (token.snapshot@1): A token's supply and decimals (EVM, Starknet) or its whole SPL mint (supply, decimals, mint and freeze authorities) under one signature. Unsigned by default; attest: true signs it."
+      "description": "Token snapshot (token.snapshot@1): A token's supply and decimals (EVM, Starknet) or its whole SPL mint (supply, decimals, mint and freeze authorities) under one signature. An unsigned read with its source; execute_data_round signs it."
     },
     {
       "name": "get_token_supply",
-      "description": "Token total supply (token.supply@1): The total supply of a token, in whole tokens, read from the token contract or the SPL mint. Unsigned by default; attest: true signs it."
+      "description": "Token total supply (token.supply@1): The total supply of a token, in whole tokens, read from the token contract or the SPL mint. An unsigned read with its source; execute_data_round signs it."
+    },
+    {
+      "name": "execute_data_round",
+      "description": "Run a Molpha Data template (or raw source) as a threshold-signed round through execute_subscription_round or execute_x402_round, with their dry-run lock and spend caps."
     }
   ],
   "compatibility": {

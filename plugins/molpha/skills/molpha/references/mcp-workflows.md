@@ -61,14 +61,15 @@ For common on-chain values (token supply and balances, pool prices and TWAPs, LS
 lending rates and health factors) do not write a source by hand: a template builds one.
 
 1. `list_data_templates` (optionally `chain`, `class`): every template, its parameters and its tool.
-2. Call the template's tool, or `read_data` with `template` and `params`. Without `attest` the answer is the
-   Molpha Data service's own unsigned read, free, with the full `source` it read: fine for deciding, never for
-   settling.
-3. For a value a contract can verify, call again with `attest: true` (and `payment: "x402"` to pay per round).
-   The template is derived by the service, re-hashed on this server, and run through
-   `execute_subscription_round` or `execute_x402_round`, so the dry-run lock and the spend caps apply. The answer's
-   `round` is that tool's output: pass it to `submit_attestation` or `build_verifier_calldata` as usual. On the hosted
-   server `attest: true` returns the derived `source` only; run it with the session or x402 tools.
+2. Call the template's tool, or `read_data` with `template` and `params`. The answer is the Molpha Data service's
+   own unsigned read, free, with the full `source` it read: fine for deciding, never for settling. These tools sign
+   and spend nothing, on every server.
+3. For a value a contract can verify, call `execute_data_round` with the same `template` and `params` (and
+   `payment: "x402"` to pay per round). The template is derived by the service, re-hashed on this server, and run
+   through `execute_subscription_round` or `execute_x402_round`, so the dry-run lock and the spend caps apply. The
+   answer's `round` is that tool's output: pass it to `submit_attestation` or `build_verifier_calldata` as usual.
+   On the hosted server, pass the read tool's `source` to `execute_subscription_round` (with a session) or
+   `prepare_x402_round` instead.
 
 | Tool | Value |
 |---|---|
