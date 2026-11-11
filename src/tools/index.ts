@@ -1,5 +1,6 @@
 import type { ToolDependencies } from "../clients.js";
 import { registerBuildVerifierCalldataTool } from "./build_verifier_calldata.js";
+import { registerDataTools } from "./data.js";
 import { registerDeriveSourceIdTool } from "./derive_source_id.js";
 import { registerDescribeAccessTool } from "./describe_access.js";
 import { registerDescribeFeedTool } from "./describe_feed.js";
@@ -38,6 +39,9 @@ export function registerTools(server: ToolServer, dependencies: ToolDependencies
   registerListProvidersTool(server, dependencies);
   registerGetProviderTool(server, dependencies);
   registerQuoteSourcePaymentTool(server, dependencies);
+  // Molpha Data: unsigned reads on every server; a signed read runs this server's own round tools, or, on a
+  // server that cannot sign here, returns the derived source for the session or x402 tools.
+  registerDataTools(server, dependencies);
   if (dependencies.hosted) {
     registerBeginSessionTool(server, dependencies);
     registerCompleteSessionTool(server, dependencies);

@@ -7,7 +7,7 @@ import { signedArtifactSchema, toAttestationArtifact } from "../../src/artifacts
 import { registerTools } from "../../src/tools/index.js";
 import { CANONICAL_VECTORS } from "./source-vectors.js";
 import { GOLDEN_CANONICAL, GOLDEN_SOURCE_ID, priceSource } from "./sources.js";
-import { callTool, callToolError, collectTools } from "./tool-harness.js";
+import { DATA_TOOL_NAMES, callTool, callToolError, collectTools } from "./tool-harness.js";
 
 const TOOL_NAMES = [
   "build_verifier_calldata",
@@ -22,8 +22,9 @@ const TOOL_NAMES = [
   "get_x402_status",
   "list_providers",
   "quote_source_payment",
-  "submit_attestation"
-];
+  "submit_attestation",
+  ...DATA_TOOL_NAMES
+].sort();
 
 /**
  * The hosted server holds no signer: every operation that needs a signature is split around
@@ -46,8 +47,9 @@ const HOSTED_TOOL_NAMES = [
   "prepare_submit_attestation",
   "prepare_x402_round",
   "quote_source_payment",
-  "send_signed_transaction"
-];
+  "send_signed_transaction",
+  ...DATA_TOOL_NAMES
+].sort();
 
 const READ_ONLY = [
   "build_verifier_calldata",
@@ -58,6 +60,7 @@ const READ_ONLY = [
   "get_latest_value",
   "get_provider",
   "get_x402_status",
+  "list_data_templates",
   "list_providers",
   "quote_source_payment"
 ];

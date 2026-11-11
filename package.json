@@ -56,7 +56,9 @@
     "changeset": "changeset",
     "ci:version": "changeset version && npm run sync-version && npm run gen:install",
     "ci:publish": "changeset publish",
-    "smoke:pack": "node scripts/smoke-pack.mjs"
+    "smoke:pack": "node scripts/smoke-pack.mjs",
+    "sync:data-catalog": "node --import tsx scripts/sync-data-catalog.ts",
+    "check:data-catalog": "node --import tsx scripts/sync-data-catalog.ts --check"
   },
   "engines": {
     "node": ">=24.0.0"

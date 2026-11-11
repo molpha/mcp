@@ -78,3 +78,30 @@ export async function callTool(
   tool.config.outputSchema.parse(result.structuredContent);
   return result.structuredContent;
 }
+
+/** Molpha Data: list_data_templates, read_data and one tool per template of the catalog snapshot. */
+export const DATA_TOOL_NAMES = [
+  "compare_oracles",
+  "get_aave_health_factor",
+  "get_aave_liquidation_distance",
+  "get_aave_reserve",
+  "get_aave_totals",
+  "get_balance",
+  "get_chain_head",
+  "get_curve_oracle_price",
+  "get_lst_rate",
+  "get_median_price",
+  "get_morpho_health_factor",
+  "get_morpho_market",
+  "get_pool_price",
+  "get_pool_reserve",
+  "get_pool_snapshot",
+  "get_pool_twap",
+  "get_storage_slot",
+  "get_token_snapshot",
+  "get_token_supply",
+  "get_vault_share_price",
+  "list_data_templates",
+  "read_data",
+  "reconcile_supply"
+];
