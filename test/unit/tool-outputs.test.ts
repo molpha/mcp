@@ -9,6 +9,7 @@ import { getMolphaContext, type MolphaContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
 import { resetGuardrailCounters } from "../../src/guardrails.js";
 import { signedResultSchema } from "../../src/tools/submit_attestation.js";
+import { priceSource, word } from "./sources.js";
 import { callTool } from "./tool-harness.js";
 
 vi.mock("../../src/clients.js", async (importOriginal) => ({
@@ -18,7 +19,9 @@ vi.mock("../../src/clients.js", async (importOriginal) => ({
 
 const signer = Keypair.generate().publicKey.toBase58();
 const feedPda = Keypair.generate().publicKey.toBase58();
-const apiConfig = { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate", valueTransform: "mul(1e8)" };
+// int256 at 8 decimals: the scale is declared by the source, so it is part of the sourceId.
+const feedSource = priceSource({ url: "https://api.example.com/v1/finalized/rate", path: "$.rate", decimals: 8 });
+const source = feedSource.doc;
 
 const flatResult = {
   sourceId: "1".repeat(64),
@@ -134,12 +137,14 @@ describe("feed reads", () => {
     expect(out).toMatchObject({ feed: { timestamp: "1791397718000", valueKind: "value" } });
   });
 
-  it("describe_feed reports the feed, the unattested value encoding, and the subscription", async () => {
+  it("describe_feed reports the feed, the attested value encoding from the source's output, and the subscription", async () => {
     const { solana } = fakeContext();
+    solana.readFeed.mockResolvedValueOnce({ ...feedAccount, value: Buffer.from(word(10_001_500_000n).slice(2), "hex") });
 
-    expect(await callTool("describe_feed", { apiConfig, signaturesRequired: 1 })).toMatchObject({
+    expect(await callTool("describe_feed", { source, signaturesRequired: 1 })).toMatchObject({
+      sourceId: feedSource.sourceId,
       feed: { valueKind: "value" },
-      valueEncoding: { attested: false, valueTransform: "mul(1e8)" },
+      valueEncoding: { attested: true, encoding: "int256", decimals: 8, decodedValue: "100.015" },
       subscription: { active: true, maxRounds: 100 }
     });
 
@@ -148,10 +153,47 @@ describe("feed reads", () => {
       feed: { ok: false, label: "solana.readFeed" }
     });
   });
+
+  it("describe_feed and get_latest_value say nothing about the scale without a source, and read it from the source with one", async () => {
+    fakeContext();
+
+    expect(await callTool("describe_feed", { sourceId: flatResult.sourceId, signaturesRequired: 1 })).not.toHaveProperty("valueEncoding");
+    expect(await callTool("get_latest_value", { sourceId: flatResult.sourceId, signaturesRequired: 1 })).not.toHaveProperty("valueEncoding");
+    expect(await callTool("get_latest_value", { source, signaturesRequired: 1 })).toMatchObject({
+      sourceId: feedSource.sourceId,
+      valueEncoding: { attested: true, encoding: "int256", decimals: 8 }
+    });
+  });
+
+  it("describe_feed and get_latest_value refuse a sourceId that is not the source's, and need one of the two", async () => {
+    fakeContext();
+    const { callToolError } = await import("./tool-harness.js");
+
+    for (const tool of ["describe_feed", "get_latest_value"]) {
+      expect(await callToolError(tool, { source, sourceId: flatResult.sourceId, signaturesRequired: 1 }), tool).toMatchObject({
+        message: expect.stringContaining("sourceId does not match source")
+      });
+      expect(await callToolError(tool, { signaturesRequired: 1 }), tool).toMatchObject({
+        message: expect.stringContaining("either sourceId or source is required")
+      });
+    }
+  });
+
+  it("renders each declared output type of the stored value", async () => {
+    const { solana } = fakeContext();
+    const boolSource = priceSource({ url: "https://api.example.com/p" }).doc as { output: unknown; transform: unknown };
+    const asBool = { ...boolSource, output: { type: "bool", decimals: null }, transform: { op: "gt", args: [{ ref: "px.value" }, { const: "0" }] } };
+    solana.readFeed.mockResolvedValue({ ...feedAccount, value: Buffer.from(word(1n).slice(2), "hex") });
+
+    expect(await callTool("get_latest_value", { source: asBool, signaturesRequired: 1 })).toMatchObject({
+      valueEncoding: { encoding: "bool", decodedValue: "true" }
+    });
+    expect((await callTool("get_latest_value", { source: asBool, signaturesRequired: 1 })).valueEncoding).not.toHaveProperty("decimals");
+  });
 });
 
 describe("execute_subscription_round", () => {
-  const args = { apiConfig, chains: ["evm", "starknet", "solana"] };
+  const args = { source, chains: ["evm", "starknet", "solana"] };
 
   it("previews without requesting a round", async () => {
     const { gateway } = fakeContext();
@@ -194,6 +236,31 @@ describe("execute_subscription_round", () => {
     );
   });
 
+  it("keeps a keccak256 output's preimage in the artifact and hands it to the Solana submit", async () => {
+    const { gateway, solana } = fakeContext();
+    gateway.requestSignedData.mockResolvedValue({ ...sdkAttestation, valuePreimage: "0x68656C6C6F" } as typeof sdkAttestation);
+
+    const out = await callTool("execute_subscription_round", { ...args, autoSubmit: true });
+
+    // The gateway keeps no copy of the preimage: this response is the only one.
+    expect(out).toMatchObject({ valuePreimage: "0x68656c6c6f", attestation: { payload: { sourceId: `0x${flatResult.sourceId}` } } });
+    expect(solana.submitAttestation).toHaveBeenCalledWith(expect.objectContaining({ valuePreimage: "0x68656c6c6f" }));
+
+    // And a later submit_attestation of the same output still carries it.
+    solana.submitAttestation.mockClear();
+    await callTool("submit_attestation", { result: out });
+    expect(solana.submitAttestation).toHaveBeenCalledWith(expect.objectContaining({ valuePreimage: "0x68656c6c6f" }));
+  });
+
+  it("carries no preimage for any other output", async () => {
+    const { solana } = fakeContext();
+
+    const out = await callTool("execute_subscription_round", { ...args, autoSubmit: true });
+
+    expect(out).not.toHaveProperty("valuePreimage");
+    expect((solana.submitAttestation.mock.calls[0] as unknown[])[0]).not.toHaveProperty("valuePreimage");
+  });
+
   it("keeps the artifact when autoSubmit fails", async () => {
     const { solana } = fakeContext();
     solana.submitAttestation.mockRejectedValueOnce(new Error("FeedNotNewer"));
@@ -208,7 +275,7 @@ describe("execute_subscription_round", () => {
 describe("a round's output, passed on verbatim", () => {
   it("is accepted by submit_attestation and build_verifier_calldata", async () => {
     const { solana } = fakeContext();
-    const round = await callTool("execute_subscription_round", { apiConfig, chains: ["solana"] });
+    const round = await callTool("execute_subscription_round", { source, chains: ["solana"] });
 
     expect(await callTool("submit_attestation", { result: round, dryRun: true })).toMatchObject({
       dryRun: true,
@@ -234,7 +301,7 @@ describe("a round's output, passed on verbatim", () => {
 
   it("is the gateway's attestation body, and the retired dataUpdate shape is refused", async () => {
     fakeContext();
-    const round = await callTool("execute_subscription_round", { apiConfig, chains: ["solana"] });
+    const round = await callTool("execute_subscription_round", { source, chains: ["solana"] });
     const { payload, signature } = round.attestation as { payload: Record<string, unknown>; signature: Record<string, unknown> };
 
     expect(Object.keys(payload).sort()).toEqual(["registryVersion", "signaturesRequired", "sourceId", "timestamp", "value"]);

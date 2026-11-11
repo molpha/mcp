@@ -223,7 +223,7 @@ Then:
 
 Because prepare and execute are separate requests, they may land on different Fluid instances; that working is the check that the challenge secret is really shared.
 
-Watch Vercel Function logs: you should see JSON lines with `tool`, `status`, `latencyMs`, `ipHash`. If a header value, session token, signed transaction or `apiConfig` appears, **stop** — that is a platform logging misconfiguration, not expected application behavior.
+Watch Vercel Function logs: you should see JSON lines with `tool`, `status`, `latencyMs`, `ipHash`. If a header value, session token, signed transaction or `source` document appears, **stop** — that is a platform logging misconfiguration, not expected application behavior.
 
 ## 8. Attach `mcp.molpha.io`
 

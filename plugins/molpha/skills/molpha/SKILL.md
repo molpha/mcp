@@ -5,7 +5,7 @@ description: Use when a task involves Molpha, the threshold-signed oracle: getti
 
 # Molpha
 
-Molpha turns an HTTP API response into a value signed by a threshold of oracle nodes. The same signed **attestation** can be verified on Solana, EVM and Starknet. You reach it through the Molpha MCP server (tools), or by writing code against the SDK and the verifier contracts. This skill is the behavior to apply either way.
+Molpha turns what a **source** reads (HTTP API responses, EVM, Starknet or Solana state) into a value signed by a threshold of oracle nodes. The same signed **attestation** can be verified on Solana, EVM and Starknet. You reach it through the Molpha MCP server (tools), or by writing code against the SDK and the verifier contracts. This skill is the behavior to apply either way.
 
 Testnet only: Solana Devnet, Sepolia, Starknet Sepolia. Say so when a user talks about production.
 
@@ -30,7 +30,7 @@ A round returns a `value` and a signed attestation. Pass the attestation on, not
 2. **Spending.** `execute_subscription_round` and `execute_x402_round` spend on every call. After an unclear error, never retry: read state first (`describe_feed`, `get_x402_status`). A second call pays for a second round.
 3. **Quote, preview, then spend.** Quote before paying (`get_x402_status`, `quote_source_payment`). Preview the first write of a session with `dryRun: true` and show the user what would be sent. Only go live after they say so.
 4. **The dry-run lock.** If a write is refused with `dry_run_locked`, stop and tell the user. Only they can unlock it, by changing the server's config and restarting it. Do not look for a way around it, and do not ask them to paste anything.
-5. **`sourceId` comes from `derive_source_id`.** Never hash an `apiConfig` yourself: one differing byte points at a different feed. `sourceId` identifies the source, not the quorum.
+5. **`sourceId` comes from `derive_source_id`.** Never hash a source document yourself: one differing byte (a number written as `8` instead of `"8"`, a different spelling of one quantity) points at a different feed. `sourceId` identifies the source, not the quorum.
 6. **Times.** The attestation `timestamp` is unix **milliseconds**. `maxAge`, registry activation and every chain clock are **seconds**: compare `timestamp / 1000`.
 7. **Solana feeds are per submitter.** The feed is keyed by `(sourceId, signaturesRequired, submitter)`. Another wallet's submit is a different feed. A lower quorum is a different feed.
 8. **Do not trust addresses blindly.** Verifier addresses from `get_capabilities` or the SDK can be a fallback for an older interface. See "What to verify" below.
@@ -40,7 +40,7 @@ A round returns a `value` and a signed attestation. Pass the attestation on, not
 | The task | Read |
 |---|---|
 | Use the MCP tools: explore, get a signed value, pay, settle, recover from an error | `references/mcp-workflows.md` |
-| Describe a data source: `apiConfig`, `responseParser`, transforms, tolerance, determinism | `references/apiconfig.md` |
+| Describe a data source: inputs and decoders, the transform, the output type, tolerance, determinism, worked examples | `references/source.md` |
 | Write a Solana program or client that reads a Molpha feed | `references/integrate-solana.md` |
 | Write an EVM contract or client that verifies an attestation | `references/integrate-evm.md` |
 | Write a Starknet contract or client that verifies an attestation | `references/integrate-starknet.md` |

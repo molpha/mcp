@@ -5,14 +5,14 @@
  */
 import { z } from "zod";
 import type { RequestContext } from "../clients.js";
-import { assertToleranceQuorum, resolveSourceId } from "../apiconfig.js";
+import { assertToleranceQuorum, guardSourceId, parseSource } from "../source.js";
 import { normalizeSignedResult, signedArtifactSchema, toAttestationArtifact } from "../artifacts.js";
 import { type MolphaConfig } from "../config.js";
 import { settle } from "../errors.js";
 import { prepareSignedResult, submitSignedResult } from "../submit.js";
 import { buildVerifierArgsForChains, type ChainTarget } from "../verifiers.js";
 import { submitFailure, submitOutcome, verifierArgs } from "./outputs.js";
-import { apiConfigSchema, signaturesRequiredSchema, sourceIdSchema } from "./schemas.js";
+import { signaturesRequiredSchema, sourceIdSchema, sourceSchema } from "./schemas.js";
 
 export type RoundPayment = "subscription" | "x402";
 
@@ -40,11 +40,11 @@ export function roundOutputShape<P extends RoundPayment>(payment: P) {
 }
 
 export const roundInputSchema = {
-  apiConfig: apiConfigSchema,
+  source: sourceSchema,
   signaturesRequired: signaturesRequiredSchema.default(1),
   sourceId: sourceIdSchema
     .optional()
-    .describe("Optional guard: the round is refused unless apiConfig derives to this sourceId."),
+    .describe("Optional guard: the round is refused unless source derives to this sourceId."),
   maxAge: z.number().int().nonnegative().optional(),
   chains: z.array(z.enum(["evm", "starknet", "solana"])).min(1),
   autoSubmit: z
@@ -57,7 +57,7 @@ export const roundInputSchema = {
 };
 
 export interface RoundArgs {
-  apiConfig: z.infer<typeof apiConfigSchema>;
+  source: z.infer<typeof sourceSchema>;
   signaturesRequired: number;
   sourceId?: string;
   maxAge?: number;
@@ -66,10 +66,14 @@ export interface RoundArgs {
   dryRun?: boolean;
 }
 
-/** Derives the round's sourceId (checking the caller's guard) and validates autoSubmit. */
-export function prepareRound({ apiConfig, signaturesRequired, sourceId, chains, autoSubmit = false }: RoundArgs): string {
-  const resolvedSourceId = resolveSourceId(sourceId, apiConfig);
-  assertToleranceQuorum(apiConfig, signaturesRequired);
+/**
+ * Validates the round's source (the SDK's parseSource: a rejection names the field's path), derives its
+ * sourceId (checking the caller's guard), checks the tolerance quorum and validates autoSubmit.
+ */
+export function prepareRound({ source, signaturesRequired, sourceId, chains, autoSubmit = false }: RoundArgs): string {
+  const parsed = parseSource(source);
+  const resolvedSourceId = guardSourceId(sourceId, parsed);
+  assertToleranceQuorum(parsed, signaturesRequired);
 
   if (autoSubmit && !chains.includes("solana")) {
     throw new Error(

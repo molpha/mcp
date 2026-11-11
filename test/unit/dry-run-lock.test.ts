@@ -4,9 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { RequestContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
 import { resolveDryRun } from "../../src/guardrails.js";
+import { priceSource } from "./sources.js";
 import { callTool, callToolError } from "./tool-harness.js";
 
-const apiConfig = { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate", valueTransform: "mul(1e8)" };
+const source = priceSource({ url: "https://api.example.com/v1/finalized/rate", path: "$.rate", decimals: 8 }).doc;
 const signer = Keypair.generate().publicKey.toBase58();
 
 describe("resolveDryRun", () => {
@@ -42,7 +43,7 @@ describe("a locked server", () => {
   it("refuses dryRun: false on execute_subscription_round without touching the gateway", async () => {
     const { dependencies, gateway } = lockedContext();
 
-    expect(await callToolError("execute_subscription_round", { apiConfig, chains: ["solana"], dryRun: false }, dependencies)).toMatchObject({
+    expect(await callToolError("execute_subscription_round", { source, chains: ["solana"], dryRun: false }, dependencies)).toMatchObject({
       code: "dry_run_locked",
       remediation: expect.stringContaining("MOLPHA_DRY_RUN")
     });
@@ -72,7 +73,7 @@ describe("a locked server", () => {
   it("refuses dryRun: false on execute_x402_round", async () => {
     const { dependencies } = lockedContext();
 
-    expect(await callToolError("execute_x402_round", { apiConfig, chains: ["solana"], dryRun: false }, dependencies)).toMatchObject({
+    expect(await callToolError("execute_x402_round", { source, chains: ["solana"], dryRun: false }, dependencies)).toMatchObject({
       code: "dry_run_locked"
     });
   });
@@ -80,7 +81,7 @@ describe("a locked server", () => {
   it("still previews when the call says nothing about dryRun", async () => {
     const { dependencies, gateway } = lockedContext();
 
-    expect(await callTool("execute_subscription_round", { apiConfig, chains: ["solana"] }, dependencies)).toMatchObject({
+    expect(await callTool("execute_subscription_round", { source, chains: ["solana"] }, dependencies)).toMatchObject({
       dryRun: true,
       action: "execute_subscription_round"
     });

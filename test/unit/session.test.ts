@@ -23,13 +23,16 @@ import { requireSdkExport } from "../../src/sdk.js";
 import { beginSession, completeSession, executeSessionRound, sessionEndpoint, type SessionContext } from "../../src/session.js";
 import { formatSiwsMessage, siwxStatement, SIWX_HEADER, type SiwxMessageFields } from "../../src/siwx.js";
 import { deriveGatewayPda } from "../../src/x402-payment.js";
+import { priceSource, word } from "./sources.js";
 import { callTool, callToolError } from "./tool-harness.js";
 
 const programId = getMolphaProgramId();
 const GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
-const apiConfig = { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" };
-const sourceId = requireSdkExport<(config: Record<string, unknown>) => string>("deriveSourceIdString")(apiConfig);
+const feedSource = priceSource({ url: "https://api.example.com/v1/finalized/rate", path: "$.rate" });
+const source = feedSource.doc;
+/** Bare lowercase hex, as the gateway's responses spell it. */
+const sourceId = feedSource.bareId;
 const randomAddress = (): Address => address(Keypair.generate().publicKey.toBase58());
 
 function json(status: number, body: unknown): Response {
@@ -154,12 +157,12 @@ async function setup(): Promise<Env> {
         status: "completed",
         data: {
           attestation: {
-            payload: { value: "ab".repeat(32), sourceId, registryVersion: body.registryVersion, signaturesRequired: body.signaturesRequired,
+            payload: { value: word(42n * 10n ** 8n), sourceId, registryVersion: body.registryVersion, signaturesRequired: body.signaturesRequired,
               // Stamped by the gateway from its own clock, in unix milliseconds on the round tick grid.
               timestamp: Math.floor(Date.now() / ROUND_TICK_MS) * ROUND_TICK_MS },
             signature: { signature: "11".repeat(32), commitment: "22".repeat(20), signersBitmap: "3" }
           },
-          value: "42", fresh: true, configHash: sourceId
+          value: "42", fresh: true
         }
       });
     }
@@ -324,7 +327,7 @@ describe("executeSessionRound", () => {
     const { sessionToken } = await completeSession(env.ctx, { challenge: begun.challenge, signature: await wallet.sign(begun.message) });
     return { wallet, token: sessionToken };
   }
-  const round = { apiConfig, signaturesRequired: 2 };
+  const round = { source, signaturesRequired: 2 };
 
   it("runs a round with the token alone: no identity, signature or timestamp in the body", async () => {
     const env = await setup();
@@ -335,7 +338,8 @@ describe("executeSessionRound", () => {
     expect(result).toMatchObject({ sourceId, value: "42", registryVersion: 3, signaturesRequired: 2 });
     expect(env.rounds).toHaveLength(1);
     expect(env.rounds[0]!.token).toBe(token);
-    expect(Object.keys(env.rounds[0]!.body).sort()).toEqual(["apiConfig", "registryVersion", "signaturesRequired"]);
+    expect(Object.keys(env.rounds[0]!.body).sort()).toEqual(["registryVersion", "signaturesRequired", "source", "sourceId"]);
+    expect(env.rounds[0]!.body).toMatchObject({ source: JSON.parse(feedSource.canonical), sourceId: `0x${sourceId}` });
   });
 
   it("answers session_invalid for a token the gateway does not know", async () => {
@@ -409,15 +413,28 @@ describe("executeSessionRound", () => {
     expect(normalized.remediation).not.toMatch(/source/);
   });
 
-  it("refuses an aggregate for another source, and a caller sourceId that does not match apiConfig", async () => {
+  it("refuses an aggregate for another source, and a caller sourceId that does not match source", async () => {
     const env = await setup();
     const { token } = await signedIn(env);
-    await expect(executeSessionRound(env.ctx, { ...round, sessionToken: token, sourceId: "ff".repeat(32) })).rejects.toThrow(/sourceId does not match apiConfig/);
+    await expect(executeSessionRound(env.ctx, { ...round, sessionToken: token, sourceId: "ff".repeat(32) })).rejects.toThrow(/sourceId does not match source/);
     expect(env.rounds).toHaveLength(0);
 
     env.onRound = () =>
       json(200, { status: "completed", data: { attestation: { payload: { sourceId: "cd".repeat(32), registryVersion: 3, signaturesRequired: 2, timestamp: Date.now() }, signature: {} }, value: "1" } });
     await expect(executeSessionRound(env.ctx, { ...round, sessionToken: token })).rejects.toThrow(/different round/);
+  });
+
+  it("refuses a source the SDK rejects, naming the field, before the gateway is asked", async () => {
+    const env = await setup();
+    const { token } = await signedIn(env);
+    const bad = structuredClone(source) as Record<string, unknown>;
+    delete bad.assert;
+
+    await expect(executeSessionRound(env.ctx, { ...round, source: bad, sessionToken: token })).rejects.toMatchObject({
+      code: "invalid_source",
+      path: "assert"
+    });
+    expect(env.rounds).toHaveLength(0);
   });
 
   it("sends the token to no gateway but the one named and configured", async () => {
@@ -438,7 +455,7 @@ describe("hosted session tools", () => {
     const opened = await callTool("complete_session", { challenge: begun.challenge, signature: await wallet.sign(String(begun.message)) }, env.hosted);
     expect(opened).toMatchObject({ authority: wallet.address, role: "owner", gatewayEndpoint: env.endpoint });
 
-    const live = await callTool("execute_subscription_round", { sessionToken: opened.sessionToken, apiConfig, signaturesRequired: 2, chains: ["evm"] }, env.hosted);
+    const live = await callTool("execute_subscription_round", { sessionToken: opened.sessionToken, source, signaturesRequired: 2, chains: ["evm"] }, env.hosted);
     expect(live).toMatchObject({
       payment: "subscription", value: "42",
       attestation: { payload: { sourceId: `0x${sourceId}`, registryVersion: 3, signaturesRequired: 2 } },
@@ -454,7 +471,7 @@ describe("hosted session tools", () => {
 
     expect(await callToolError("complete_session", { challenge: begun.challenge, signature: "1".repeat(88) }, env.hosted)).toMatchObject({ code: "invalid_signature" });
     expect(await callToolError("complete_session", { challenge: "garbage", signature: "x" }, env.hosted)).toMatchObject({ code: "invalid_challenge" });
-    expect(await callToolError("execute_subscription_round", { sessionToken: "molpha_sess_unknown", apiConfig, signaturesRequired: 2, chains: ["evm"] }, env.hosted)).toMatchObject({ code: "session_invalid" });
+    expect(await callToolError("execute_subscription_round", { sessionToken: "molpha_sess_unknown", source, signaturesRequired: 2, chains: ["evm"] }, env.hosted)).toMatchObject({ code: "session_invalid" });
   });
 });
 

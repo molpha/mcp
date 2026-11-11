@@ -10,6 +10,7 @@ const messages: Record<string, string> = {
   invalid_request: "Invalid tool request. Check the tool input schema.",
   guardrail_exceeded: "The configured execution or spending limit was exceeded.",
   determinism_rejected: "Source configuration did not pass determinism checks.",
+  invalid_source: "The source document was rejected. Fix the field named by details.path: every key of every object must be present (an absent optional is null) and every number must be a string.",
   invalid_config: "Server configuration is unavailable or invalid.",
   missing_config: "Required server configuration is unavailable.",
   invalid_challenge: "The challenge was not issued by this server or has been altered. Call the prepare tool again.",
@@ -24,6 +25,7 @@ const messages: Record<string, string> = {
   payment_required: "The gateway rejected the payment requirements.",
   payment_outcome_unknown: "A payment may have settled. Reconcile the transfer before retrying.",
   round_conflict: `This wallet already has a round for this feed (the same source and quorum) in the current ${ROUND_TICK_MS} ms tick. Nothing was reserved. Requests for one feed in the same tick share a round, and a feed runs at most ${1000 / ROUND_TICK_MS} rounds per second. Wait at least ${ROUND_TICK_MS} ms, then call again for a new round.`,
+  source_failed: "The nodes could not produce a value from this source (the message names the stage and the input). The same request fails the same way until the source or its data changes; fix the source or wait for the upstream. Nothing was settled.",
   round_timeout: "The upstream was at capacity or timed out. A gateway answers this way when it reaches its own capacity limit (nothing was reserved), or when too few nodes completed the round. A submitted operation may still complete; wait, and do not retry blindly.",
   unauthorized: "The gateway refused the request's authentication.",
   forbidden: "The gateway denied this operation: the subscription is missing, expired or out of quota, or the delegate has no access. See describe_access.",
@@ -32,11 +34,16 @@ const messages: Record<string, string> = {
   output_schema_mismatch: "The upstream result did not match the expected output schema. Do not retry a paid operation without reconciliation."
 };
 
+/** A source path (`inputs.px.read.url`, `transform.args[0]`): the caller's own field names, safe to hand back. */
+const SOURCE_PATH = /^[A-Za-z0-9_.$\[\]-]{0,200}$/;
+
 export function safeError(error: unknown): Record<string, unknown> {
   const value = record(error);
   const status = typeof value?.status === "number" ? value.status : undefined;
   const code = status === 429 ? "rate_limited" : typeof value?.code === "string" && Object.hasOwn(messages, value.code) ? value.code : "internal_error";
+  const sourcePath = code === "invalid_source" ? record(value?.details)?.path : undefined;
   return { code, message: messages[code], ...(status ? { status } : {}),
+    ...(typeof sourcePath === "string" && SOURCE_PATH.test(sourcePath) ? { details: { path: sourcePath } } : {}),
     ...(code === "payment_outcome_unknown" ? {
       details: safeReconciliation(record(value?.details)),
       remediation: "Check the payer's transfers for this memo before attempting another payment."
@@ -85,6 +92,31 @@ export function sanitizeToolResult(result: JsonToolResult, lifecycle?: RequestLi
   return { content: [{ type: "text", text: JSON.stringify(structured) }], structuredContent: structured };
 }
 
+/**
+ * Whether any http input of the source sets a header that looks like a credential. The source is the caller's
+ * own, unvalidated here (the tool validates it), so every step tolerates any shape. Header names are the
+ * format's lowercase tokens; the match is case-insensitive anyway.
+ */
+function sourceHasCredentialHeaders(source: unknown): boolean {
+  const inputs = record(record(source)?.inputs);
+  if (!inputs) return false;
+  return Object.values(inputs).some(input => {
+    const read = record(record(input)?.read);
+    const headers = record(read?.headers);
+    return record(input)?.kind === "http" && headers !== undefined
+      && Object.keys(headers).some(key => /authorization|cookie|api[-_]?key|token|secret/i.test(key));
+  });
+}
+
+/** Whether the source carries a `{{secret.NAME}}` placeholder anywhere. The source is the caller's own, unvalidated here. */
+function sourceHasSecretPlaceholders(source: unknown): boolean {
+  try {
+    return JSON.stringify(source ?? null).includes("{{secret.");
+  } catch {
+    return false;
+  }
+}
+
 export function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
@@ -103,9 +135,14 @@ export function hostedToolServer(server: ToolServer, catalog: Map<string, Hosted
       let result: JsonToolResult;
       try { result = sanitizeToolResult(await handler(args), lifecycle); }
       catch { result = { isError: true, content: [{ type: "text", text: JSON.stringify(safeError(undefined)) }] }; }
-      const headers = record(record(args.apiConfig)?.headers);
-      if (!result.isError && headers && Object.keys(headers).some(key => /authorization|cookie|api[-_]?key|token|secret/i.test(key))) {
-        const warnings = ["Source API credentials in headers are exposed to the hosted server and downstream hops. Use self-hosted mode for private APIs."];
+      const warnings: string[] = [];
+      if (!result.isError && sourceHasCredentialHeaders(args.source)) {
+        warnings.push("Source API credentials in headers are exposed to the hosted server and downstream hops. Use self-hosted mode for private APIs.");
+      }
+      if (!result.isError && sourceHasSecretPlaceholders(args.source)) {
+        warnings.push("This source has {{secret.*}} placeholders, but the hosted server accepts no secrets (no encryptSecrets): a round run here would send them unfilled. Use self-hosted mode with a signer for private sources.");
+      }
+      if (warnings.length > 0) {
         result.structuredContent = { ...result.structuredContent, warnings };
         result.content = [{ type: "text", text: JSON.stringify(result.structuredContent) }];
       }

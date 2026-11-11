@@ -98,7 +98,7 @@ contract Consumer {
 - Install: package `@molpha/evm-verifier` (a release candidate), remapping `@molpha/evm-verifier/=lib/evm-verifier/src/`. The library's `MolphaAddresses.VERIFIER` is `address(0)` until an audited build is deployed, so pass the verifier address to the constructor yourself and verify it.
 - Tests: `MockVerifier` (configurable `(ok, code)`, no crypto) and `MolphaTestSigner` (real keys and signatures, Foundry). A mock cannot record arguments because `verify` is `view`; use `vm.expectCall`.
 
-Value-decoding helpers (`asUint256`, `asInt256`, `asBool`, `asAddress`) reject non-canonical encodings. Scale and decimals are part of the source's configuration, not of the value: a tolerance-mode source commits its `decimals` in the `sourceId`; an exact-mode source's scale is off-chain (see `apiconfig.md`).
+Value-decoding helpers (`asUint256`, `asInt256`, `asBool`, `asAddress`) reject non-canonical encodings. The scale and type are part of the source, not of the value: the source declares its `output` (type and `decimals`), the `sourceId` commits to it, and the attestation carries only the `sourceId` and 32 bytes. A consumer that pins the `sourceId` therefore knows how to read the bytes; keep the source document next to the pinned id (see `source.md`).
 
 ## Calling from a client (TypeScript, SDK)
 

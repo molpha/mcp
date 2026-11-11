@@ -51,7 +51,7 @@ export const verifierArgs = () =>
         args: z.object({
           attestation: z.object({
             payload: z.object({
-              value: z.string().describe("bytes32 packed value, 0x hex (a signed int256 in tolerance mode)."),
+              value: z.string().describe("bytes32 packed value, 0x hex. Its meaning is the source's declared output (for example a signed int256 scaled by 10^decimals)."),
               sourceId: z.string().describe("bytes32, 0x hex."),
               registryVersion: z.number().int(),
               signaturesRequired: z.number().int(),
@@ -77,7 +77,7 @@ export const verifierArgs = () =>
         args: z.object({
           attestation: z.object({
             payload: z.object({
-              value: z.string().describe("u256, decimal string (a signed int256's two's-complement bits in tolerance mode)."),
+              value: z.string().describe("u256, decimal string: the 32 signed bytes as an integer (an int256 output's two's-complement bits)."),
               source_id: z.string().describe("u256, decimal string."),
               registry_version: z.number().int(),
               signatures_required: z.number().int(),
@@ -112,10 +112,10 @@ export const feedAccount = () =>
   z
     .object({
       sourceId: z.string().describe("0x-prefixed hex."),
-      value: z.string().describe("Stored bytes, 0x-prefixed hex: the raw payload or its keccak digest, per valueKind."),
+      value: z.string().describe("Stored bytes, 0x-prefixed hex: the signed 32-byte value. A keccak256 output's value is a hash (valueKind \"hash\" when its preimage was submitted with it)."),
       valueKind: z
         .union([z.enum(["value", "hash"]), z.record(z.unknown())])
-        .describe("Attested encoding of `value` — not a scale hint. Molpha attests no decimals."),
+        .describe("Whether `value` is the signed value itself or the hash of a preimage that was checked at submit. Not a scale hint: the feed account stores no decimals; the scale is the source's declared output.decimals (pass `source` to describe_feed or get_latest_value to read it, attested by the sourceId)."),
       valueKindMeaning: z.string().optional(),
       // The program's feed account names this `timestamp`, in unix MILLISECONDS (the gateway assigns it); the
       // program this server was first built against called it `timestamp`, in seconds. Whichever the
@@ -130,6 +130,20 @@ export const feedAccount = () =>
       bump: z.number().int().optional()
     })
     .passthrough();
+
+/**
+ * How to read a feed's stored 32 bytes, from the declared `output` of the source that was passed. The
+ * output is part of the source and so of the sourceId, which every signature covers: it is attested.
+ */
+export const valueEncoding = () =>
+  z.object({
+    attested: z.boolean().describe("true: the output below is the source's own, committed by the sourceId that every signature covers."),
+    source: z.string(),
+    encoding: z.string().describe("The source's output.type: int256, uint256, bool, bytes32, string32 or keccak256."),
+    decimals: z.number().int().optional().describe("int256/uint256: the stored integer is the value scaled by 10^decimals."),
+    decodedValue: z.string().optional().describe("When the feed exists: the stored value rendered by that output (a scaled decimal, true/false, text or hex)."),
+    note: z.string()
+  });
 
 /** What a Solana submit returns (submit_attestation, or a round tool's autoSubmit). */
 export const submitOutcome = () =>

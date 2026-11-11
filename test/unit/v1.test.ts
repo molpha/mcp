@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeSignedResult, toAttestationArtifact } from "../../src/artifacts.js";
 import { loadConfig, type MolphaConfig } from "../../src/config.js";
-import { checkApiConfigDeterminism } from "../../src/determinism.js";
+import { checkSourceDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
 import { decodeFeedValueKind, presentFeed } from "../../src/feed.js";
 import { toCanonicalHex } from "../../src/hex.js";
@@ -15,7 +15,10 @@ import {
   withX402DailySpendSerialization,
   x402SpentToday
 } from "../../src/guardrails.js";
+import { parseSource } from "../../src/source.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
+import { CANONICAL_VECTORS } from "./source-vectors.js";
+import { priceSource } from "./sources.js";
 
 describe("loadConfig", () => {
   it("parses endpoint, verifier networks, and guardrails", () => {
@@ -179,25 +182,39 @@ describe("decodeFeedValueKind", () => {
   });
 });
 
-describe("checkApiConfigDeterminism", () => {
-  it("warns on live-drifting URLs", () => {
-    const result = checkApiConfigDeterminism({
-      url: "https://api.example.com/ticker/BTC",
-      responseParser: "$.price"
-    });
+describe("checkSourceDeterminism", () => {
+  const check = (source: { doc: Record<string, unknown> }) => checkSourceDeterminism(parseSource(source.doc));
+
+  it("warns on live-drifting URLs, naming the input", async () => {
+    const result = await check(priceSource({ url: "https://api.example.com/ticker/BTC" }));
 
     expect(result.ok).toBe(false);
-    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings).toEqual([expect.stringContaining('Input "px"')]);
   });
 
-  it("passes settled sources", () => {
-    const result = checkApiConfigDeterminism({
-      url: "https://api.example.com/v1/finalized/rate",
-      responseParser: "$.rate"
-    });
+  it("passes settled sources", async () => {
+    const result = await check(priceSource({ url: "https://api.example.com/v1/finalized/rate" }));
 
     expect(result.ok).toBe(true);
     expect(result.warnings).toEqual([]);
+  });
+
+  it("checks every http input, and nothing about a pinned chain read", async () => {
+    const chainOnly = parseSource(JSON.parse(CANONICAL_VECTORS.find((v) => v.name === "evm-call-sig")!.input));
+
+    expect(await checkSourceDeterminism(chainOnly)).toEqual({ ok: true, warnings: [] });
+  });
+
+  it("flags an svm account read through the SDK's lint, in exact mode only", async () => {
+    const svm = JSON.parse(CANONICAL_VECTORS.find((v) => v.name === "svm-layout")!.input) as Record<string, unknown>;
+
+    const exact = await checkSourceDeterminism(parseSource(svm));
+    expect(exact.ok).toBe(false);
+    expect(exact.warnings[0]).toContain("written every slot");
+
+    // Tolerance needs an int256 output, which this source has.
+    const median = { ...svm, aggregation: { mode: "tolerance", rule: "median", maxDeviationBps: "50", maxAgeMs: "2000" } };
+    expect(await checkSourceDeterminism(parseSource(median))).toEqual({ ok: true, warnings: [] });
   });
 });
 
@@ -270,6 +287,22 @@ describe("normalizeError", () => {
     const normalized = normalizeError(error);
     expect(normalized.code).toBe("forbidden");
     expect(normalized.remediation).toContain("execute_x402_round");
+  });
+
+  it("maps a node's source failure behind a 503 to source_failed, not to a capacity timeout", () => {
+    for (const message of [
+      "Gateway unavailable (503): node round failed: source assertion: assertion 0 failed (output 1000)",
+      "Gateway unavailable (503): nodes failed to fetch API: api response status 401:  (input b)",
+      'Gateway unavailable (503): nodes failed to fetch API: field value: key "nope" not found (input px)'
+    ]) {
+      const normalized = normalizeError(Object.assign(new Error(message), { status: 503 }));
+      expect(normalized).toMatchObject({ code: "source_failed", status: 503 });
+      expect(normalized.remediation).toMatch(/names the stage/);
+    }
+    // A capacity refusal and an unrelated node failure stay what they were.
+    for (const message of ["Gateway unavailable (503): gateway at capacity", "Gateway unavailable (503): node round failed: insufficient partial sigs"]) {
+      expect(normalizeError(Object.assign(new Error(message), { status: 503 })).code).toBe("round_timeout");
+    }
   });
 
   it("maps a gateway 409 to round_conflict, although its message names the subscription", () => {

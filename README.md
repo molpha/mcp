@@ -61,7 +61,7 @@ A subscription round on `mcp.molpha.io` is authorized by a **sign-in session**: 
 | 2 | `begin_session({ address, owner? })` | The `message` to sign and an opaque `challenge` |
 | 3 | The wallet signs `message` | An Ed25519 signature over its exact UTF-8 bytes |
 | 4 | `complete_session({ challenge, signature })` | A `sessionToken` and its `expiresAt` |
-| 5 | `execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` | The signed attestation and verifier arguments |
+| 5 | `execute_subscription_round({ sessionToken, source, signaturesRequired, chains })` | The signed attestation and verifier arguments |
 
 - **Who can sign in.** The subscription owner, or a delegate the owner added with `add_delegate`. A delegate passes the owner's address as `owner`.
 - **How to sign.** The message as returned: raw UTF-8, no prefix, no envelope, no trailing newline. The signature may be base58, base64 or hex. `solana sign-offchain-message` wraps the text and is refused with `invalid_signature`.
@@ -105,20 +105,20 @@ With no signer configured the server starts **read-only** and offers only the re
 | Tool | Access | Description |
 | --- | --- | --- |
 | `get_capabilities` | Read | Run level, program id, registry version, nodes, gateways, chains, verifier addresses, x402 caps and source-payment policy. |
-| `derive_source_id` | Read, local | Derive an `apiConfig`'s `sourceId` ([how](docs/reference.md#how-sourceid-is-derived)). No transaction, no wallet. |
-| `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. |
-| `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account. |
+| `derive_source_id` | Read, local | Validate a `source` document and derive its `sourceId` ([how](docs/reference.md#how-sourceid-is-derived)): the canonical JSON, the declared output, determinism warnings. No transaction, no wallet. |
+| `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass the `source` to read the stored value by its declared output. |
+| `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account; with the `source`, rendered by its declared output. |
 | `describe_access` | Read | Whether a wallet is a subscription owner or delegate, with the plan's and the delegate's limits. |
 | `get_x402_status` | Read | Quote the next x402 round, show where payment goes, and read a payer's USDC balance and remaining daily budget. |
 | `list_providers` | Read | The data providers the gateway integrates and the flows it serves ([providers](docs/reference.md#integrated-providers)). |
-| `get_provider` | Read | One provider's flows, disclosure and ready-made feeds, each with a complete `apiConfig` and `sourceId`. |
+| `get_provider` | Read | One provider's flows, disclosure and ready-made feeds, each with a complete `source` and `sourceId`. |
 | `quote_source_payment` | Read | Price a paywalled source with one unpaid request, including the worst-case total. |
 | `execute_subscription_round` | Spends quota | Run a round paid from a USDC subscription; return the signed attestation plus verifier arguments. `autoSubmit: true` settles Solana in the same call. |
 | `execute_x402_round` | Spends USDC | Run a round paid per request over [x402](docs/reference.md#x402-pay-per-request); same output. |
 | `build_verifier_calldata` | Read, local | Build EVM/Starknet verifier address and `verify()` call arguments. Calldata only: it verifies nothing. |
 | `submit_attestation` | Write | Submit a signed attestation to Solana. Accepts a round tool's output unmodified. |
 
-On `mcp.molpha.io` the one-call round and submit tools become prepare/sign/execute pairs ([above](#mcpmolphaio)). Every tool returns `structuredContent` and carries MCP annotations; see [Structured output and annotations](docs/reference.md#structured-output-and-annotations). For tolerance-mode aggregation and the full configuration table, see [docs/reference.md](docs/reference.md).
+On `mcp.molpha.io` the one-call round and submit tools become prepare/sign/execute pairs ([above](#mcpmolphaio)). Every tool returns `structuredContent` and carries MCP annotations; see [Structured output and annotations](docs/reference.md#structured-output-and-annotations). For the source format, tolerance-mode aggregation and the full configuration table, see [docs/reference.md](docs/reference.md#sources).
 
 **Round timing.** Rounds run on a fixed 100 ms tick. Requests for one feed (the same source and quorum) inside one tick share a round, so a feed runs at most 10 rounds per second, and one wallet gets at most one round per tick for a feed: a second request in the same tick is answered with HTTP 409, which the round tools retry a tick later before failing with `round_conflict`. See [Round timing](docs/reference.md#round-timing).
 
@@ -159,11 +159,11 @@ npx -y @molpha/mcp@0.2.0 provision subscribe --plan Basic --max-price-usdc 20000
 
 > **Discover.** Use Molpha to inspect the current oracle capabilities. Summarize the registry version, node count, chains, gateways, and verifier addresses. Make no writes.
 
-> **Derive.** Derive a Molpha sourceId for `https://api.example.com/v1/finalized/price` using the JSON path `$.price`. Show me the canonical JSON and the sourceId. Do not send a transaction.
+> **Derive.** Derive a Molpha sourceId for a source that reads `https://api.example.com/v1/finalized/price`, takes the JSON value at `$.price` and signs it as an int256 with 8 decimals. Show me the source, the canonical JSON and the sourceId. Do not send a transaction.
 
 > **Fetch.** For that source, run a subscription round with 3 signatures for the EVM chain. Summarize the value, timestamp, registry version and verifier call. Treat the signed attestation as the trust anchor, not the value alone.
 
-> **Provider.** List the integrated data providers, describe TickerLayer's `btcusd` feed, and run it with 3 signatures for Solana, passing the `apiConfig` exactly as given.
+> **Provider.** List the integrated data providers, describe TickerLayer's `btcusd` feed, and run it with 3 signatures for Solana, passing the feed's `source` exactly as given.
 
 > **Check spend.** Call `get_x402_status` for 3 signatures. Tell me the price, where payment goes, and my USDC balance before I authorize an `execute_x402_round`.
 
@@ -187,7 +187,7 @@ flowchart LR
     Server --> Args["EVM / Starknet verifier args,<br/>or submit_attestation on Solana"]
 ```
 
-The server is an adapter and policy boundary, not a new source of truth. Oracle nodes independently fetch the committed API configuration and produce one aggregate signature after reaching quorum; the server returns that self-contained signed artifact. Consumers trust a value only after verifying the signed payload against its registry version.
+The server is an adapter and policy boundary, not a new source of truth. Oracle nodes independently evaluate the committed source (their own HTTP fetches and chain reads) and produce one aggregate signature after reaching quorum; the server returns that self-contained signed artifact. Consumers trust a value only after verifying the signed payload against its registry version.
 
 ## Development
 

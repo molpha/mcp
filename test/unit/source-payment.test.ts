@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMolphaContext, getSharedRuntime, type MolphaContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
 import { resetGuardrailCounters, sourceSpentToday } from "../../src/guardrails.js";
+import { httpAndEvmSource, priceSource, twoHttpSource } from "./sources.js";
 import { callTool, callToolError } from "./tool-harness.js";
 
 vi.mock("../../src/clients.js", async (importOriginal) => ({
@@ -20,12 +21,9 @@ const USDC_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const SOURCE_URL = "https://x402-testnet.tickerlayer.com/v1/crypto/trade/last/BTCUSD";
 
-const apiConfig = {
-  url: SOURCE_URL,
-  method: "GET" as const,
-  responseParser: "$.price",
-  aggregation: { mode: "tolerance" as const, rule: "median" as const, maxDeviationBps: 50, maxAgeMs: 2000, numeric: { type: "int256" as const, decimals: 8 } }
-};
+// A provider-style feed: one http input, median tolerance, int256 at 8 decimals.
+const feed = priceSource({ url: SOURCE_URL, path: "$.price", decimals: 8, tolerance: { maxDeviationBps: "50", maxAgeMs: "2000" } });
+const source = feed.doc;
 
 /** The source's own x402 terms, as a paywalled API answers an unpaid fetch. */
 function source402(overrides: Record<string, unknown> = {}, extensions: Record<string, unknown> | null = { "payment-identifier": { info: { required: true } } }): Response {
@@ -50,11 +48,11 @@ function source402(overrides: Record<string, unknown> = {}, extensions: Record<s
  * skipped, loudly, on an older SDK rather than failing every unrelated build.
  */
 const SDK_CARRIES_PAYMENT_IDENTIFIER = await (async () => {
-  const { probeSource } = (await import("@molpha/sdk")) as unknown as { probeSource: (c: unknown) => Promise<{ paymentIdentifier?: unknown } | null> };
+  const { probeSource } = (await import("@molpha/sdk")) as unknown as { probeSource: (source: unknown) => Promise<{ paymentIdentifier?: unknown } | null> };
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => source402()) as typeof fetch;
   try {
-    return (await probeSource({ url: SOURCE_URL, responseParser: "$.price" }))?.paymentIdentifier !== undefined;
+    return (await probeSource(source))?.paymentIdentifier !== undefined;
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -100,7 +98,7 @@ function stubSource(response: () => Response) {
 }
 
 const pay = (maxSpendUsdc: string, extra: Record<string, unknown> = {}) => ({
-  apiConfig, signaturesRequired: 3, chains: ["solana"], sourcePayment: { maxSpendUsdc }, ...extra
+  source, signaturesRequired: 3, chains: ["solana"], sourcePayment: { maxSpendUsdc }, ...extra
 });
 
 /** Everything a tool returned or failed with, as one string: the key must be in none of it. */
@@ -158,7 +156,7 @@ describe("quote_source_payment", () => {
   it("prices the round before anything is paid: per fetch, the nodes that fetch, and the worst case", async () => {
     fakeContext();
     const probes = stubSource(() => source402());
-    const out = await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 });
+    const out = await callTool("quote_source_payment", { source, signaturesRequired: 3 });
 
     expect(probes).toEqual([SOURCE_URL]); // exactly one unpaid request
     expect(out).toMatchObject({
@@ -174,35 +172,77 @@ describe("quote_source_payment", () => {
   it.skipIf(!SDK_CARRIES_PAYMENT_IDENTIFIER)(`says when the source requires a payment identifier${needsPaymentIdentifierSdk}`, async () => {
     fakeContext();
     stubSource(() => source402());
-    expect(await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 })).toMatchObject({ quote: { requiresPaymentIdentifier: true } });
+    expect(await callTool("quote_source_payment", { source, signaturesRequired: 3 })).toMatchObject({ quote: { requiresPaymentIdentifier: true } });
+  });
+
+  it("names the source and the one http input it probed", async () => {
+    fakeContext();
+    stubSource(() => source402());
+    expect(await callTool("quote_source_payment", { source, signaturesRequired: 3 })).toMatchObject({ sourceId: feed.sourceId, url: SOURCE_URL });
+  });
+
+  it("pays a source whose only http input is beside a chain input: a payment names no host, chain reads need none", async () => {
+    fakeContext();
+    const mixed = httpAndEvmSource(SOURCE_URL);
+    const probes = stubSource(() => source402());
+
+    expect(await callTool("quote_source_payment", { source: mixed.doc, signaturesRequired: 3 })).toMatchObject({
+      sourceId: mixed.sourceId, url: SOURCE_URL, paywalled: true
+    });
+    expect(probes).toEqual([SOURCE_URL]);
+  });
+
+  it("refuses a source with two http inputs, naming them, before any request", async () => {
+    fakeContext();
+    const probes = stubSource(() => source402());
+
+    const error = await callToolError("quote_source_payment", { source: twoHttpSource().doc, signaturesRequired: 3 });
+
+    expect(error).toMatchObject({ code: "invalid_source", details: { path: "inputs" } });
+    expect(String(error.message)).toContain("exactly one http input");
+    expect(String(error.message)).toContain("a, b");
+    expect(probes).toEqual([]);
+  });
+
+  it("refuses a source the SDK rejects, with its path", async () => {
+    fakeContext();
+    const probes = stubSource(() => source402());
+    const bad = structuredClone(source) as { output: { decimals: unknown } };
+    bad.output.decimals = 8;
+
+    expect(await callToolError("quote_source_payment", { source: bad, signaturesRequired: 3 })).toMatchObject({
+      code: "invalid_source",
+      details: { path: "output.decimals", errorClass: "number" }
+    });
+    expect(probes).toEqual([]);
   });
 
   it("reports a free source as free", async () => {
     fakeContext();
     stubSource(() => new Response("{}", { status: 200 }));
-    expect(await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 })).toMatchObject({ paywalled: false });
+    expect(await callTool("quote_source_payment", { source, signaturesRequired: 3 })).toMatchObject({ paywalled: false });
   });
 
   it("says why it would not pay: an unlisted network, a price over the cap, no configuration", async () => {
     fakeContext();
     stubSource(() => source402({ network: "eip155:8453", asset: USDC_BASE }));
-    expect(await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 })).toMatchObject({
+    expect(await callTool("quote_source_payment", { source, signaturesRequired: 3 })).toMatchObject({
       policy: { networkAllowed: false, wouldPay: false }
     });
 
     // 0.10 per fetch x 4 = 0.40, above the 0.25 per-round cap.
     stubSource(() => source402({ amount: "100000" }));
-    const dear = await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 });
+    const dear = await callTool("quote_source_payment", { source, signaturesRequired: 3 });
     expect(dear).toMatchObject({ quote: { worstCaseUsdc: "0.4" }, policy: { wouldPay: false } });
     expect(String((dear.policy as { reasons: string[] }).reasons.join(" "))).toContain("per-round cap");
 
     fakeContext({}, ["MOLPHA_SOURCE_PAYER_KEY"]);
     stubSource(() => source402());
-    expect(await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 })).toMatchObject({ policy: { enabled: false, wouldPay: false } });
+    expect(await callTool("quote_source_payment", { source, signaturesRequired: 3 })).toMatchObject({ policy: { enabled: false, wouldPay: false } });
 
     fakeContext();
     stubSource(() => source402({ asset: "0x0000000000000000000000000000000000000001" }));
-    const wrongAsset = await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 });
+    const wrongAsset = await callTool("quote_source_payment", { source, signaturesRequired: 3 });
     expect(wrongAsset).toMatchObject({ policy: { networkAllowed: true, assetAllowed: false, wouldPay: false } });
     expect(String((wrongAsset.policy as { reasons: string[] }).reasons.join(" "))).toContain("only signs USDC");
   });
@@ -215,7 +255,9 @@ describe("execute_subscription_round with sourcePayment", () => {
     const out = await callTool("execute_subscription_round", pay("0.04"));
 
     expect(gateway.requestSignedData).toHaveBeenCalledTimes(1);
-    const sent = gateway.requestSignedData.mock.calls[0]![0] as { maxRetries: number; sourcePayment: { terms: Record<string, unknown>; signer: { address: string } } };
+    const sent = gateway.requestSignedData.mock.calls[0]![0] as { maxRetries: number; source: { idHex: string; canonical: string }; sourcePayment: { terms: Record<string, unknown>; signer: { address: string } } };
+    // The SDK is handed the source this server parsed itself: its ID is the one derived here.
+    expect(sent.source).toMatchObject({ idHex: feed.sourceId, canonical: feed.canonical });
     // No automatic retry once signing starts, and the SDK signs exactly the terms that were vetted.
     expect(sent.maxRetries).toBe(1);
     expect(sent.sourcePayment.terms).toMatchObject({ amount: "10000", network: "eip155:84532" });
@@ -298,6 +340,19 @@ describe("execute_subscription_round with sourcePayment", () => {
       expect(sourceSpentToday()).toBe(40_000n); // the refused round added nothing
     });
 
+    it("when the source has other than one http input, even in a dry run", async () => {
+      const { gateway } = fakeContext();
+      const probes = stubSource(() => source402());
+      const two = twoHttpSource().doc;
+      for (const dryRun of [true, false]) {
+        const error = await callToolError("execute_subscription_round", pay("1", { source: two, dryRun }));
+        expect(error).toMatchObject({ code: "invalid_source" });
+        expect(String(error.message)).toContain("exactly one http input");
+      }
+      expect(probes).toEqual([]);
+      expectNothingPaid(gateway);
+    });
+
     it("with a private source: its secrets cannot be paired with a payment", async () => {
       const { gateway } = fakeContext();
       const probes = stubSource(() => source402());
@@ -348,7 +403,7 @@ describe("execute_subscription_round with sourcePayment", () => {
       Object.assign(new Error("API source requires payment for up to 4 fetches"), { name: "UpstreamPaymentRequiredError", quote: { provider: "tickerlayer", eligibleSetSize: 4 } })
     );
     const error = await callToolError("execute_subscription_round", {
-      apiConfig, signaturesRequired: 3, chains: ["solana"]
+      source, signaturesRequired: 3, chains: ["solana"]
     });
 
     expect(error).toMatchObject({ code: "source_payment_required", details: { provider: "tickerlayer", eligibleSetSize: 4 } });
@@ -363,7 +418,7 @@ describe("execute_subscription_round with sourcePayment", () => {
     stubSource(() => source402());
     const outputs: unknown[] = [
       await callTool("execute_subscription_round", pay("0.04")),
-      await callTool("quote_source_payment", { apiConfig, signaturesRequired: 3 }),
+      await callTool("quote_source_payment", { source, signaturesRequired: 3 }),
       await callTool("get_capabilities", {}),
       await callToolError("execute_subscription_round", pay("0.001"))
     ];

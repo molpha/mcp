@@ -15,8 +15,8 @@ On a read-only server, `describe_feed` and `get_latest_value` need an explicit `
 ## Level 0: explore, no wallet
 
 1. `get_capabilities`: program id, registry version, node set, chains, verifier addresses, x402 caps. Read `runLevel`.
-2. `list_providers`, then `get_provider` for one provider: its flows, whether a flow is free (the gateway holds the key) or paid per node fetch, and ready-made feeds with a complete `apiConfig` and `sourceId`.
-3. `derive_source_id` for any `apiConfig` the user describes. It returns the canonical JSON so the preimage can be audited, and warnings about determinism.
+2. `list_providers`, then `get_provider` for one provider: its flows, whether a flow is free (the gateway holds the key) or paid per node fetch, and ready-made feeds with a complete, canonical `source` document and its `sourceId`.
+3. `derive_source_id` for any `source` the user describes. It validates it (a rejection names the field's path), returns the canonical JSON so the preimage can be audited, the declared output, and warnings about determinism.
 4. `describe_feed` or `get_latest_value` with a `submitter` to read a feed. `describe_access` with an `owner` to see whether a wallet has a subscription or is a delegate.
 5. `quote_source_payment` to price a paywalled source, and `get_x402_status` to price an x402 round.
 
@@ -24,15 +24,15 @@ Nothing here signs or spends.
 
 ## Get a signed value (local server, live or dry-run)
 
-1. `derive_source_id`. Fix any determinism warning before paying for a round (see `references/apiconfig.md`).
+1. `derive_source_id`. Fix any determinism warning before paying for a round (see `references/source.md`).
 2. Choose how the round is paid:
    - **Subscription:** `describe_access` with the signer's address shows whether a subscription is active. Use `execute_subscription_round`.
    - **x402 pay-per-request:** no setup. `get_x402_status` for the quoted price, balance and the remaining daily budget. Use `execute_x402_round`.
 3. **Preview first.** Call the round tool with `dryRun: true`. Show the user the preview: source, quorum, payment path, price. For x402 the preview verifies the gateway's payment terms without signing.
 4. Only if the user agrees and `runLevel` is `live`, call it again without `dryRun`. Under `dry-run` the server will not go live; tell the user instead of retrying.
-5. Keep the whole result. It carries the signed attestation and prebuilt verifier arguments for each chain you asked for (`chains`).
+5. Keep the whole result. It carries the signed attestation and prebuilt verifier arguments for each chain you asked for (`chains`). For a `keccak256` output it also carries `valuePreimage`, the only copy of the bytes the signed hash covers: keep it with the attestation.
 
-Quorum: `signaturesRequired` must be at least the protocol minimum (currently 3). Tolerance-mode sources need at least 3.
+Quorum: `signaturesRequired` must be at least the protocol minimum. Tolerance-mode sources (`aggregation` set, output `int256`) need at least 3.
 
 ## Settle on Solana
 
@@ -50,7 +50,7 @@ If `autoSubmit` fails, the round result is still returned in full. Keep it and c
 
 `get_provider` tells you each flow's access mode:
 
-- **Key held by the gateway (free to you).** Pass the feed's `apiConfig` to `execute_subscription_round` **unchanged**, with `signaturesRequired` of at least 3. Adding a header or key changes the `sourceId` and is refused.
+- **Key held by the gateway (free to you).** Pass the feed's `source` to `execute_subscription_round` **unchanged**, with `signaturesRequired` of at least 3. Adding a header or key changes the `sourceId` and is refused. A payment or a provider credential needs a source with exactly one http input.
 - **Paid per node fetch.** Every node that fetches is paid. Call `quote_source_payment` for price and worst case, then `execute_subscription_round` with `sourcePayment: { maxSpendUsdc }` set to a value that covers the worst case. Paying is off unless the server has a payer wallet and an allowed network, and a paywalled source called without `sourcePayment` is never paid. There is no automatic retry once payment is signed.
 
 Describe provider values as attested provider quotes: Molpha attests what the endpoint returned, not that the price is right. `get_provider` returns the provider's own disclosure.
@@ -90,8 +90,10 @@ Sign exactly what was returned, unchanged. Do not broadcast the x402 transfer yo
 | `source_payment_disabled` | No payer wallet or allowed network configured | Explain the server settings; do not ask for the key in chat |
 | `payment_outcome_unknown` | A payment may have settled | Stop. Do not pay again. Check the memo in the signer's USDC account |
 | `guardrail_exceeded` | A configured cap was reached | Report it; wait or let the user change the cap |
-| `determinism_rejected` | The source looks live-drifting | Use a settled source, or tolerance mode (`references/apiconfig.md`) |
+| `determinism_rejected` | The source looks live-drifting | Use a settled source, a pinned chain read, or tolerance mode (`references/source.md`) |
+| `invalid_source` | The source document was rejected; `details.path` names the field (a number written as a number, a missing key, an unknown key) | Fix that field and call `derive_source_id` again. Nothing was sent or spent |
 | `round_conflict` | HTTP 409: this wallet already has a round for this feed (the same source and quorum) in the current 100 ms tick, or an x402 payment already reserved a round. Requests in one tick share a round; a feed runs at most 10 rounds per second | Wait at least 100 ms, then call again for a new round. An x402 call signs a new payment |
+| `source_failed` | HTTP 503 with a node's stage and reason (`fetching data`, `source assertion`, `parsing source`, ...): the nodes could not produce a value from the source | Fix the source or wait for the upstream; the same request fails the same way. Nothing was settled |
 | `round_timeout` | HTTP 503: usually the gateway's own capacity limit (`gateway at capacity`; nothing was reserved), otherwise too few nodes completed the round. Or the upstream timed out | Wait; do not retry at once. The round may still complete: read state before any retry |
 | `invalid_config` | A setting is wrong, often the gateway URL or authority | Report the message |
 | `session_invalid`, `sign_in_rejected` | Hosted sign-in expired or was refused | Call `begin_session` again |

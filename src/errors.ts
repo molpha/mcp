@@ -36,7 +36,8 @@ const OWN_CODES = new Set([
   "sessions_unavailable",
   "source_payment_disabled",
   "source_payment_refused",
-  "dry_run_locked"
+  "dry_run_locked",
+  "invalid_source"
 ]);
 
 /** What to do next, for the own codes that have a clear next step. */
@@ -45,16 +46,36 @@ const OWN_REMEDIATION: Record<string, string> = {
     "Paying a source needs a payer wallet and an explicit network allowlist on the server: set MOLPHA_SOURCE_PAYER_KEY (an EVM key) and MOLPHA_SOURCE_PAYMENT_NETWORKS (e.g. eip155:84532 for Base Sepolia). Nothing is paid until both are set.",
   source_payment_refused:
     "Nothing was signed or paid. Call quote_source_payment to see the price, network and worst case, then retry with a sourcePayment.maxSpendUsdc that covers it, if it is within this server's caps.",
+  invalid_source:
+    "Fix the field named by details.path and send the source again. Every key of every object must be present (an absent optional is null) and every number must be a string, e.g. \"8\" and never 8. derive_source_id validates a source without a round, and the molpha skill's references/source.md has worked examples.",
   dry_run_locked:
     "Retry with dryRun: true (or omit it) to preview. To run live, the user must set MOLPHA_DRY_RUN=false (or remove it) in the server's config and restart it; do not ask for a per-call override."
 };
 
+/** The gateway's wording when the nodes' run of a source failed: the stage prefixes of the node client (docs/source-format.md, "Failures"). */
+const NODE_SOURCE_FAILURE = /\b(nodes failed to fetch API|parsing source|fetching data|evaluating source|source assertion|encoding output|decrypting source)\b/i;
+
 export function normalizeError(error: unknown): NormalizedToolError {
+  // The SDK's SourceError, from anywhere a source is parsed: the path says which field, and carries no secret.
+  if (error instanceof Error && error.name === "SourceError" && typeof (error as { path?: unknown }).path === "string") {
+    const { path, errorClass } = error as Error & { path: string; errorClass?: unknown };
+    return {
+      code: "invalid_source",
+      message: error.message,
+      details: { path, ...(typeof errorClass === "string" ? { errorClass } : {}) },
+      remediation: OWN_REMEDIATION.invalid_source as string
+    };
+  }
+
   const ownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
   if (typeof ownCode === "string" && OWN_CODES.has(ownCode)) {
+    const { path, errorClass } = error as { path?: unknown; errorClass?: unknown };
     return {
       code: ownCode,
       message: error instanceof Error ? error.message : "Invalid request",
+      ...(ownCode === "invalid_source"
+        ? { details: { path: typeof path === "string" ? path : "", ...(typeof errorClass === "string" ? { errorClass } : {}) } }
+        : {}),
       ...(OWN_REMEDIATION[ownCode] ? { remediation: OWN_REMEDIATION[ownCode] } : {})
     };
   }
@@ -120,6 +141,16 @@ export function normalizeError(error: unknown): NormalizedToolError {
       ...withStatus("round_conflict", message, status),
       remediation:
         `This consumer or payer already has a round for this feed (the same source and quorum) in the current ${ROUND_TICK_MS} ms tick, or (x402) this payment already reserved a round. Nothing was reserved for this request. Rounds run on a ${ROUND_TICK_MS} ms tick: requests for one feed in the same tick share a round, so a feed runs at most ${1000 / ROUND_TICK_MS} rounds per second and one consumer gets at most one round per tick. Wait at least ${ROUND_TICK_MS} ms, then call again for a new round; an x402 call signs a new payment.`
+    };
+  }
+
+  // The nodes ran the source and it failed: the gateway reports the node's stage and reason with a 503, which
+  // is not the gateway's capacity limit and not worth waiting for. Checked before the capacity answer below.
+  if (status === 503 && NODE_SOURCE_FAILURE.test(message)) {
+    return {
+      ...withStatus("source_failed", message, status),
+      remediation:
+        "The nodes could not produce a value from this source. The message names the stage (parsing source, fetching data, evaluating source, source assertion, encoding output or decrypting source) and the input. The same request fails the same way until the source or the data it reads changes: fix the source, or wait for the upstream, then call again. Nothing was settled: a subscription round's quota unit is returned, and an x402 payment is not settled but cannot be reused, so sign a new one for the next attempt."
     };
   }
 

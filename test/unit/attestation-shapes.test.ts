@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flattenAttestation, normalizeSignedResult, toSdkAttestation } from "../../src/artifacts.js";
+import { flattenAttestation, normalizeSignedResult, toAttestationArtifact, toSdkAttestation } from "../../src/artifacts.js";
 
 const payload = {
   value: "ab".repeat(32),
@@ -32,17 +32,59 @@ describe("attestation shapes", () => {
     });
   });
 
-  it("flattens the gateway body (attestation.signature / commitment) and keeps tolerance metadata", () => {
-    const aggregation = { mode: "tolerance", rule: "median" };
+  it("flattens the gateway body (attestation.signature / commitment), which carries no configHash or aggregation", () => {
     const flat = flattenAttestation({
       attestation: { payload, signature: { signature: "22".repeat(32), commitment: "33".repeat(20), signersBitmap: "e" } },
       value: "42",
-      fresh: true,
-      configHash: payload.sourceId,
-      aggregation
+      fresh: true
     });
 
-    expect(flat).toMatchObject({ s: "22".repeat(32), commitmentAddr: "33".repeat(20), valuePacked: payload.value, configHash: payload.sourceId, aggregation });
+    expect(flat).toEqual({
+      sourceId: payload.sourceId,
+      value: "42",
+      valuePacked: payload.value,
+      timestamp: 1_700_000_000,
+      registryVersion: 4,
+      signaturesRequired: 3,
+      signersBitmap: "e",
+      s: "22".repeat(32),
+      commitmentAddr: "33".repeat(20),
+      fresh: true
+    });
+    expect(flat).not.toHaveProperty("configHash");
+    expect(flat).not.toHaveProperty("aggregation");
+  });
+
+  it("keeps a keccak256 output's preimage, in either shape, and normalizes its spelling", () => {
+    const gateway = flattenAttestation({
+      attestation: { payload, signature: { signature: "22".repeat(32), commitment: "33".repeat(20), signersBitmap: "e" } },
+      value: `0x${payload.value}`,
+      fresh: true,
+      valuePreimage: "0x68656C6C6F"
+    });
+    const sdk = flattenAttestation({
+      payload,
+      signature: { s: "22".repeat(32), commitmentAddr: "33".repeat(20), signersBitmap: "e" },
+      value: "x",
+      fresh: true,
+      valuePreimage: "0x68656c6c6f"
+    });
+
+    expect(gateway.valuePreimage).toBe("0x68656C6C6F");
+    expect(sdk.valuePreimage).toBe("0x68656c6c6f");
+    expect(normalizeSignedResult(gateway).valuePreimage).toBe("0x68656c6c6f");
+    expect(normalizeSignedResult({ ...gateway, valuePreimage: "68656c6c6f" }).valuePreimage).toBe("0x68656c6c6f");
+    expect(() => normalizeSignedResult({ ...gateway, valuePreimage: "0xabc" })).toThrow(/valuePreimage/);
+    expect(toSdkAttestation(normalizeSignedResult(gateway))).toMatchObject({ valuePreimage: "0x68656c6c6f" });
+    expect(toAttestationArtifact(normalizeSignedResult(gateway))).toMatchObject({ valuePreimage: "0x68656c6c6f" });
+  });
+
+  it("leaves no preimage field where there is none", () => {
+    const flat = normalizeSignedResult({ sourceId: "1", value: "1", valuePacked: "2", s: "3", commitmentAddr: "4", signersBitmap: "5", timestamp: 1, valuePreimage: "" });
+
+    expect(flat).not.toHaveProperty("valuePreimage");
+    expect(toSdkAttestation(flat)).not.toHaveProperty("valuePreimage");
+    expect(toAttestationArtifact(flat)).not.toHaveProperty("valuePreimage");
   });
 
   it("leaves a flat result alone, and normalizes hex widths for every shape", () => {

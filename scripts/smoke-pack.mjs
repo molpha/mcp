@@ -31,6 +31,22 @@ function check(name, ok, detail = "") {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${!ok && detail ? `\n       ${detail}` : ""}`);
 }
 
+/** A valid source document (every key present, every number a string); it is never fetched here. */
+const SMOKE_SOURCE = {
+  v: "1",
+  inputs: {
+    px: {
+      kind: "http",
+      read: { method: "GET", url: "https://example.invalid/rate", headers: {}, body: null },
+      decode: { format: "json", fields: { rate: { path: "$.rate" } } }
+    }
+  },
+  transform: { op: "rescale", args: [{ ref: "px.rate" }], scale: "8", round: "halfEven" },
+  assert: [],
+  output: { type: "int256", decimals: "8" },
+  aggregation: null
+};
+
 const sorted = (values) => [...values].sort();
 const same = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
 
@@ -126,7 +142,7 @@ try {
     const caps = await client.callTool({ name: "get_capabilities", arguments: {} });
     const refused = await client.callTool({
       name: "execute_subscription_round",
-      arguments: { apiConfig: { url: "https://example.invalid/rate", responseParser: "$.rate" }, chains: ["solana"], dryRun: false }
+      arguments: { source: SMOKE_SOURCE, chains: ["solana"], dryRun: false }
     });
     const body = refused.isError ? JSON.parse(refused.content.at(-1).text) : {};
     return { runLevel: caps.structuredContent?.runLevel, isError: refused.isError === true, code: body.code };

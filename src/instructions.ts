@@ -9,6 +9,7 @@ const COMMON =
   "Molpha returns API data signed by a threshold of oracle nodes. Treat the signed attestation, not the bare value, as the trust anchor. " +
   "`get_capabilities` reports `runLevel`: say what this server is allowed to do before acting. " +
   "`build_verifier_calldata` verifies nothing: the caller runs verify() on EVM or Starknet. " +
+  "A feed is a `source` document (inputs, transform, output): every key present, every number a string; `derive_source_id` validates one and derives its sourceId. " +
   "Solana feeds are keyed by (sourceId, signaturesRequired, submitter). " +
   "This release targets Solana Devnet and Sepolia: testnet only.";
 

@@ -38,6 +38,7 @@ import {
   type ExpectedPayment
 } from "../../src/x402-payment.js";
 import { loadChallengeKeys, sealChallenge } from "../../src/challenge.js";
+import { GOLDEN_SOURCE_ID, GOLDEN_CANONICAL, parseTestSource, priceSource, word, type TestSource } from "./sources.js";
 import { callTool, callToolError, collectTools } from "./tool-harness.js";
 
 vi.mock("../../src/clients.js", async (importOriginal) => ({
@@ -51,8 +52,10 @@ const NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111";
 const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 const SETTLEMENT_TX = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
-const apiConfig = { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" };
-const sourceId = requireSdkExport<(config: Record<string, unknown>) => string>("deriveSourceIdString")(apiConfig);
+const feedSource = priceSource({ url: "https://api.example.com/v1/finalized/rate", path: "$.rate" });
+const source = feedSource.doc;
+/** Bare lowercase hex, as the gateway's responses and request bodies spell it. */
+const sourceId = feedSource.bareId;
 const accountsCoder = new BorshAccountsCoder(requireSdkExport<Idl>("MOLPHA_IDL"));
 // x402RoundBase 50_000 + (2 signatures + 1 redundancy) * 5
 const PRICE = 50_015n;
@@ -112,6 +115,10 @@ interface FakeGatewayOptions {
   onPaid?: (attempt: number) => Response | undefined;
   /** Overrides fields of the returned attestation payload. */
   data?: Record<string, unknown>;
+  /** Extra fields of the returned `data`, beside `attestation`, `value` and `fresh` (for example `valuePreimage`). */
+  top?: Record<string, unknown>;
+  /** The packed value the gateway signs. Defaults to 42 at 8 decimals. */
+  value?: string;
 }
 
 interface Env {
@@ -147,8 +154,12 @@ async function setup(
     caps?: Partial<MolphaConfig["x402"]>;
     unreachableFirst?: boolean;
     gateway?: FakeGatewayOptions;
+    /** The source the fake gateway expects. Defaults to the module's price feed. */
+    feed?: TestSource;
   } = {}
 ): Promise<Env> {
+  const feed = options.feed ?? feedSource;
+  const sourceId = feed.bareId;
   const { pinned = true, gatewayStatus = "Active", payerBalance = 5_000_000n } = options;
   endpointCounter += 1;
   const endpoint = `http://gateway-${endpointCounter}.test`;
@@ -247,7 +258,10 @@ async function setup(
 
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     // The gateway assigns the round's timestamp; a body that names one is from the old protocol.
-    expect(Object.keys(body).sort()).toEqual(["apiConfig", "registry_version", "signatures_required"]);
+    expect(Object.keys(body).sort()).toEqual(["registry_version", "signatures_required", "source", "sourceId"]);
+    // The gateway derives the ID itself and refuses a body whose sourceId differs, so the memo cannot name another source.
+    expect(body.sourceId).toBe(`0x${sourceId}`);
+    expect(body.source).toEqual(JSON.parse(feed.canonical));
     // What the gateway's service advertises for this body.
     const requirements = {
       scheme: "exact",
@@ -291,7 +305,7 @@ async function setup(
         data: {
           attestation: {
             payload: {
-              value: "ab".repeat(32),
+              value: gw.value ?? word(42n * 10n ** 8n),
               sourceId,
               registryVersion: body.registry_version,
               signaturesRequired: body.signatures_required,
@@ -303,7 +317,7 @@ async function setup(
           },
           value: "42",
           fresh: true,
-          configHash: sourceId
+          ...gw.top
         }
       },
       { "PAYMENT-RESPONSE": b64({ success: true, transaction: SETTLEMENT_TX, network: NETWORK, payer }) }
@@ -351,7 +365,7 @@ async function setup(
   };
 }
 
-const round = { apiConfig, signaturesRequired: 2 };
+const round = { source, signaturesRequired: 2 };
 
 beforeEach(() => {
   resetGuardrailCounters();
@@ -364,14 +378,25 @@ afterEach(() => {
 describe("x402RequestMemo", () => {
   it("matches the memo the gateway advertises for its service-test fixture", async () => {
     // gateway internal/gateway/features/agentexec/service_test.go TestPaymentMemoGoldenVector:
-    // authority PublicKey{4}, apiConfig {url: https://example.com, method: GET},
-    // quorum 2, registry version 3.
-    const fixtureSourceId = requireSdkExport<(config: Record<string, unknown>) => string>("deriveSourceIdString")({
-      url: "https://example.com",
-      method: "GET",
-      responseParser: ""
+    // authority PublicKey{4}, source sourcetest.New("https://example.com") (the canonical JSON below),
+    // quorum 2, registry version 3, program MoLFnEbuMS5gWnXNfUMLAYSqRM3eQZKWRzjeMQfqbT3.
+    const fixture = parseTestSource({
+      v: "1",
+      inputs: {
+        px: {
+          kind: "http",
+          read: { method: "GET", url: "https://example.com", headers: {}, body: null },
+          decode: { format: "json", fields: { price: { path: "$.price" } } }
+        }
+      },
+      transform: { op: "rescale", args: [{ ref: "px.price" }], scale: "8", round: "halfEven" },
+      assert: [],
+      output: { type: "int256", decimals: "8" },
+      aggregation: null
     });
-    expect(fixtureSourceId).toBe("0b3212de6506ecfabafe4ae5ab26a542b2503f41d88d599dc4cb28d08cab41a3");
+    // The Go reference's bytes, not this SDK's own idea of them.
+    expect(fixture.canonical).toBe(GOLDEN_CANONICAL);
+    expect(fixture.sourceId).toBe(GOLDEN_SOURCE_ID);
     // The gateway's fake chain program id; independent of the SDK's default program address.
     const fixtureProgramId = address("MoLFnEbuMS5gWnXNfUMLAYSqRM3eQZKWRzjeMQfqbT3");
     const gatewayPda = await deriveGatewayPda(address("GcdayuLaLyrdmUu324nahyv33G5poQdLUEZ1nEytDeP"), fixtureProgramId);
@@ -381,11 +406,11 @@ describe("x402RequestMemo", () => {
       x402RequestMemo({
         programId: fixtureProgramId,
         gatewayPda,
-        sourceId: Buffer.from(fixtureSourceId, "hex"),
+        sourceId: Buffer.from(fixture.bareId, "hex"),
         signaturesRequired: 2,
         registryVersion: 3
       })
-    ).toBe("e2eeef1f32716c89df97420bbdd1559755b1ed610c652a3b9fb39aaf2eb40f06");
+    ).toBe("da76b03111b932a5c6d137d7597fdce8fe7b09f36b6c0de6f19903fce1919ef6");
   });
 
   it("commits to the deployment, gateway, source, quorum, and registry version", () => {
@@ -477,7 +502,7 @@ describe("executeX402Round", () => {
 
     const { result, payment } = await executeX402Round(env.ctx, round);
 
-    expect(result).toMatchObject({ sourceId, value: "42", configHash: sourceId, registryVersion: 3, signaturesRequired: 2 });
+    expect(result).toMatchObject({ sourceId, value: "42", registryVersion: 3, signaturesRequired: 2 });
     expect(env.quotes).toHaveLength(1);
     expect(env.payments).toHaveLength(1);
     const [paid] = env.payments;
@@ -582,7 +607,7 @@ describe("executeX402Round", () => {
   it("refuses a quorum below the protocol min_signers before contacting any gateway", async () => {
     const env = await setup();
 
-    await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 1 })).rejects.toThrow(/min_signers 2/);
+    await expect(executeX402Round(env.ctx, { source, signaturesRequired: 1 })).rejects.toThrow(/min_signers 2/);
     expect(env.fetch).not.toHaveBeenCalled();
   });
 
@@ -724,20 +749,93 @@ describe("executeX402Round", () => {
     expect(env.payments).toHaveLength(0);
   });
 
-  it("rejects a caller sourceId that does not match apiConfig before any network call", async () => {
+  it("rejects a caller sourceId that does not match source before any network call", async () => {
     const env = await setup();
 
     await expect(executeX402Round(env.ctx, { ...round, sourceId: "ff".repeat(32) })).rejects.toThrow(
-      /sourceId does not match apiConfig/
+      /sourceId does not match source/
     );
     expect(env.fetch).not.toHaveBeenCalled();
   });
 
-  it("accepts a caller sourceId that matches apiConfig, with or without 0x", async () => {
+  it("accepts a caller sourceId that matches source, with or without 0x", async () => {
     const env = await setup();
 
     await executeX402Round(env.ctx, { ...round, sourceId: `0x${sourceId.toUpperCase()}` });
     expect(env.payments).toHaveLength(1);
+  });
+
+  it("refuses a source the SDK rejects, with the path of the offending field, before any network call", async () => {
+    const env = await setup();
+    const bad = structuredClone(source) as { output: { decimals: unknown } };
+    bad.output.decimals = 8; // a JSON number: every number in a source is a string
+
+    const error = await executeX402Round(env.ctx, { ...round, source: bad }).catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ code: "invalid_source", path: "output.decimals", errorClass: "number" });
+    expect(normalizeError(error)).toMatchObject({ code: "invalid_source", details: { path: "output.decimals", errorClass: "number" } });
+    expect(env.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a tolerance source below three signatures before any network call", async () => {
+    const env = await setup();
+    const tolerance = priceSource({ url: "https://api.example.com/rate", tolerance: { maxDeviationBps: "50", maxAgeMs: "2000" } });
+
+    await expect(executeX402Round(env.ctx, { source: tolerance.doc, signaturesRequired: 2 })).rejects.toThrow(/signaturesRequired >= 3/);
+    expect(env.fetch).not.toHaveBeenCalled();
+  });
+
+  it("renders the value from the source's output, not the gateway's display string", async () => {
+    // 12.345 at 3 decimals, while the gateway's display says something else.
+    const feed = priceSource({ url: "https://api.example.com/v1/finalized/rate", path: "$.rate", decimals: 3 });
+    const env = await setup({ feed, gateway: { value: word(12_345n) } });
+
+    const { result } = await executeX402Round(env.ctx, { source: feed.doc, signaturesRequired: 2 });
+
+    expect(result).toMatchObject({ value: "12.345", valuePacked: word(12_345n) });
+    expect(result).not.toHaveProperty("valuePreimage");
+  });
+
+  describe("a keccak256 output", () => {
+    const preimage = "0x68656c6c6f";
+    const keccakSource = parseTestSource({
+      v: "1",
+      inputs: {
+        t: {
+          kind: "http",
+          read: { method: "GET", url: "https://x.example.com/t", headers: {}, body: null },
+          decode: { format: "text", fields: { sig: { regex: "sig=([0-9a-f]+)" } } }
+        }
+      },
+      transform: { op: "hexBytes", args: [{ ref: "t.sig" }] },
+      assert: [],
+      output: { type: "keccak256", decimals: null },
+      aggregation: null
+    });
+    // keccak256("hello")
+    const hash = "0x1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8";
+
+    it("passes the preimage the gateway returned through, once it hashes to the signed value", async () => {
+      const env = await setup({ feed: keccakSource, gateway: { value: hash, top: { valuePreimage: preimage } } });
+
+      const { result } = await executeX402Round(env.ctx, { source: keccakSource.doc, signaturesRequired: 2 });
+
+      expect(result).toMatchObject({ valuePacked: hash, valuePreimage: preimage, value: hash });
+    });
+
+    it("reports the settled payment when the preimage does not hash to the signed value", async () => {
+      const env = await setup({ feed: keccakSource, gateway: { value: hash, top: { valuePreimage: "0x68656c6c6f21" } } });
+
+      await expect(executeX402Round(env.ctx, { source: keccakSource.doc, signaturesRequired: 2 })).rejects.toThrow(
+        new RegExp(`settled x402 payment ${SETTLEMENT_TX}.*does not hash to the signed value`)
+      );
+    });
+
+    it("refuses a preimage for an output that is not keccak256", async () => {
+      const env = await setup({ gateway: { top: { valuePreimage: preimage } } });
+
+      await expect(executeX402Round(env.ctx, round)).rejects.toThrow(/settled x402 payment.*not keccak256/);
+    });
   });
 
   it("refuses to return an aggregate for a different round", async () => {
@@ -1010,7 +1108,7 @@ describe("hosted x402 policies", () => {
     const env = await setup();
     const { signer, ...unsigned } = env.ctx;
     const sign = vi.spyOn(signer, "signTransaction");
-    const result = await quoteX402Round(unsigned, { apiConfig, signaturesRequired: 2 });
+    const result = await quoteX402Round(unsigned, { source, signaturesRequired: 2 });
     expect(result).toMatchObject({ payment: "x402", quoteOnly: true, dryRun: true,
       paymentRequired: { x402Version: 2, accepts: [{ amount: String(PRICE), payTo: env.treasuryOwner }] } });
     expect(env.payments).toHaveLength(0);
@@ -1020,21 +1118,21 @@ describe("hosted x402 policies", () => {
   it("ignores and never increments process daily spend when hosted caps are disabled", async () => {
     const env = await setup({ caps: { dailyCapsEnabled: false, maxSpendPerDayUsdcAtomic: 1n } });
     recordX402Spend(7n);
-    await executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 });
+    await executeX402Round(env.ctx, { source, signaturesRequired: 2 });
     expect(env.payments).toHaveLength(1);
     expect(x402SpentToday()).toBe(7n);
-    expect(await previewX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).not.toHaveProperty("spentTodayAtomicUsdc");
+    expect(await previewX402Round(env.ctx, { source, signaturesRequired: 2 })).not.toHaveProperty("spentTodayAtomicUsdc");
   });
   it("retains the per-round limit with daily caps disabled", async () => {
     const env = await setup({ caps: { dailyCapsEnabled: false, maxPriceUsdcAtomic: 1n } });
-    await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).rejects.toThrow("per-round");
+    await expect(executeX402Round(env.ctx, { source, signaturesRequired: 2 })).rejects.toThrow("per-round");
     expect(env.payments).toHaveLength(0);
   });
   it("does not start a cancelled round", async () => {
     const env = await setup();
     const controller = new AbortController(); controller.abort();
     env.ctx.lifecycle = { signal: controller.signal };
-    await expect(executeX402Round(env.ctx, { apiConfig, signaturesRequired: 2 })).rejects.toThrow();
+    await expect(executeX402Round(env.ctx, { source, signaturesRequired: 2 })).rejects.toThrow();
     expect(env.quotes).toHaveLength(0);
     expect(env.payments).toHaveLength(0);
   });

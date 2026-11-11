@@ -1,4 +1,12 @@
-/** Heuristic guard for API configs that may not converge across independent nodes. */
+/**
+ * Heuristic guard for sources that may not converge across independent nodes.
+ *
+ * In exact mode every signer must produce the same 32 bytes, so a source that drifts between two nodes'
+ * reads cannot be signed. Median tolerance mode is the supported way to attest such a source, and these
+ * checks stay quiet for it. They are advisory: they catch the common mistake, and prove nothing.
+ */
+import { httpInputs, type ParsedSourceLike } from "./source.js";
+import { requireSdkExport } from "./sdk.js";
 
 const LIVE_DRIFTING_PATTERNS = [
   /\/ticker\b/i,
@@ -16,32 +24,39 @@ export interface DeterminismCheck {
   warnings: string[];
 }
 
-export function checkApiConfigDeterminism(apiConfig: Record<string, unknown>): DeterminismCheck {
-  const warnings: string[] = [];
-  const url = typeof apiConfig.url === "string" ? apiConfig.url : "";
+interface LintFinding {
+  severity: "error" | "warning";
+  input: string;
+  message: string;
+}
 
-  if (!url) {
-    return { ok: false, warnings: ["apiConfig.url is required"] };
-  }
+/**
+ * Warnings for a validated source, in exact mode only:
+ *  - an http input whose URL looks live-drifting;
+ *  - an svm account read (the SDK's `lintSource`): nodes land on slots a few hundred ms apart, so the
+ *    account must change slowly for every node to decode the same bytes.
+ * EVM and Starknet reads are pinned to a block derived from the round's timestamp, which every node
+ * reads identically, so they need no warning.
+ */
+export async function checkSourceDeterminism(source: ParsedSourceLike): Promise<DeterminismCheck> {
+  const warnings: string[] = [];
 
   // Median tolerance mode is the supported way to attest a live-drifting source.
-  const tolerance = apiConfig.aggregation !== undefined && apiConfig.aggregation !== null;
-
-  for (const pattern of tolerance ? [] : LIVE_DRIFTING_PATTERNS) {
-    if (pattern.test(url)) {
-      warnings.push(
-        `URL "${url}" may return live-drifting data. Independent nodes must converge on a byte-identical value to co-sign. Prefer settled/finalized sources.`
-      );
+  if (!source.tolerance) {
+    for (const { name, read } of httpInputs(source)) {
+      for (const pattern of LIVE_DRIFTING_PATTERNS) {
+        if (pattern.test(read.url)) {
+          warnings.push(
+            `Input "${name}": URL "${read.url}" may return live-drifting data. Independent nodes must converge on a byte-identical value to co-sign. Prefer settled/finalized sources, or use tolerance aggregation (signaturesRequired >= 3, output int256).`
+          );
+        }
+      }
     }
-  }
 
-  const method = typeof apiConfig.method === "string" ? apiConfig.method.toUpperCase() : "GET";
-  if (method !== "GET" && method !== "POST") {
-    warnings.push(`method "${method}" is unusual; prefer GET for public deterministic APIs`);
-  }
-
-  if (!apiConfig.responseParser) {
-    return { ok: false, warnings: [...warnings, "apiConfig.responseParser is required"] };
+    const lint = requireSdkExport<(src: ParsedSourceLike) => Promise<LintFinding[]>>("lintSource");
+    for (const finding of await lint(source)) {
+      warnings.push(`Input "${finding.input}": ${finding.message}`);
+    }
   }
 
   return { ok: warnings.length === 0, warnings };
