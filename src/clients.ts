@@ -57,7 +57,7 @@ export function requireSigner(context: RequestContext): asserts context is Reque
 /** Loads only non-credential settings in hosted mode. */
 export function getSharedRuntime(env: NodeJS.ProcessEnv = process.env): SharedRuntime {
   const allowed = ["GATEWAY_ENDPOINTS", "GATEWAY_AUTHORITIES", "SOLANA_RPC", "MOLPHA_EVM_NETWORKS",
-    "MOLPHA_STARKNET_NETWORKS", "MOLPHA_DRY_RUN", "MOLPHA_X402_MAX_PRICE_USDC",
+    "MOLPHA_STARKNET_NETWORKS", "MOLPHA_DATA_URL", "MOLPHA_DRY_RUN", "MOLPHA_X402_MAX_PRICE_USDC",
     "MOLPHA_MAX_EXECUTES_PER_DAY", "MOLPHA_X402_MAX_SPEND_PER_DAY_USDC"];
   const config = loadConfig(Object.fromEntries(allowed.map(key => [key, env[key]])));
   if (env.MOLPHA_HTTP_DAILY_CAPS !== undefined && !["true", "false"].includes(env.MOLPHA_HTTP_DAILY_CAPS)) {

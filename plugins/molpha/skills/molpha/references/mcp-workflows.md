@@ -55,6 +55,33 @@ If `autoSubmit` fails, the round result is still returned in full. Keep it and c
 
 Describe provider values as attested provider quotes: Molpha attests what the endpoint returned, not that the price is right. `get_provider` returns the provider's own disclosure.
 
+## On-chain data: Molpha Data templates
+
+For common on-chain values (token supply and balances, pool prices and TWAPs, LST rates, vault share prices,
+lending rates and health factors) do not write a source by hand: a template builds one.
+
+1. `list_data_templates` (optionally `chain`, `class`): every template, its parameters and its tool.
+2. Call the template's tool, or `read_data` with `template` and `params`. Without `attest` the answer is the
+   Molpha Data service's own unsigned read, free, with the full `source` it read: fine for deciding, never for
+   settling.
+3. For a value a contract can verify, call again with `attest: true` (and `payment: "x402"` to pay per round).
+   The template is derived by the service, re-hashed on this server, and run through
+   `execute_subscription_round` or `execute_x402_round`, so the dry-run lock and the spend caps apply. The answer's
+   `round` is that tool's output: pass it to `submit_attestation` or `build_verifier_calldata` as usual. On the hosted
+   server `attest: true` returns the derived `source` only; run it with the session or x402 tools.
+
+| Tool | Value |
+|---|---|
+| `get_token_supply`, `get_balance`, `get_token_snapshot` | supply; a wallet's balance; supply, decimals and authorities under one signature |
+| `get_pool_price`, `get_median_price`, `get_pool_twap`, `get_pool_reserve`, `get_pool_snapshot`, `get_curve_oracle_price` | spot price, median of 2 to 4 pools, mean tick, one side's reserve, pool state, Curve EMA |
+| `get_lst_rate`, `get_vault_share_price` | LST exchange rate, ERC-4626 assets per share |
+| `get_aave_reserve`, `get_aave_totals`, `get_aave_health_factor`, `get_aave_liquidation_distance` | Aave v3 and Spark rates, totals and utilization, health, distance to liquidation |
+| `get_morpho_market`, `get_morpho_health_factor` | Morpho Blue totals and utilization, health |
+| `compare_oracles`, `reconcile_supply`, `get_chain_head`, `get_storage_slot` | Chainlink or Pyth deviation, bridged supply against its lockbox, pinned block, a storage slot |
+
+A snapshot's `payload` is what is signed (as keccak256); its `fields` are the service's decoding, not signed.
+Prices name their quote token: there is no USD.
+
 ## Hosted server flows
 
 The hosted server holds no key. Each operation is two or three calls around one signature by the caller's wallet:
@@ -96,5 +123,7 @@ Sign exactly what was returned, unchanged. Do not broadcast the x402 transfer yo
 | `source_failed` | HTTP 503 with a node's stage and reason (`fetching data`, `source assertion`, `parsing source`, ...): the nodes could not produce a value from the source | Fix the source or wait for the upstream; the same request fails the same way. Nothing was settled |
 | `round_timeout` | HTTP 503: usually the gateway's own capacity limit (`gateway at capacity`; nothing was reserved), otherwise too few nodes completed the round. Or the upstream timed out | Wait; do not retry at once. The round may still complete: read state before any retry |
 | `invalid_config` | A setting is wrong, often the gateway URL or authority | Report the message |
+| `invalid_data_request` | Molpha Data refused a template's parameters (`details.serviceCode`: `PARAM_INVALID`, `NOT_FOUND`, ...) | Check the parameters with `list_data_templates` |
+| `data_unavailable` | Molpha Data is rate limiting or could not reach a chain (`details.retryAfterSeconds`) | Wait, then call again |
 | `session_invalid`, `sign_in_rejected` | Hosted sign-in expired or was refused | Call `begin_session` again |
 | `invalid_challenge`, `payment_expired`, `transaction_expired` | Hosted prepare output is stale or altered | Call the prepare tool again |

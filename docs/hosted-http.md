@@ -73,6 +73,8 @@ To rotate: set `MOLPHA_HTTP_CHALLENGE_SECRET_PREVIOUS` to the old value and `MOL
 | `source_failed` | HTTP 503 with a node's stage and reason (`fetching data`, `source assertion`, ...): the nodes could not produce a value from the source. Nothing was settled | Fix the source or wait for the upstream; the same request fails the same way until one changes |
 | `round_timeout` | HTTP 503: the gateway reached its own capacity limit (`gateway at capacity`; nothing was reserved), or too few nodes completed the round. Or the upstream timed out | Wait, then read state before retrying; a retry is a new round |
 | `payment_outcome_unknown` | A payment was sent and the answer never arrived | Reconcile with `details` before paying again |
+| `invalid_data_request` | Molpha Data refused a template's parameters (`details.serviceCode`: `PARAM_INVALID`, `NOT_FOUND`, ...) | Check the parameters with `list_data_templates` |
+| `data_unavailable` | Molpha Data is rate limiting or could not reach a chain (`details.retryAfterSeconds`) | Wait, then call again |
 | `missing_config` | The deployment has no challenge secret | Operator: set `MOLPHA_HTTP_CHALLENGE_SECRET` |
 
 | Policy | Public HTTP defaults | Local stdio |
@@ -134,6 +136,13 @@ console.log(await response.json());
 ```
 
 Normal MCP clients perform initialization first. The server retains no initialization session between POSTs. Browser callers with an Origin must match the configured allowlist; cross-origin browser CORS support is not provided by default. The fetch example is for Node.
+
+## Molpha Data on the hosted server
+
+`list_data_templates`, `read_data` and the template tools (`get_balance`, `get_chain_head`, `get_curve_oracle_price`, `get_pool_price`, `get_pool_reserve`, `get_pool_snapshot`, `get_pool_twap`, `get_vault_share_price`, `get_storage_slot`, `get_aave_reserve`, `get_aave_totals`, `get_morpho_market`, `get_lst_rate`, `compare_oracles`, `get_aave_health_factor`, `get_aave_liquidation_distance`, `get_morpho_health_factor`, `get_median_price`, `reconcile_supply`, `get_token_snapshot`, `get_token_supply`) answer with the Molpha Data service's
+unsigned read, as on a local server. With `attest: true` they return the derived `source` and its `sourceId`
+instead of signing: run that source with `execute_subscription_round` (after `begin_session` / `complete_session`)
+or `prepare_x402_round`, passing it unchanged. Every source is re-hashed here before it is returned.
 
 ## Configuration and operations
 

@@ -173,6 +173,26 @@ What stops an agent paying more than it meant to:
 
 The payer pays the source directly; Molpha never receives it. Only authorizations the nodes actually spend settle, so the exact charge is visible in the payer's balance. Source payment is for public sources: it cannot be combined with `encryptSecrets`, and the source must have exactly one http input (the payment names no host; `quote_source_payment` refuses any other source before making a request).
 
+## Molpha Data
+
+Molpha Data is a catalog of on-chain data **templates**: a template turns a few parameters (a chain, a pool, a
+token) into a complete source, so common values need no hand-written source. `list_data_templates` lists them;
+each has a tool of its own (`get_pool_price`, `get_lst_rate`, `get_aave_health_factor`, ...), and `read_data`
+takes any of them by id, or a raw source.
+
+- **Unsigned** (the default): the Molpha Data service reads the chain itself and answers with the value, the full
+  `source` it read and its read context. Free and rate limited; no signature. Decide with it, do not settle with it.
+- **Signed** (`attest: true`): the service derives the source, this server re-hashes it (a source that does not hash
+  to its `sourceId` is refused), and the round runs through `execute_subscription_round` (default) or
+  `execute_x402_round` (`payment: "x402"`) with their dry-run lock, spend caps and treasury checks. The answer's
+  `round` is that tool's output. On the hosted server, and on a read-only one, `attest: true` returns the derived
+  `source` only.
+
+The tool set comes from `src/data-catalog.generated.ts`, a snapshot of the service's catalog taken when the release
+was built (`npm run sync:data-catalog`; `npm run check:data-catalog` compares it with a running service), so a new
+template becomes a tool with an MCP release. `list_data_templates` reads the live catalog, and falls back to the
+snapshot when the service does not answer. Signed reads run on testnet nodes that read mainnet chains.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -193,6 +213,8 @@ The payer pays the source directly; Molpha never receives it. Only authorization
 | `MOLPHA_SOURCE_PAYMENT_NETWORKS` | — | Comma-separated CAIP-2 networks a source may be paid on, e.g. `eip155:84532` (Base Sepolia). Empty keeps source payment off, even with a key. |
 | `MOLPHA_SOURCE_MAX_PER_ROUND_USDC` | `0.25` | Refuse a round whose worst case (price per fetch × the nodes that may fetch) exceeds this (decimal USDC) |
 | `MOLPHA_SOURCE_MAX_SPEND_PER_DAY_USDC` | `1` | Process-local daily cap on USDC committed to paying sources (decimal USDC) |
+| `MOLPHA_DATA_URL` | `https://data.molpha.io` | The [Molpha Data](#molpha-data) service: template catalog, derivation and unsigned reads |
+| `MOLPHA_DATA_API_KEY` | — | Optional Molpha Data client key (sent as `X-API-Key`) for its keyed rate tier. Never printed or returned. |
 
 The daily counters are process-local and reset when the server restarts. They are safety rails, not durable rate limits. The hosted server's own variables are in [hosted-http.md](hosted-http.md#configuration-and-operations).
 

@@ -67,6 +67,31 @@ export function normalizeError(error: unknown): NormalizedToolError {
     };
   }
 
+  // Molpha Data's refusals carry the service's own code; map them to this server's vocabulary.
+  if (error instanceof Error && error.name === "DataServiceError") {
+    const { status, code, detail } = error as Error & { status: number; code: string; detail?: { retryAfter?: number; stage?: string } };
+    const details = { service: "molpha-data", serviceCode: code, ...(detail?.stage ? { stage: detail.stage } : {}), ...(detail?.retryAfter ? { retryAfterSeconds: detail.retryAfter } : {}) };
+    if (status === 424 || code === "READ_FAILED") {
+      return {
+        ...withStatus("source_failed", error.message, status),
+        details,
+        remediation: "The chain's data did not pass the source's own checks (a wrong address for this template, a reserve that does not exist, a stale feed). Check the parameters against list_data_templates; the same call fails the same way until the data changes."
+      };
+    }
+    if (status === 429 || status >= 500) {
+      return {
+        ...withStatus("data_unavailable", error.message, status),
+        details,
+        remediation: "Molpha Data is rate limiting or could not reach a chain. Wait for retryAfterSeconds (or a few seconds), then call again; set MOLPHA_DATA_API_KEY for the keyed rate tier."
+      };
+    }
+    return {
+      ...withStatus("invalid_data_request", error.message, status),
+      details,
+      remediation: "A parameter is missing or wrong for this template. list_data_templates describes each template's parameters."
+    };
+  }
+
   const ownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
   if (typeof ownCode === "string" && OWN_CODES.has(ownCode)) {
     const { path, errorClass } = error as { path?: unknown; errorClass?: unknown };

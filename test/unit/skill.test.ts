@@ -23,7 +23,8 @@ const ERROR_CODES = new Set([
   "dry_run_locked", "missing_config", "authentication_required", "submitter_required", "subscription_inactive",
   "source_payment_required", "source_payment_refused", "source_payment_disabled", "payment_outcome_unknown",
   "guardrail_exceeded", "determinism_rejected", "source_failed", "round_conflict", "round_timeout", "invalid_config", "session_invalid",
-  "sign_in_rejected", "invalid_challenge", "payment_expired", "transaction_expired", "invalid_source"
+  "sign_in_rejected", "invalid_challenge", "payment_expired", "transaction_expired", "invalid_source",
+  "data_unavailable", "invalid_data_request"
 ]);
 
 const RETIRED = /\b(execute_agent_round|get_agent_status|verify_attestation)\b|\bmolpha_(fetch_verified|execute|derive_feed|get_latest|verify|agent_status|describe_feed|get_capabilities)\b|\bfeedId\b/;

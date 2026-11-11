@@ -54,7 +54,14 @@ export interface MolphaConfig {
   x402: X402Config;
   /** Absent means source payment is off. */
   sourcePayment?: SourcePaymentConfig;
+  /** Molpha Data: the template catalog and unsigned reads (`MOLPHA_DATA_URL`; absent: the public service). */
+  dataUrl?: string;
+  /** Optional client key for Molpha Data's keyed rate tier (`MOLPHA_DATA_API_KEY`); never logged. */
+  dataApiKey?: string;
 }
+
+/** The public Molpha Data service. */
+export const DEFAULT_DATA_URL = "https://data.molpha.io";
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
   const sdkDefaultGateway = getSdkExport<string>("DEFAULT_GATEWAY_ENDPOINT");
@@ -80,8 +87,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MolphaConfig {
       maxPriceUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_PRICE_USDC), 1_000_000n),
       maxSpendPerDayUsdcAtomic: parseUsdcAtomic(resolveEnvString(env.MOLPHA_X402_MAX_SPEND_PER_DAY_USDC), 10_000_000n)
     },
-    sourcePayment: loadSourcePayment(env)
+    sourcePayment: loadSourcePayment(env),
+    dataUrl: parseDataUrl(resolveEnvString(env.MOLPHA_DATA_URL)),
+    ...dataApiKey(resolveEnvString(env.MOLPHA_DATA_API_KEY))
   };
+}
+
+function dataApiKey(key: string | undefined): { dataApiKey?: string } {
+  return key ? { dataApiKey: key } : {};
+}
+
+/** An http(s) URL without credentials, query or fragment; trailing slashes dropped. */
+export function parseDataUrl(value: string | undefined): string {
+  if (value === undefined) return DEFAULT_DATA_URL;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("MOLPHA_DATA_URL must be an http(s) URL");
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("MOLPHA_DATA_URL must be an http(s) URL without credentials, query or fragment");
+  }
+  return value.replace(/\/+$/, "");
 }
 
 /**
