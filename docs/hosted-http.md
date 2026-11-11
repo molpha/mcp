@@ -140,9 +140,9 @@ Normal MCP clients perform initialization first. The server retains no initializ
 ## Molpha Data on the hosted server
 
 `list_data_templates`, `read_data` and the template tools (`get_balance`, `get_chain_head`, `get_curve_oracle_price`, `get_pool_price`, `get_pool_reserve`, `get_pool_snapshot`, `get_pool_twap`, `get_vault_share_price`, `get_storage_slot`, `get_aave_reserve`, `get_aave_totals`, `get_morpho_market`, `get_lst_rate`, `compare_oracles`, `get_aave_health_factor`, `get_aave_liquidation_distance`, `get_morpho_health_factor`, `get_median_price`, `reconcile_supply`, `get_token_snapshot`, `get_token_supply`) answer with the Molpha Data service's
-unsigned read, as on a local server. With `attest: true` they return the derived `source` and its `sourceId`
-instead of signing: run that source with `execute_subscription_round` (after `begin_session` / `complete_session`)
-or `prepare_x402_round`, passing it unchanged. Every source is re-hashed here before it is returned.
+unsigned read and the `source` it read, re-hashed here, as on a local server. `execute_data_round` signs on the
+server, so it is not offered here: pass the `source` unchanged to `execute_subscription_round` (after
+`begin_session` / `complete_session`) or `prepare_x402_round`.
 
 ## Configuration and operations
 

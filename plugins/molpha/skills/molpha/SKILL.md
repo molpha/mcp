@@ -40,7 +40,7 @@ A round returns a `value` and a signed attestation. Pass the attestation on, not
 | The task | Read |
 |---|---|
 | Use the MCP tools: explore, get a signed value, pay, settle, recover from an error | `references/mcp-workflows.md` |
-| Get a common on-chain value (supply, balance, pool price, LST rate, lending rate, health factor) from a ready template: `list_data_templates`, `read_data` | `references/mcp-workflows.md` |
+| Get a common on-chain value (supply, balance, pool price, LST rate, lending rate, health factor) from a ready template: `list_data_templates`, `read_data`, `execute_data_round` | `references/mcp-workflows.md` |
 | Describe a data source: inputs and decoders, the transform, the output type, tolerance, determinism, worked examples | `references/source.md` |
 | Write a Solana program or client that reads a Molpha feed | `references/integrate-solana.md` |
 | Write an EVM contract or client that verifies an attestation | `references/integrate-evm.md` |

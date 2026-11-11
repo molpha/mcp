@@ -7,7 +7,7 @@ import { signedArtifactSchema, toAttestationArtifact } from "../../src/artifacts
 import { registerTools } from "../../src/tools/index.js";
 import { CANONICAL_VECTORS } from "./source-vectors.js";
 import { GOLDEN_CANONICAL, GOLDEN_SOURCE_ID, priceSource } from "./sources.js";
-import { DATA_TOOL_NAMES, callTool, callToolError, collectTools } from "./tool-harness.js";
+import { DATA_READ_TOOL_NAMES, DATA_TOOL_NAMES, callTool, callToolError, collectTools } from "./tool-harness.js";
 
 const TOOL_NAMES = [
   "build_verifier_calldata",
@@ -48,7 +48,7 @@ const HOSTED_TOOL_NAMES = [
   "prepare_x402_round",
   "quote_source_payment",
   "send_signed_transaction",
-  ...DATA_TOOL_NAMES
+  ...DATA_READ_TOOL_NAMES
 ].sort();
 
 const READ_ONLY = [
@@ -60,10 +60,10 @@ const READ_ONLY = [
   "get_latest_value",
   "get_provider",
   "get_x402_status",
-  "list_data_templates",
   "list_providers",
-  "quote_source_payment"
-];
+  "quote_source_payment",
+  ...DATA_READ_TOOL_NAMES
+].sort();
 
 const RETIRED_NAMES = /\b(execute_agent_round|get_agent_status|verify_attestation)\b/;
 

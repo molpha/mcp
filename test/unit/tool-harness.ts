@@ -79,8 +79,8 @@ export async function callTool(
   return result.structuredContent;
 }
 
-/** Molpha Data: list_data_templates, read_data and one tool per template of the catalog snapshot. */
-export const DATA_TOOL_NAMES = [
+/** Molpha Data read tools, on every server: list_data_templates, read_data and one tool per template. */
+export const DATA_READ_TOOL_NAMES = [
   "compare_oracles",
   "get_aave_health_factor",
   "get_aave_liquidation_distance",
@@ -105,3 +105,9 @@ export const DATA_TOOL_NAMES = [
   "read_data",
   "reconcile_supply"
 ];
+
+/** The Molpha Data write tool, offered only where the server signs. */
+export const DATA_WRITE_TOOL_NAMES = ["execute_data_round"];
+
+/** Every Molpha Data tool of a signing server. */
+export const DATA_TOOL_NAMES = [...DATA_READ_TOOL_NAMES, ...DATA_WRITE_TOOL_NAMES].sort();

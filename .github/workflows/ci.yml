@@ -102,4 +102,5 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' > /tmp/molpha-tools.json
-          node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/molpha-tools.json'));const names=(r.result?.tools??[]).map(t=>t.name);const required=['begin_session','prepare_x402_round','list_providers','get_provider','quote_source_payment'];if(names.length!==17||names.includes('submit_attestation')||required.some(n=>!names.includes(n)))process.exit(1)"
+          # 17 session, x402 and read tools, plus 23 Molpha Data read tools; the data write tool needs a signer.
+          node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/molpha-tools.json'));const names=(r.result?.tools??[]).map(t=>t.name);const required=['begin_session','prepare_x402_round','list_providers','get_provider','quote_source_payment'];if(names.length!==40||names.includes('submit_attestation')||names.includes('execute_data_round')||!names.includes('get_pool_price')||required.some(n=>!names.includes(n)))process.exit(1)"

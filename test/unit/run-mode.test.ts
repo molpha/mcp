@@ -4,7 +4,7 @@ import type { RequestContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
 import { resolveRunMode } from "../../src/run-mode.js";
 import { buildMcpEnvBlock, validateSignerEnv } from "../../src/setup-validation.js";
-import { DATA_TOOL_NAMES, callTool, collectTools } from "./tool-harness.js";
+import { DATA_READ_TOOL_NAMES, DATA_TOOL_NAMES, callTool, collectTools } from "./tool-harness.js";
 
 
 const READ_TOOLS = [
@@ -18,8 +18,7 @@ const READ_TOOLS = [
   "get_x402_status",
   "list_providers",
   "quote_source_payment",
-  // On a read-only server a data tool's attest: true returns the derived source only, so all are read tools.
-  ...DATA_TOOL_NAMES
+  ...DATA_READ_TOOL_NAMES
 ].sort();
 
 describe("resolveRunMode", () => {

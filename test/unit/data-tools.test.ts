@@ -9,7 +9,7 @@ import type { RequestContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
 import { DATA_CATALOG } from "../../src/data-catalog.generated.js";
 import { dataToolName } from "../../src/tools/data.js";
-import { callTool, callToolError, collectTools } from "./tool-harness.js";
+import { callTool, callToolError, callToolRaw, collectTools } from "./tool-harness.js";
 
 const fixture = (name: string): Record<string, any> =>
   JSON.parse(readFileSync(new URL(`../fixtures/data/${name}`, import.meta.url), "utf8"));
@@ -70,17 +70,29 @@ describe("unsigned reads", () => {
     const { dependencies } = context({ MOLPHA_DATA_API_KEY: "client-key-0000000001" });
     const calls = useService(() => ({ body: unsignedPrice }));
     const out = await callTool("get_pool_price", { chain: "ethereum", pool: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640" }, dependencies);
-    expect(out).toMatchObject({ mode: "unsigned", sourceId: unsignedPrice.source.sourceId, value: unsignedPrice.data.value });
+    expect(out).toMatchObject({ sourceId: unsignedPrice.source.sourceId, value: unsignedPrice.data.value, next: expect.stringContaining("execute_data_round") });
     expect(calls[0]!.url).toBe("http://data.test/v1/read");
     expect(calls[0]!.body).toEqual({ template: "dex.pool.price@1", params: { chain: "ethereum", pool: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640" }, attest: false });
     expect(calls[0]!.headers["x-api-key"]).toBe("client-key-0000000001");
+  });
+
+  it("passes a template's own maxAge to the service as a parameter, as a string", async () => {
+    // compare_oracles has a feed-staleness parameter named maxAge; it must reach the template, never a signing option.
+    const { dependencies } = context();
+    const calls = useService(() => ({ body: unsignedPrice }));
+    await callToolRaw("compare_oracles", { chain: "base", a: "chainlink:0x71", b: "pyth:0xff", maxAge: "3600" }, dependencies);
+    expect(calls[0]!.body.params).toMatchObject({ maxAge: "3600" });
+    for (const t of DATA_CATALOG) {
+      const tool = collectTools().find((x) => x.name === dataToolName(t.id))!;
+      expect(Object.keys(tool.config.inputSchema).sort(), t.id).toEqual(t.params.map((p) => p.name).sort());
+    }
   });
 
   it("returns a snapshot's payload, layout and decoded fields", async () => {
     const { dependencies } = context();
     useService(() => ({ body: snapshot }));
     const out = await callTool("get_token_snapshot", { chain: "solana", token: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" }, dependencies);
-    expect(out).toMatchObject({ mode: "unsigned", payload: snapshot.payload, fields: snapshot.fields });
+    expect(out).toMatchObject({ payload: snapshot.payload, fields: snapshot.fields });
   });
 
   it("refuses a source that does not hash to its sourceId, and a payload that does not hash to its value", async () => {
@@ -96,7 +108,7 @@ describe("unsigned reads", () => {
     expect(JSON.stringify(await callToolError("get_token_snapshot", { chain: "solana", token: "x" }, dependencies))).toMatch(/payload that does not hash to its value/);
   });
 
-  it("passes the service's refusal through with its code", async () => {
+  it("maps the service's refusals to this server's codes", async () => {
     const { dependencies } = context();
     useService(() => ({ status: 424, body: { error: { code: "ASSERTION_FAILED", message: "source assertion: assertion 0 failed", stage: "source assertion" } } }));
     expect(await callToolError("read_data", { template: "lending.aave.reserve", params: { chain: "ethereum", asset: "0xdead" } }, dependencies)).toMatchObject({
@@ -110,46 +122,49 @@ describe("unsigned reads", () => {
   });
 });
 
-describe("signed reads", () => {
-  it("derive at the service, then run the round through execute_subscription_round", async () => {
+describe("execute_data_round", () => {
+  it("derives at the service, then runs the round through execute_subscription_round", async () => {
     const { dependencies, gateway } = context();
     const calls = useService((path) => (path === "/v1/sources/derive" ? { body: derived } : { status: 500, body: {} }));
     const out = await callTool(
-      "get_aave_reserve",
-      { chain: "ethereum", asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", attest: true, chains: ["solana"] },
+      "execute_data_round",
+      { template: "lending.aave.reserve", params: { chain: "ethereum", asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" }, chains: ["solana"], maxAge: 60 },
       dependencies
     );
     expect(calls.map((c) => new URL(c.url).pathname)).toEqual(["/v1/sources/derive"]);
-    expect(out).toMatchObject({ mode: "signed", sourceId: derived.sourceId, template: "lending.aave.reserve@1" });
+    expect(calls[0]!.body).toEqual({ template: "lending.aave.reserve", params: { chain: "ethereum", asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" } });
+    expect(out).toMatchObject({ sourceId: derived.sourceId, template: "lending.aave.reserve@1" });
     expect((out.round as Record<string, unknown>).payment).toBe("subscription");
-    // The SDK got the source this server parsed, at the default quorum.
-    const sent = gateway.requestSignedData.mock.calls[0]![0] as { source: { idHex: string }; signaturesRequired: number };
+    // The SDK got the source this server parsed, at the default quorum; maxAge went to the round only.
+    const sent = gateway.requestSignedData.mock.calls[0]![0] as { source: { idHex: string }; signaturesRequired: number; maxAge?: number };
     expect(sent.source.idHex).toBe(derived.sourceId);
     expect(sent.signaturesRequired).toBe(3);
+    expect(sent.maxAge).toBe(60);
   });
 
   it("keeps the round tool's dry-run lock", async () => {
     const { dependencies, gateway } = context({ MOLPHA_DRY_RUN: "true" });
     useService(() => ({ body: derived }));
-    const out = await callTool("read_data", { template: "lending.aave.reserve", params: {}, attest: true, chains: ["solana"] }, dependencies);
-    expect(out).toMatchObject({ mode: "signed", round: { dryRun: true, payment: "subscription" } });
+    const out = await callTool("execute_data_round", { template: "lending.aave.reserve", params: {}, chains: ["solana"] }, dependencies);
+    expect(out).toMatchObject({ round: { dryRun: true, payment: "subscription" } });
     expect(gateway.requestSignedData).not.toHaveBeenCalled();
-    expect(await callToolError("read_data", { template: "lending.aave.reserve", params: {}, attest: true, chains: ["solana"], dryRun: false }, dependencies)).toMatchObject({ code: "dry_run_locked" });
+    expect(await callToolError("execute_data_round", { template: "lending.aave.reserve", params: {}, chains: ["solana"], dryRun: false }, dependencies)).toMatchObject({ code: "dry_run_locked" });
   });
 
   it("refuses a derived source that does not hash to its sourceId before anything is signed", async () => {
     const { dependencies, gateway } = context();
     useService(() => ({ body: { ...derived, sourceId: "0x" + "00".repeat(32) } }));
-    await callToolError("read_data", { template: "lending.aave.reserve", params: {}, attest: true, chains: ["solana"] }, dependencies);
+    await callToolError("execute_data_round", { template: "lending.aave.reserve", params: {}, chains: ["solana"] }, dependencies);
     expect(gateway.requestSignedData).not.toHaveBeenCalled();
   });
 
-  it("on a server that cannot sign, returns the derived source only", async () => {
-    useService(() => ({ body: derived }));
-    for (const deps of [{ readOnly: { reason: "no signer" } }, { hosted: {} }]) {
-      const { dependencies } = context();
-      const out = await callTool("read_data", { template: "lending.aave.reserve", params: {}, attest: true }, { ...deps, ...dependencies });
-      expect(out).toMatchObject({ mode: "derived", sourceId: derived.sourceId, source: derived.source });
+  it("is offered only where the server signs, and the read tools are read-only everywhere", () => {
+    for (const deps of [{}, { readOnly: { reason: "no signer" } }, { hosted: {} }]) {
+      const tools = collectTools(deps);
+      expect(tools.some((t) => t.name === "execute_data_round")).toBe(Object.keys(deps).length === 0);
+      for (const t of tools.filter((x) => x.name === "read_data" || x.name === "list_data_templates" || DATA_CATALOG.some((c) => dataToolName(c.id) === x.name))) {
+        expect(t.config.annotations.readOnlyHint, t.name).toBe(true);
+      }
     }
   });
 });
