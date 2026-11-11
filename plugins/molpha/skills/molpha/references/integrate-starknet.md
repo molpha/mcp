@@ -65,7 +65,7 @@ Exactly the same list as EVM (see `integrate-evm.md`), and Cairo has no consumer
 2. Enforce its own minimum `signatures_required`. `source_id` does not commit the quorum.
 3. Guard replay. `verify` is a view; the same attestation verifies forever. Track the last accepted timestamp **per source**.
 4. Pass a real `max_age`.
-5. Decode `value` per the source's agreed encoding. In tolerance mode it is a signed int256 scaled by `10^decimals`; in exact mode the scale is off-chain (see `apiconfig.md`).
+5. Decode `value` per the source's agreed encoding. The source declares its output (for example an `int256` scaled by `10^decimals`) and the `sourceId` commits to it in both modes, so pin the `sourceId` and keep its source document (see `source.md`).
 6. **Read the returned boolean.** Because `verify` does not panic, a call that returns is not a pass.
 
 A panic inside a cross-contract call aborts the caller's whole transaction, which is why `verify` returns codes instead. Handle each code deliberately: some failures are transient and expected, such as a registry mirror lagging one version (`BAD_REGISTRY_VERSION`).

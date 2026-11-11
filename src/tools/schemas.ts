@@ -1,44 +1,25 @@
 import { z } from "zod";
 
 /**
- * Median tolerance mode. Part of the sourceId, so it is omitted for exact mode:
- * `mode: "exact"` is rejected because writing it would change the source's identity.
+ * A Molpha source document. Deliberately a permissive object, not a recursive schema of the whole format:
+ * the transform is an expression tree with a few dozen operators, and a schema for it makes a fragile,
+ * enormous tool JSON Schema that clients render badly. The document is validated where it is used, by the
+ * SDK's `parseSource` (the same rules the gateway and nodes apply), and a rejection names the field's path.
  */
-export const aggregationSchema = z
-  .object({
-    mode: z.literal("tolerance"),
-    rule: z.literal("median"),
-    maxDeviationBps: z
-      .number()
-      .int()
-      .min(0)
-      .max(0xffff_ffff)
-      .describe("Basis points a node's observation may sit from the lower-median reference before it is excluded."),
-    maxAgeMs: z.number().int().positive().describe("Observations older than this (ms) at signing time are excluded."),
-    numeric: z
-      .object({
-        type: z.literal("int256"),
-        decimals: z.number().int().min(0).max(255).describe("The transformed value is scaled by 10^decimals, rounded half to even.")
-      })
-      .strict()
-  })
-  .strict();
+export const sourceSchema = z
+  .record(z.unknown())
+  .describe(
+    [
+      "A Molpha source document: what a feed reads, how the reads become one value, and how that value becomes the 32 signed bytes. sourceId = keccak256 of its canonical JSON; derive_source_id validates a source and has a worked example.",
+      "Shape: {v:\"1\", inputs:{<name>:Input}, transform:Expr, assert:Expr[], output:{type,decimals}, aggregation:null|{mode:\"tolerance\",rule:\"median\",maxDeviationBps,maxAgeMs}}.",
+      "Every key is present (an absent optional is null) and EVERY NUMBER IS A STRING (\"8\", never 8).",
+      "1-4 inputs of kind http|evm|starknet|svm, each a read plus an explicit decoder; transform is a JSON AST over exact decimals; output.type is int256|uint256|bool|bytes32|string32|keccak256.",
+      "aggregation null is exact mode; a tolerance aggregation needs output.type int256 and signaturesRequired >= 3.",
+      "{{secret.NAME}} may stand only in an http input's URL after the host, a header value or body.text. A source payment or provider credential needs exactly one http input."
+    ].join(" ")
+  );
 
-/** Shared apiConfig input shape for tools that accept a declarative source. */
-export const apiConfigSchema = z.object({
-  url: z.string().min(1),
-  method: z.enum(["GET", "POST"]).optional(),
-  headers: z.record(z.string()).optional(),
-  responseParser: z.string().min(1),
-  valueTransform: z.string().optional(),
-  aggregation: aggregationSchema
-    .optional()
-    .describe(
-      "Opt in to median tolerance mode so independent nodes need not fetch a byte-identical value. Needs signaturesRequired >= 3 and changes the sourceId. The signed value is a signed int256 scaled by 10^numeric.decimals, so leave valueTransform empty (a multiply: transform truncates to an integer first). Omit for exact mode."
-    )
-});
-
-export type ApiConfigSchema = z.infer<typeof apiConfigSchema>;
+export type SourceSchema = z.infer<typeof sourceSchema>;
 
 /** A full-width sourceId; tools echo it back `0x`-prefixed. */
 export const sourceIdSchema = z

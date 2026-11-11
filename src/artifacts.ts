@@ -47,8 +47,16 @@ export const signedAttestationSchema = z.object({
 export const signedArtifactSchema = z.object({
   value: z
     .string()
-    .describe("Decimal rendering of attestation.payload.value. Not signed on its own: do not consume it without the attestation."),
+    .describe(
+      "Display string for attestation.payload.value, rendered from the source's declared output (a scaled decimal for int256/uint256, true/false for bool, text for string32, else hex). Not signed on its own: do not consume it without the attestation."
+    ),
   fresh: z.boolean().describe("Whether the value was freshly fetched this round. Not signed."),
+  valuePreimage: z
+    .string()
+    .optional()
+    .describe(
+      "keccak256 outputs only: the 0x-hex bytes whose keccak256 is attestation.payload.value. The gateway keeps no copy, so this response is the only one: keep it. submit_attestation stores it (at most 256 bytes) as the feed's raw value. Not signed; it is bound by hashing to the signed value."
+    ),
   ...signedAttestationSchema.shape
 });
 
@@ -72,7 +80,7 @@ const HEX_WIDTHS: Record<string, number> = {
  * - the SDK's `Attestation`: `{ payload: { value (packed), sourceId, ... timestamp },
  *   signature: { s, commitmentAddr, signersBitmap }, value (decimal), fresh }`
  * - the gateway's `data` body: `{ attestation: { payload, signature: { signature, commitment,
- *   signersBitmap } }, value (decimal), fresh, configHash, aggregation? }` — which is also
+ *   signersBitmap } }, value (display string), fresh, valuePreimage? }` — which is also
  *   the artifact the round tools emit, so a round's output is accepted back verbatim
  */
 export function flattenAttestation(input: Record<string, unknown>): Record<string, unknown> {
@@ -95,8 +103,7 @@ export function flattenAttestation(input: Record<string, unknown>): Record<strin
     s: signature.s ?? signature.signature,
     commitmentAddr: signature.commitmentAddr ?? signature.commitment,
     fresh: input.fresh ?? true,
-    ...(input.configHash !== undefined ? { configHash: input.configHash } : {}),
-    ...(input.aggregation !== undefined ? { aggregation: input.aggregation } : {})
+    ...(typeof input.valuePreimage === "string" && input.valuePreimage !== "" ? { valuePreimage: input.valuePreimage } : {})
   };
 }
 
@@ -116,7 +123,9 @@ export function toSdkAttestation(flat: Record<string, unknown>): Record<string, 
       signersBitmap: flat.signersBitmap
     },
     value: String(flat.value ?? ""),
-    fresh: Boolean(flat.fresh ?? true)
+    fresh: Boolean(flat.fresh ?? true),
+    // A keccak256 output's preimage: the SDK passes it to the program as the raw value (at most 256 bytes).
+    ...(typeof flat.valuePreimage === "string" && flat.valuePreimage !== "" ? { valuePreimage: flat.valuePreimage } : {})
   };
 }
 
@@ -124,7 +133,8 @@ export function toSdkAttestation(flat: Record<string, unknown>): Record<string, 
  * Accept any shape a caller can plausibly hold (flat, or nested as
  * {@link flattenAttestation} describes) and return the flat shape with every
  * fixed-width hex field canonicalized, so no tool needs a hand-written remap.
- * `value` is a decimal string, not hex, and the numeric fields are left alone.
+ * `value` is a display string, not hex, and the numeric fields are left alone;
+ * `valuePreimage` is variable-length hex, `0x`-prefixed.
  */
 export function normalizeSignedResult(input: Record<string, unknown>): Record<string, unknown> {
   const raw = flattenAttestation(input);
@@ -137,7 +147,22 @@ export function normalizeSignedResult(input: Record<string, unknown>): Record<st
     }
   }
 
+  if (typeof out.valuePreimage === "string" && out.valuePreimage !== "") {
+    out.valuePreimage = toPreimageHex(out.valuePreimage);
+  } else {
+    delete out.valuePreimage;
+  }
+
   return out;
+}
+
+/** `0x` + lowercase whole-byte hex; a value that is not hex is corruption, not a format nit. */
+function toPreimageHex(value: string): string {
+  const clean = value.trim().replace(/^0[xX]/, "").toLowerCase();
+  if (!/^(?:[0-9a-f]{2})+$/.test(clean)) {
+    throw new Error("valuePreimage: expected whole bytes of hex");
+  }
+  return `0x${clean}`;
 }
 
 /**
@@ -152,6 +177,7 @@ export function toAttestationArtifact(result: Record<string, unknown>): Attestat
   return {
     value: String(normalized.value ?? ""),
     fresh: Boolean(normalized.fresh ?? true),
+    ...(typeof normalized.valuePreimage === "string" ? { valuePreimage: normalized.valuePreimage } : {}),
     attestation: {
       payload: {
         value: String(normalized.valuePacked ?? ""),

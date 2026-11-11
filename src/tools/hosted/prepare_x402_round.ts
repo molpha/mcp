@@ -18,7 +18,7 @@ export interface X402Challenge {
 export const X402_CHALLENGE = "x402";
 
 const inputSchema = {
-  apiConfig: roundInputSchema.apiConfig,
+  source: roundInputSchema.source,
   signaturesRequired: roundInputSchema.signaturesRequired,
   payer: walletAddressSchema.describe(
     "Base58 wallet that pays for the round and signs the returned transaction. It needs the round price in USDC; the facilitator pays the network fee."
@@ -72,13 +72,13 @@ export function registerPrepareX402RoundTool(server: ToolServer, dependencies: T
     },
     toolHandler(outputSchema, async (args: Args) => {
       const keys = requireChallengeKeys(dependencies.hosted?.challengeKeys);
-      const { apiConfig, signaturesRequired, maxAge, chains } = args;
+      const { source, signaturesRequired, maxAge, chains } = args;
       const payer = parseSolanaPubkey(args.payer, "payer");
       const context = await (dependencies.getContext ?? getMolphaContext)();
 
       const { round, transaction, payerAta, payToAta, payerBalanceAtomicUsdc } = await prepareX402Round(
         context,
-        { apiConfig, signaturesRequired, sourceId: prepareRound(args), ...(maxAge !== undefined ? { maxAge } : {}) },
+        { source, signaturesRequired, sourceId: prepareRound(args), ...(maxAge !== undefined ? { maxAge } : {}) },
         payer
       );
       const expiresAt = Math.floor(Date.now() / 1000) + round.accepted.maxTimeoutSeconds;

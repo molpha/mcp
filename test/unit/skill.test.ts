@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ROOT } from "../../scripts/gen-install.js";
+import { parseTestSource } from "./sources.js";
 import { collectTools } from "./tool-harness.js";
 
 const SKILL_DIR = join(ROOT, "plugins/molpha/skills/molpha");
@@ -21,8 +22,8 @@ const STRICT = ["SKILL.md", "references/mcp-workflows.md"];
 const ERROR_CODES = new Set([
   "dry_run_locked", "missing_config", "authentication_required", "submitter_required", "subscription_inactive",
   "source_payment_required", "source_payment_refused", "source_payment_disabled", "payment_outcome_unknown",
-  "guardrail_exceeded", "determinism_rejected", "round_conflict", "round_timeout", "invalid_config", "session_invalid",
-  "sign_in_rejected", "invalid_challenge", "payment_expired", "transaction_expired"
+  "guardrail_exceeded", "determinism_rejected", "source_failed", "round_conflict", "round_timeout", "invalid_config", "session_invalid",
+  "sign_in_rejected", "invalid_challenge", "payment_expired", "transaction_expired", "invalid_source"
 ]);
 
 const RETIRED = /\b(execute_agent_round|get_agent_status|verify_attestation)\b|\bmolpha_(fetch_verified|execute|derive_feed|get_latest|verify|agent_status|describe_feed|get_capabilities)\b|\bfeedId\b/;
@@ -35,7 +36,7 @@ const TOOL_NAMES = new Set([...collectTools().map((tool) => tool.name), ...colle
 
 describe("the Molpha skill", () => {
   it("has the files the plan names", () => {
-    for (const file of ["SKILL.md", "references/mcp-workflows.md", "references/apiconfig.md", "references/integrate-solana.md", "references/integrate-evm.md", "references/integrate-starknet.md"]) {
+    for (const file of ["SKILL.md", "references/mcp-workflows.md", "references/source.md", "references/integrate-solana.md", "references/integrate-evm.md", "references/integrate-starknet.md"]) {
       expect(existsSync(join(SKILL_DIR, file)), file).toBe(true);
     }
   });
@@ -74,6 +75,28 @@ describe("the Molpha skill", () => {
       for (const match of read(file).matchAll(/references\/([a-z-]+\.md)/g)) {
         expect(existsSync(join(SKILL_DIR, "references", match[1]!)), `${file} links to references/${match[1]}`).toBe(true);
       }
+    }
+  });
+
+  it("only shows worked examples that are valid sources, with the sourceIds the SDK derives", () => {
+    const text = read("references/source.md");
+    const section = /## Worked examples([\s\S]*?)\n## /.exec(text)?.[1] ?? "";
+    const blocks = [...section.matchAll(/```json\n([\s\S]*?)```/g)].map((match) => match[1]!);
+
+    // A JSON price feed, a tolerance feed, an EVM pinned read, a keccak256 output.
+    expect(blocks).toHaveLength(4);
+    for (const block of blocks) {
+      const source = parseTestSource(block);
+      expect(section, `the example for ${source.sourceId}`).toContain(source.sourceId);
+    }
+    expect(blocks.map((block) => parseTestSource(block).canonical.includes('"type":"keccak256"'))).toEqual([false, false, false, true]);
+    expect(blocks.map((block) => parseTestSource(block).canonical.includes('"kind":"evm"'))).toEqual([false, false, true, false]);
+    expect(blocks.map((block) => parseTestSource(block).canonical.includes('"mode":"tolerance"'))).toEqual([false, true, false, false]);
+  });
+
+  it("no longer describes the apiConfig-era format", () => {
+    for (const file of skillFiles()) {
+      expect(read(file), file).not.toMatch(/apiConfig|responseParser|valueTransform|multiply:|numeric\.decimals|programs and the contracts all recompute/);
     }
   });
 

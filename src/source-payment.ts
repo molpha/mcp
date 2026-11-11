@@ -16,6 +16,7 @@ import { requireMethod, type RequestContext } from "./clients.js";
 import { checkSourceSpendCap, refuseSourcePayment, sourceSpentToday } from "./guardrails.js";
 import { expectedUsdcAsset, isAllowedSourcePaymentAsset } from "./source-payment-assets.js";
 import { requireSdkExport } from "./sdk.js";
+import { parseSource, singleHttpInput, type HttpRead } from "./source.js";
 
 /** A price fetch is a single unpaid request: it must not hold the agent up. */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -78,31 +79,35 @@ export function createPayer(key: string): { address: string; signDigest(digest: 
 /** How many nodes may fetch a round of this quorum: the number of authorizations the caller would sign. */
 export async function eligibleSetSizeFor(context: RequestContext, signaturesRequired: number): Promise<number> {
   const nodes = await requireMethod<[], Promise<unknown[]>>(context.gateway, "getNodes")();
-  const selection = (await requireMethod<[], Promise<{ redundancyBuffer: number; nodeCount?: number }>>(
-    context.solana,
-    "getRegistrySelectionConfig"
-  )()) as { redundancyBuffer: number; nodeCount?: number };
-  const size = requireSdkExport<(quorum: number, registry: { nodeCount: number; redundancyBuffer: number }) => number>("eligibleSetSize");
-  return size(signaturesRequired, { nodeCount: selection.nodeCount ?? nodes.length, redundancyBuffer: selection.redundancyBuffer });
-}
-
-function apiConfigUrl(apiConfig: unknown): string {
-  if (!apiConfig || typeof apiConfig !== "object" || typeof (apiConfig as { url?: unknown }).url !== "string") {
-    throw new Error("apiConfig.url is required");
-  }
-  return (apiConfig as { url: string }).url;
+  type Selection = { redundancyBuffer: number; nodeCount?: number; liveSlots?: number[] };
+  const selection = (await requireMethod<[], Promise<Selection>>(context.solana, "getRegistrySelectionConfig")()) as Selection;
+  const size = requireSdkExport<(quorum: number, registry: { nodeCount: number; redundancyBuffer: number; liveCount?: number }) => number>(
+    "eligibleSetSize"
+  );
+  // A removed node leaves a hole, so the slot count can exceed the members the committee is drawn
+  // over. `liveSlots` comes from SDK versions that know about holes; older ones report none.
+  return size(signaturesRequired, {
+    nodeCount: selection.nodeCount ?? nodes.length,
+    ...(selection.liveSlots ? { liveCount: selection.liveSlots.length } : {}),
+    redundancyBuffer: selection.redundancyBuffer
+  });
 }
 
 /**
  * Reads x402 accepts from a 402 body when the SDK refuses non-USDC terms but the caller still needs
- * the quoted network, asset and price for policy checks.
+ * the quoted network, asset and price for policy checks. `read` is the source's only http input: the
+ * request is the one the nodes would make, sent unpaid.
  */
-async function fetchSourceTermsFrom402(apiConfig: unknown, timeoutMs: number): Promise<SourceTerms | null> {
-  const url = apiConfigUrl(apiConfig);
+async function fetchSourceTermsFrom402(read: HttpRead, timeoutMs: number): Promise<SourceTerms | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { method: "GET", signal: controller.signal });
+    const response = await fetch(read.url, {
+      method: read.method,
+      headers: { ...read.headers, ...(read.body ? { "content-type": read.body.contentType } : {}) },
+      ...(read.body ? { body: read.body.text } : {}),
+      signal: controller.signal
+    });
     if (response.status !== 402) {
       return null;
     }
@@ -140,13 +145,20 @@ async function fetchSourceTermsFrom402(apiConfig: unknown, timeoutMs: number): P
   }
 }
 
-/** Reads the source's own price with one unpaid request. Null when the source is not paywalled. */
-export async function probeSourceTerms(apiConfig: unknown): Promise<SourceTerms | null> {
-  const probe = requireSdkExport<(config: unknown, options?: { timeoutMs?: number }) => Promise<SourceTerms | null>>("probeSource");
+/**
+ * Reads the source's own price with one unpaid request. Null when the source is not paywalled.
+ *
+ * A payment names no host, so it can only be attached to a source with exactly one http input; any other
+ * source is refused here, before a request is made.
+ */
+export async function probeSourceTerms(source: unknown): Promise<SourceTerms | null> {
+  const parsed = parseSource(source);
+  const { read } = singleHttpInput(parsed);
+  const probe = requireSdkExport<(source: unknown, options?: { timeoutMs?: number }) => Promise<SourceTerms | null>>("probeSource");
   try {
-    return await probe(apiConfig, { timeoutMs: PROBE_TIMEOUT_MS });
+    return await probe(parsed, { timeoutMs: PROBE_TIMEOUT_MS });
   } catch (error) {
-    const fallback = await fetchSourceTermsFrom402(apiConfig, PROBE_TIMEOUT_MS);
+    const fallback = await fetchSourceTermsFrom402(read, PROBE_TIMEOUT_MS);
     if (fallback !== null) {
       return fallback;
     }

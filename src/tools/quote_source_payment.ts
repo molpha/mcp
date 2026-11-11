@@ -2,7 +2,8 @@ import { z } from "zod";
 import { getMolphaContext, type ToolDependencies } from "../clients.js";
 import { toolHandler } from "../mcp.js";
 import { describeQuote, eligibleSetSizeFor, evaluatePolicy, probeSourceTerms } from "../source-payment.js";
-import { apiConfigSchema, signaturesRequiredSchema } from "./schemas.js";
+import { parseSource, singleHttpInput } from "../source.js";
+import { signaturesRequiredSchema, sourceSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
 export const sourceQuoteSchema = z.object({
@@ -32,7 +33,8 @@ export const paymentPolicySchema = z.object({
 });
 
 const outputSchema = z.object({
-  source: z.string(),
+  sourceId: z.string().describe("The source's sourceId, 0x-prefixed hex."),
+  url: z.string().describe("The URL of the source's single http input: the one that was probed."),
   paywalled: z.boolean(),
   quote: sourceQuoteSchema.optional(),
   policy: paymentPolicySchema,
@@ -45,20 +47,23 @@ export function registerQuoteSourcePaymentTool(server: ToolServer, dependencies:
     {
       title: "Quote the cost of a paywalled source",
       description:
-        "Before paying for a round, read what it would cost. Makes ONE unpaid request to the source (a price fetch, not a data fetch) and returns the source's own price, network and payee, how many nodes will fetch (and so be paid for), the WORST CASE total (price per fetch x those nodes), and whether this server is configured to pay it: its payer, allowed networks and spend caps. Use it with a provider's x402 feed from get_provider, then pass sourcePayment.maxSpendUsdc to execute_subscription_round to authorize paying. Returns `paywalled: false` for a source that is free. Signs and spends nothing.",
+        "Before paying for a round, read what it would cost. Makes ONE unpaid request to the source (a price fetch, not a data fetch) and returns the source's own price, network and payee, how many nodes will fetch (and so be paid for), the WORST CASE total (price per fetch x those nodes), and whether this server is configured to pay it: its payer, allowed networks and spend caps. A payment names no host, so the source must have exactly one http input (a source with none or several is refused); that input's URL, method, headers and body are what is probed. Use it with a provider's x402 feed from get_provider, then pass sourcePayment.maxSpendUsdc to execute_subscription_round to authorize paying. Returns `paywalled: false` for a source that is free. Signs and spends nothing.",
       inputSchema: {
-        apiConfig: apiConfigSchema,
+        source: sourceSchema,
         signaturesRequired: signaturesRequiredSchema.default(3).describe("The quorum you will request: it sets how many nodes may fetch. Provider feeds need at least 3.")
       },
       outputSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true }
     },
-    toolHandler(outputSchema, async (args: { apiConfig: z.infer<typeof apiConfigSchema>; signaturesRequired: number }) => {
+    toolHandler(outputSchema, async (args: { source: z.infer<typeof sourceSchema>; signaturesRequired: number }) => {
       const context = await (dependencies.getContext ?? getMolphaContext)();
-      const terms = await probeSourceTerms(args.apiConfig);
+      const parsed = parseSource(args.source);
+      const { read } = singleHttpInput(parsed);
+      const terms = await probeSourceTerms(parsed.doc);
       if (terms === null) {
         return {
-          source: args.apiConfig.url,
+          sourceId: parsed.idHex,
+          url: read.url,
           paywalled: false,
           policy: evaluatePolicy(context.config),
           note: "The source did not ask for payment: running it costs nothing beyond subscription quota."
@@ -69,7 +74,8 @@ export function registerQuoteSourcePaymentTool(server: ToolServer, dependencies:
       const quote = describeQuote(terms, eligible);
       const policy = evaluatePolicy(context.config, quote);
       return {
-        source: args.apiConfig.url,
+        sourceId: parsed.idHex,
+        url: read.url,
         paywalled: true,
         quote,
         policy,

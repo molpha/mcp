@@ -39,7 +39,7 @@ Every one of these is the consumer's job. A valid signature does not do them.
 2. **Identity.** `source_id`, `signatures_required` and `submitter` are the ones you expect. Derive the address from values **you** chose in advance, not from values an untrusted party gives you.
 3. **Quorum floor.** `sourceId` does not commit the quorum. Require `signatures_required` to be at least what your application needs.
 4. **Freshness.** `timestamp` is milliseconds. Compare `timestamp / 1000` with the cluster clock and reject anything older than you tolerate. A feed does not expire on its own.
-5. **Encoding.** `value` is 32 bytes whose meaning is agreed per source. When `value_kind` is `Hash`, obtain the preimage and check `keccak256(preimage) == value`. In tolerance mode the 32 bytes are a signed int256 scaled by `10^decimals`; in exact mode the scale is not attested (see `apiconfig.md`).
+5. **Encoding.** `value` is 32 bytes whose meaning is agreed per source. When `value_kind` is `Hash`, obtain the preimage and check `keccak256(preimage) == value`. The source declares its output (`int256`/`uint256` scaled by `10^decimals`, `bool`, `bytes32`, `string32` or `keccak256`) and the `sourceId` commits to it, in exact and tolerance mode alike; the feed account itself stores no decimals, so pin the `sourceId` and keep its source document (see `source.md`).
 6. **Registry.** `registry_version` says which node set signed. Decide whether you accept it.
 
 The program accepts an update only when it is strictly newer than the stored one, on the same source and quorum, so the feed only moves forward.
@@ -118,7 +118,7 @@ pub fn read_price(
     let now_ms = (Clock::get()?.unix_timestamp as u64).saturating_mul(1000);
     require!(now_ms.saturating_sub(feed.timestamp) <= max_age_ms, ErrorCode::ConstraintRaw);
 
-    // 4. Encoding: decode `feed.value` per the source's agreed encoding (see apiconfig.md).
+    // 4. Encoding: decode `feed.value` per the source's declared output (see source.md).
     //    Here: an unsigned integer in the low 8 bytes of the big-endian word.
     require!(feed.value_kind == 0, ErrorCode::ConstraintRaw);
     Ok(u64::from_be_bytes(feed.value[24..32].try_into().unwrap()))

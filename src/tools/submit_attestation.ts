@@ -18,7 +18,8 @@ const flatResultSchema = z.object({
   signersBitmap: z.string().min(1),
   s: z.string().min(1),
   commitmentAddr: z.string().min(1),
-  fresh: z.boolean().optional()
+  fresh: z.boolean().optional(),
+  valuePreimage: z.string().optional()
 });
 
 // The artifact shape is the round tools' output, accepted verbatim: extra keys
@@ -52,7 +53,7 @@ export function registerSubmitAttestationTool(server: ToolServer, dependencies: 
     {
       title: "Submit Molpha attestation to Solana",
       description:
-        "Submit a signed attestation to Solana via the program's submit_attestation, writing the feed account for (sourceId, signaturesRequired, this signer) — created on the first submit. The program verifies the aggregate signature and accepts only an attestation newer than the one the feed holds, so resubmitting the same payload changes nothing. Pass the output of execute_subscription_round or execute_x402_round through unmodified — both the artifact shape ({ attestation: { payload, signature } }) and the flat shape ({ sourceId, s, commitmentAddr, timestamp }) are accepted, and short hex fields are zero-padded server-side. Permissionless on-chain; the owner key pays SOL fees and becomes the feed's submitter. EVM/Starknet execution is deliberately out of scope (see build_verifier_calldata) — use the verifier args from the round tools and call verify() yourself.",
+        "Submit a signed attestation to Solana via the program's submit_attestation, writing the feed account for (sourceId, signaturesRequired, this signer) — created on the first submit. The program verifies the aggregate signature and accepts only an attestation newer than the one the feed holds, so resubmitting the same payload changes nothing. Pass the output of execute_subscription_round or execute_x402_round through unmodified (a keccak256 output's `valuePreimage` rides along and is passed to the program, which checks it against the signed value; keep it, the gateway holds no copy) — both the artifact shape ({ attestation: { payload, signature } }) and the flat shape ({ sourceId, s, commitmentAddr, timestamp }) are accepted, and short hex fields are zero-padded server-side. Permissionless on-chain; the owner key pays SOL fees and becomes the feed's submitter. EVM/Starknet execution is deliberately out of scope (see build_verifier_calldata) — use the verifier args from the round tools and call verify() yourself.",
       inputSchema: {
         result: signedResultSchema,
         dryRun: z.boolean().optional()

@@ -20,7 +20,7 @@ import {
 } from "@solana/kit";
 import type { Connection } from "@solana/web3.js";
 import { exactBytes, utf8Bytes } from "./bytes.js";
-import { assertToleranceQuorum, canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
+import { assertToleranceQuorum, canonicalSourceDocument, guardSourceId, parseSource } from "./source.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import type { MolphaConfig } from "./config.js";
 import { normalizeSourceId } from "./hex.js";
@@ -196,9 +196,10 @@ export async function completeSession(
 
 export interface SessionRoundOptions {
   sessionToken: string;
-  apiConfig: ApiConfigLike;
+  /** The source document; validated here with the SDK's parseSource. */
+  source: Record<string, unknown>;
   signaturesRequired: number;
-  /** When set, must match the sourceId derived from apiConfig. */
+  /** When set, must match the sourceId derived from source. */
   sourceId?: string | undefined;
   gatewayEndpoint?: string | undefined;
 }
@@ -206,11 +207,10 @@ export interface SessionRoundOptions {
 /** Runs one subscription round under a session and returns the signed aggregate in its flat form. */
 export async function executeSessionRound(ctx: SessionContext, opts: SessionRoundOptions): Promise<Record<string, unknown>> {
   ctx.lifecycle?.signal.throwIfAborted();
-  assertToleranceQuorum(opts.apiConfig, opts.signaturesRequired);
-  const sourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
-  if (opts.sourceId !== undefined && normalizeSourceId(opts.sourceId) !== sourceId) {
-    throw new Error(`sourceId does not match apiConfig: expected ${sourceId}, got ${opts.sourceId}`);
-  }
+  const parsed = parseSource(opts.source);
+  assertToleranceQuorum(parsed, opts.signaturesRequired);
+  const sourceId = normalizeSourceId(guardSourceId(opts.sourceId, parsed));
+  const canonical = canonicalSourceDocument(parsed);
   const endpoint = sessionEndpoint(ctx.config, opts.gatewayEndpoint);
   const { registryVersion } = await requireMethod<[], Promise<{ registryVersion: number }>>(
     ctx.solana,
@@ -222,10 +222,12 @@ export async function executeSessionRound(ctx: SessionContext, opts: SessionRoun
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${opts.sessionToken}` },
       // The session names the consumer and the subscription owner; the gateway assigns the timestamp.
+      // sourceId is the optional guard: the gateway refuses the request if its own derivation differs.
       body: JSON.stringify({
         registryVersion,
         signaturesRequired: opts.signaturesRequired,
-        apiConfig: canonicalizeApiConfig(opts.apiConfig)
+        source: canonical,
+        sourceId: `0x${sourceId}`
       }),
       ...(ctx.lifecycle ? { signal: ctx.lifecycle.signal } : {})
     });
@@ -250,7 +252,7 @@ export async function executeSessionRound(ctx: SessionContext, opts: SessionRoun
   }
   const { matches, result } = readRoundResponse(
     asRecord(await res.json()) ?? {},
-    { sourceId, registryVersion, signaturesRequired: opts.signaturesRequired },
+    { sourceId, registryVersion, signaturesRequired: opts.signaturesRequired, output: parsed.output },
     startedAtMs
   );
   if (!matches) {

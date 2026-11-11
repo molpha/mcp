@@ -69,15 +69,15 @@
     },
     {
       "name": "derive_source_id",
-      "description": "Derive a sourceId locally: keccak256 of the apiConfig's canonical JSON (fixed key order, not JCS). No transaction or wallet."
+      "description": "Validate a source document and derive its sourceId locally: keccak256 of its canonical JSON (a JCS subset, sorted keys, numbers as strings). Returns the canonical JSON, the declared output and determinism warnings. No transaction or wallet."
     },
     {
       "name": "describe_feed",
-      "description": "Read the Solana feed for (sourceId, quorum, submitter) and the signer's subscription status."
+      "description": "Read the Solana feed for (sourceId, quorum, submitter) and the signer's subscription status. Pass the source to read the stored value by its declared output."
     },
     {
       "name": "get_latest_value",
-      "description": "Read the latest attested value stored in a Solana feed account."
+      "description": "Read the latest attested value stored in a Solana feed account; with the source, rendered by its declared output (type and decimals)."
     },
     {
       "name": "describe_access",
@@ -89,7 +89,7 @@
     },
     {
       "name": "get_provider",
-      "description": "Describe one integrated provider: flows, required aggregation, disclosure, and ready-made feeds with a complete apiConfig and sourceId."
+      "description": "Describe one integrated provider: flows, required aggregation, disclosure, and ready-made feeds with a complete source document and sourceId."
     },
     {
       "name": "quote_source_payment",

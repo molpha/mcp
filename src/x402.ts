@@ -17,7 +17,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { address, getBase58Decoder, type Address } from "@solana/kit";
 import type { Connection, VersionedTransaction } from "@solana/web3.js";
-import { assertToleranceQuorum, canonicalizeApiConfig, deriveSourceId, type ApiConfigLike } from "./apiconfig.js";
+import { assertToleranceQuorum, canonicalSourceDocument, guardSourceId, parseSource, type SourceOutput } from "./source.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
 import {
@@ -62,9 +62,10 @@ export function conflictRetryDelayMs(random: () => number = Math.random): number
 }
 
 export interface X402RoundOptions {
-  apiConfig: ApiConfigLike;
+  /** The source document; validated here with the SDK's parseSource. */
+  source: Record<string, unknown>;
   signaturesRequired: number;
-  /** When set, must match the sourceId derived from apiConfig. */
+  /** When set, must match the sourceId derived from source. */
   sourceId?: string | undefined;
   /** Accepted for symmetry with the subscription path; x402 rounds always run fresh. */
   maxAge?: number | undefined;
@@ -105,6 +106,8 @@ export interface X402PaidRound {
   body: Record<string, unknown>;
   /** Bare lowercase hex. */
   sourceId: string;
+  /** The source's declared output, which renders the round's value and checks a keccak256 preimage. */
+  output?: SourceOutput;
   signaturesRequired: number;
   registryVersion: number;
   /** Hex SHA-256 of the unsigned payment transaction's message. */
@@ -365,7 +368,9 @@ export async function executePreparedX402Round(
 }
 
 interface RoundPlan {
-  apiConfig: Record<string, unknown>;
+  /** The canonical source document, as hashed. */
+  source: Record<string, unknown>;
+  output: SourceOutput;
   /** Bare lowercase hex. */
   sourceId: string;
   sourceIdBytes: Uint8Array;
@@ -378,11 +383,9 @@ interface RoundPlan {
 }
 
 async function planRound(ctx: X402RoundContext, opts: X402RoundOptions): Promise<RoundPlan> {
-  assertToleranceQuorum(opts.apiConfig, opts.signaturesRequired);
-  const sourceId = normalizeSourceId(deriveSourceId(opts.apiConfig).sourceId);
-  if (opts.sourceId !== undefined && normalizeSourceId(opts.sourceId) !== sourceId) {
-    throw new Error(`sourceId does not match apiConfig: expected ${sourceId}, got ${opts.sourceId}`);
-  }
+  const parsed = parseSource(opts.source);
+  assertToleranceQuorum(parsed, opts.signaturesRequired);
+  const sourceId = normalizeSourceId(guardSourceId(opts.sourceId, parsed));
 
   const programId = getMolphaProgramId();
   const [registry, network, pricing] = await Promise.all([
@@ -409,7 +412,8 @@ async function planRound(ctx: X402RoundContext, opts: X402RoundOptions): Promise
   checkX402PerRoundCap(priceAtomic, ctx.config.x402.maxPriceUsdcAtomic);
 
   return {
-    apiConfig: canonicalizeApiConfig(opts.apiConfig),
+    source: canonicalSourceDocument(parsed),
+    output: parsed.output,
     sourceId,
     sourceIdBytes: Buffer.from(sourceId, "hex"),
     signaturesRequired,
@@ -499,6 +503,7 @@ async function buildPayableRound(ctx: X402RoundContext, plan: RoundPlan, payer: 
       ...(resource ? { resource } : {}),
       body: executeBody(plan),
       sourceId: plan.sourceId,
+      output: plan.output,
       signaturesRequired: plan.signaturesRequired,
       registryVersion: plan.registryVersion,
       messageSha256: paymentMessageSha256(transaction),
@@ -660,11 +665,25 @@ function completeRound(
     ...(typeof transaction === "string" && transaction ? { transaction } : {})
   };
 
-  const { matches, result } = readRoundResponse(
-    outcome.body,
-    { sourceId: round.sourceId, registryVersion: round.registryVersion, signaturesRequired: round.signaturesRequired },
-    startedAtMs
-  );
+  let response: ReturnType<typeof readRoundResponse>;
+  try {
+    response = readRoundResponse(
+      outcome.body,
+      {
+        sourceId: round.sourceId,
+        registryVersion: round.registryVersion,
+        signaturesRequired: round.signaturesRequired,
+        ...(round.output ? { output: round.output } : {})
+      },
+      startedAtMs
+    );
+  } catch (error) {
+    // Paid for by now: say so, rather than losing the settled payment behind a bare validation error.
+    throw new Error(
+      `the gateway settled x402 payment ${receipt.transaction ?? `(memo ${receipt.memo})`} but returned an invalid result: ${errorMessage(error)}`
+    );
+  }
+  const { matches, result } = response;
   if (!matches) {
     // Paid for by now: report the settled payment instead of returning a foreign aggregate.
     throw new Error(
@@ -697,7 +716,7 @@ async function requestQuote(
     }
     const message = await readErrorMessage(res);
     if (res.status === 400) {
-      // Stale registry version, clock skew, malformed apiConfig: every gateway agrees.
+      // Stale registry version, a malformed or non-canonical source: every gateway agrees.
       throw Object.assign(new Error(`x402 execute rejected: ${message}`), { status: 400 });
     }
     lastError = `${endpoint}: HTTP ${res.status}: ${message}`;
@@ -737,12 +756,17 @@ export function clusterNetwork(connection: Pick<Connection, "getGenesisHash">): 
   return pending;
 }
 
-/** The gateway assigns the round's timestamp; a caller sends none. */
+/**
+ * The gateway assigns the round's timestamp; a caller sends none. `sourceId` is the optional guard: the
+ * gateway derives the ID itself and refuses the request (400, canonicalization mismatch) if it differs
+ * from the one derived here, so the payment memo below can never name a different source.
+ */
 function executeBody(plan: RoundPlan): Record<string, unknown> {
   return {
     signatures_required: plan.signaturesRequired,
     registry_version: plan.registryVersion,
-    apiConfig: plan.apiConfig
+    source: plan.source,
+    sourceId: `0x${plan.sourceId}`
   };
 }
 

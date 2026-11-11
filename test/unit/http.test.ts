@@ -12,6 +12,7 @@ import { sealChallenge } from "../../src/challenge.js";
 import { getSharedRuntime, type RequestContext } from "../../src/clients.js";
 import { sanitizeToolResult } from "../../src/http/policy.js";
 import { executePreparedX402Round, fetchX402Status } from "../../src/x402.js";
+import { priceSource } from "./sources.js";
 
 vi.mock("../../src/x402.js", async original => ({
   ...await original<typeof import("../../src/x402.js")>(),
@@ -19,7 +20,7 @@ vi.mock("../../src/x402.js", async original => ({
   executePreparedX402Round: vi.fn()
 }));
 const flatResult = { sourceId: "1".repeat(64), value: "42", valuePacked: "2".repeat(64), timestamp: 1714300000, registryVersion: 7, signaturesRequired: 1, signersBitmap: "4", s: "3".repeat(64), commitmentAddr: "4".repeat(40), fresh: true };
-const apiConfig = { url: "https://example.com/finalized", responseParser: "$.value" };
+const source = priceSource({ url: "https://example.com/finalized", path: "$.value" }).doc;
 const walletA = Keypair.generate().publicKey.toBase58();
 const walletB = Keypair.generate().publicKey.toBase58();
 const canary = "CANARY_NEVER_LOG_882197";
@@ -66,7 +67,7 @@ describe("stateless HTTP", () => {
     try {
       await client.connect(transport as Transport);
       expect((await client.listTools()).tools).toHaveLength(HOSTED_TOOLS);
-      const result = await client.callTool({ name: "derive_source_id", arguments: { apiConfig } });
+      const result = await client.callTool({ name: "derive_source_id", arguments: { source } });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toHaveProperty("sourceId");
     } finally { await client.close(); }
@@ -99,13 +100,23 @@ describe("stateless HTTP", () => {
   });
   it("rejects encryptSecrets before schema stripping and does not echo invalid argument values", async () => {
     const app = await start();
-    const encrypted = await app.call("derive_source_id", { apiConfig, encryptSecrets: { key: canary } });
+    const encrypted = await app.call("derive_source_id", { source, encryptSecrets: { key: canary } });
     expect(encrypted.response.status).toBe(400);
     expect(encrypted.body.error.message).toContain("encryptSecrets");
-    const invalid = await app.call("derive_source_id", { apiConfig: { ...apiConfig, method: canary } });
-    expect(invalid.response.status).toBe(400);
+    // A source is a permissive object at the boundary; the SDK rejects it inside the tool. Neither the
+    // rejection nor its path may echo the value the caller sent, and a path that is not a field name is dropped.
+    const invalid = await app.call("derive_source_id", { source: { ...source, v: canary } });
+    expect(invalid.response.status).toBe(200);
+    expect(invalid.body.result.isError).toBe(true);
+    expect(JSON.parse(invalid.body.result.content[0].text)).toMatchObject({ code: "invalid_source", details: { path: "v" } });
     expect(JSON.stringify(invalid.body)).not.toContain(canary);
-    expect(app.contexts).toHaveLength(0);
+    const unusable = await app.call("derive_source_id", { source: { ...source, [`${canary}!`]: 1 } });
+    expect(JSON.parse(unusable.body.result.content[0].text)).toMatchObject({ code: "invalid_source" });
+    expect(JSON.parse(unusable.body.result.content[0].text)).not.toHaveProperty("details");
+    expect(JSON.stringify(unusable.body)).not.toContain(canary);
+    const notAnObject = await app.call("derive_source_id", { source: canary });
+    expect(notAnObject.response.status).toBe(400);
+    expect(JSON.stringify(notAnObject.body)).not.toContain(canary);
   });
   it("refuses the old signer headers and wallet secrets before reading the request, and logs none of it", async () => {
     const app = await start();
@@ -145,7 +156,7 @@ describe("tier behavior and isolation", () => {
       subscription: ["begin_session", "complete_session", "execute_subscription_round"],
       x402: ["prepare_x402_round", "execute_x402_round"],
       solanaSubmit: ["prepare_submit_attestation", "send_signed_transaction"] } });
-    const derived = (await app.call("derive_source_id", { apiConfig })).body.result.structuredContent;
+    const derived = (await app.call("derive_source_id", { source })).body.result.structuredContent;
     expect(derived.sourceId).toMatch(/^[0-9a-fx]{64,66}$/);
     const { attestation } = toAttestationArtifact(flatResult);
     expect((await app.call("build_verifier_calldata", { attestation, chain: "evm" })).body.result.structuredContent.chain).toBe("evm");
@@ -173,7 +184,7 @@ describe("tier behavior and isolation", () => {
     const execute = tools.find(tool => tool.name === "execute_x402_round")!;
     expect(tools.map(tool => tool.name)).toContain("prepare_x402_round");
     expect(Object.keys(execute.inputSchema.properties).sort()).toEqual(["challenge", "signedTransaction"]);
-    expect((await app.call("execute_x402_round", { apiConfig, chains: ["solana"] })).response.status).toBe(400);
+    expect((await app.call("execute_x402_round", { source, chains: ["solana"] })).response.status).toBe(400);
   });
   it("keeps the prepared-payment error codes through the hosted error policy", async () => {
     const secret = "7c".repeat(32);
@@ -201,15 +212,24 @@ describe("tier behavior and isolation", () => {
     const subscription = tools.find(tool => tool.name === "execute_subscription_round")!;
     expect(Object.keys(subscription.inputSchema.properties)).toContain("sessionToken");
     // The stdio-shaped calls are refused as malformed, not run without authorization.
-    expect((await app.call("execute_subscription_round", { apiConfig, chains: ["solana"] })).response.status).toBe(400);
+    expect((await app.call("execute_subscription_round", { source, chains: ["solana"] })).response.status).toBe(400);
     expect((await app.call("submit_attestation", { result: flatResult })).response.status).toBe(400);
     expect(app.contexts).toHaveLength(0);
   });
   it("warns on source API credentials without logging arguments", async () => {
     const app = await start();
-    const result = await app.call("derive_source_id", { apiConfig: { ...apiConfig, headers: { Authorization: canary } } });
+    // Any http input's headers count, not only the first or the only one.
+    const withCredentials = priceSource({ url: "https://example.com/finalized", path: "$.value", headers: { authorization: canary } }).doc;
+    const result = await app.call("derive_source_id", { source: withCredentials });
     expect(result.body.result.structuredContent.warnings[0]).toContain("self-hosted");
     expect(JSON.stringify(app.logs)).not.toContain(canary);
+    // A secret placeholder cannot be filled here: the caller is told, and the placeholder (not a value) is all there is to echo.
+    const placeholder = priceSource({ url: "https://example.com/finalized?k={{secret.KEY}}", path: "$.value" }).doc;
+    const flagged = await app.call("derive_source_id", { source: placeholder });
+    expect(flagged.body.result.structuredContent.warnings).toEqual([expect.stringContaining("hosted server accepts no secrets")]);
+    // A source with no credential-looking header is not warned about.
+    const plain = await app.call("derive_source_id", { source: priceSource({ url: "https://example.com/finalized", path: "$.value", headers: { accept: "application/json" } }).doc });
+    expect(plain.body.result.structuredContent).not.toHaveProperty("warnings");
   });
 });
 
@@ -284,7 +304,7 @@ it("captures all process log channels without credential or argument canaries", 
       app.call("describe_feed", { sourceId: flatResult.sourceId, signaturesRequired: 1, submitter: walletA }),
       app.call("describe_access", { address: walletA }),
       // A session token and a signature are credentials too: neither may reach a log, even on failure.
-      app.call("execute_subscription_round", { sessionToken: `molpha_sess_${canary}`, apiConfig: { ...apiConfig, headers: { Authorization: canary } }, chains: ["solana"] }),
+      app.call("execute_subscription_round", { sessionToken: `molpha_sess_${canary}`, source: priceSource({ url: "https://example.com/finalized", path: "$.value", headers: { authorization: canary } }).doc, chains: ["solana"] }),
       app.call("complete_session", { challenge: canary, signature: canary }),
       app.call("get_capabilities", {}, legacySignerHeaders())
     ]);

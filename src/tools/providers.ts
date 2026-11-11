@@ -77,7 +77,7 @@ const flowSchema = z
     pathPrefix: z.string().optional(),
     credential: z.record(z.unknown()).optional().describe("api_key flow: the gateway holds the key; you send none."),
     x402: z.record(z.unknown()).optional().describe("x402 flow: scheme, network, asset and the provider's own price list."),
-    feeds: z.array(z.record(z.unknown())).optional().describe("Ready-made feeds. Each has a complete `apiConfig` and its `sourceId`.")
+    feeds: z.array(z.record(z.unknown())).optional().describe("Ready-made feeds. Each has a complete, canonical `source` document and its `sourceId`.")
   })
   .passthrough();
 
@@ -103,7 +103,7 @@ export function registerGetProviderTool(server: ToolServer, dependencies: ToolDe
     {
       title: "Describe an integrated provider",
       description:
-        "Describe one integrated provider: its access flows, the aggregation its feeds require, how to describe its values, and ready-made feeds. Each feed carries a COMPLETE `apiConfig` and its `sourceId`: pass the `apiConfig` unchanged to execute_subscription_round (use signaturesRequired of at least 3: provider feeds use median tolerance aggregation). Do not add headers, a key or a payment to it; anything you change moves the sourceId and, on a provider's host, is refused. On the `api_key` flow the gateway pays the provider, so nothing else is needed. On the `x402` flow the provider charges per fetch: call quote_source_payment for the price, then pass sourcePayment.maxSpendUsdc to execute_subscription_round. Narrow the answer with `flow` and `feed`. Reads the gateway's catalog; signs and spends nothing.",
+        "Describe one integrated provider: its access flows, the aggregation its feeds require, how to describe its values, and ready-made feeds. Each feed carries a COMPLETE, canonical `source` document and its `sourceId`: pass the `source` unchanged to execute_subscription_round (use signaturesRequired of at least 3: provider feeds use median tolerance aggregation). Do not add headers, a key or a payment to it; anything you change moves the sourceId and, on a provider's host, is refused. A source payment or a sponsored credential attaches to a source's one http input (chain inputs beside it are fine): a source of your own on a provider's sponsored host must have that input as its only http input, a GET with no headers and no body, and use tolerance aggregation, or the gateway refuses it. On the `api_key` flow the gateway pays the provider, so nothing else is needed. On the `x402` flow the provider charges per fetch: call quote_source_payment for the price, then pass sourcePayment.maxSpendUsdc to execute_subscription_round. Narrow the answer with `flow` and `feed`. Reads the gateway's catalog; signs and spends nothing.",
       inputSchema: {
         provider: z.string().min(1).describe("Provider id from list_providers, e.g. `tickerlayer`."),
         flow: z.enum(["api_key", "x402"]).optional().describe("Return only this access flow."),
@@ -142,7 +142,7 @@ export function registerGetProviderTool(server: ToolServer, dependencies: ToolDe
 
         const kinds = flows.map((f) => f.kind);
         const howToUse = [
-          "Pass a feed's apiConfig, unchanged, to execute_subscription_round with signaturesRequired >= 3.",
+          "Pass a feed's source, unchanged, to execute_subscription_round with signaturesRequired >= 3.",
           kinds.includes("api_key") ? "api_key flow: the gateway operator pays the provider; send no key and no payment." : "",
           kinds.includes("x402")
             ? "x402 flow: you pay the provider per node fetch. Call quote_source_payment first, then pass sourcePayment.maxSpendUsdc (the most you authorize) to execute_subscription_round."

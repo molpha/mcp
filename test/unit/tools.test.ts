@@ -5,7 +5,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it } from "vitest";
 import { signedArtifactSchema, toAttestationArtifact } from "../../src/artifacts.js";
 import { registerTools } from "../../src/tools/index.js";
-import { callTool, collectTools } from "./tool-harness.js";
+import { CANONICAL_VECTORS } from "./source-vectors.js";
+import { GOLDEN_CANONICAL, GOLDEN_SOURCE_ID, priceSource } from "./sources.js";
+import { callTool, callToolError, collectTools } from "./tool-harness.js";
 
 const TOOL_NAMES = [
   "build_verifier_calldata",
@@ -232,13 +234,11 @@ describe("over MCP", () => {
 
     const result = await client.callTool({
       name: "derive_source_id",
-      arguments: { apiConfig: { url: "https://api.example.com/price", responseParser: "$.price" } }
+      arguments: { source: JSON.parse(GOLDEN_CANONICAL) }
     });
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toMatchObject({
-      sourceId: "0x2f00de126dd0f45e8a7f0a9854139d64e47b2f9707235406dc1c9c32d6fb9582"
-    });
+    expect(result.structuredContent).toMatchObject({ sourceId: GOLDEN_SOURCE_ID, canonicalJson: GOLDEN_CANONICAL });
     const [text] = result.content as Array<{ type: string; text: string }>;
     expect(JSON.parse(text!.text)).toEqual(result.structuredContent);
     await client.close();
@@ -248,30 +248,76 @@ describe("over MCP", () => {
 describe("derive_source_id", () => {
   const derive = collectTools().find((tool) => tool.name === "derive_source_id")!;
 
-  const call = (apiConfig: Record<string, unknown>) => callTool("derive_source_id", { apiConfig });
+  const call = (source: Record<string, unknown>, extra: Record<string, unknown> = {}) => callTool("derive_source_id", { source, ...extra });
+  const vector = (name: string): Record<string, unknown> => JSON.parse(CANONICAL_VECTORS.find((v) => v.name === name)!.input);
 
-  it("matches the SDK/node sourceId vector without any wallet configured", async () => {
-    const out = await call({ url: "https://api.example.com/price", responseParser: "$.price" });
+  it("matches the Go reference's sourceId vectors without any wallet configured", async () => {
+    for (const v of CANONICAL_VECTORS) {
+      const out = await call(JSON.parse(v.input));
 
-    expect(out.sourceId).toBe("0x2f00de126dd0f45e8a7f0a9854139d64e47b2f9707235406dc1c9c32d6fb9582");
-    expect(out.canonicalJson).toBe(
-      '{"url":"https://api.example.com/price","method":"GET","headers":{},"responseParser":"$.price","valueTransform":""}'
-    );
+      expect(out.sourceId, v.name).toBe(v.sourceId);
+      expect(out.canonicalJson, v.name).toBe(v.canonical);
+    }
+    expect((await call(JSON.parse(GOLDEN_CANONICAL))).sourceId).toBe(GOLDEN_SOURCE_ID);
   });
 
-  it("is independent of header insertion order", async () => {
-    const base = { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" };
-    const a = await call({ ...base, headers: { "Z-Header": "z", "A-Header": "a" } });
-    const b = await call({ ...base, headers: { "A-Header": "a", "Z-Header": "z" } });
+  it("returns the canonical source, the exact preimage, the declared output and a note", async () => {
+    const out = await call(vector("http-tolerance"));
+
+    expect(out.canonicalSource).toEqual(JSON.parse(String(out.canonicalJson)));
+    expect(Object.keys(out.canonicalSource as object)).toEqual(["aggregation", "assert", "inputs", "output", "transform", "v"]);
+    expect(out.output).toEqual({ type: "int256", decimals: 8 });
+    expect(String(out.note)).toContain("No transaction was sent");
+    expect(out).not.toHaveProperty("canonicalApiConfig");
+  });
+
+  it("is independent of key order and of header insertion order", async () => {
+    const a = await call(priceSource({ url: "https://api.example.com/v1/finalized/rate", headers: { "x-z": "z", "x-a": "a" } }).doc);
+    const b = await call(priceSource({ url: "https://api.example.com/v1/finalized/rate", headers: { "x-a": "a", "x-z": "z" } }).doc);
 
     expect(a.sourceId).toBe(b.sourceId);
-    expect(a.canonicalJson).toContain('"headers":{"A-Header":"a","Z-Header":"z"}');
+    expect(a.canonicalJson).toContain('"headers":{"x-a":"a","x-z":"z"}');
   });
 
-  it("states the derivation, and that it is not JCS, in its description", () => {
-    expect(derive.config.description).toContain("keccak256");
-    expect(derive.config.description).toContain("url, method, headers, responseParser, valueTransform");
-    expect(derive.config.description).toContain("not RFC 8785 (JCS)");
+  it("turns a rejected source into an invalid_source error whose details name the field", async () => {
+    const bad = structuredClone(priceSource({ url: "https://api.example.com/p" }).doc) as { output: { decimals: unknown } };
+    bad.output.decimals = 8;
+
+    const error = await callToolError("derive_source_id", { source: bad });
+
+    expect(error).toMatchObject({ code: "invalid_source", details: { path: "output.decimals", errorClass: "number" } });
+    expect(String(error.message)).toContain("output.decimals");
+    expect(String(error.remediation)).toContain("every number must be a string");
+  });
+
+  it("warns about a live-drifting http URL in exact mode, and rejects it on request", async () => {
+    const drifting = priceSource({ url: "https://api.example.com/ticker/BTC" }).doc;
+
+    const out = await call(drifting);
+    expect(out.determinismWarnings).toEqual([expect.stringContaining("live-drifting")]);
+    expect(await callToolError("derive_source_id", { source: drifting, rejectNonDeterministic: true })).toMatchObject({ code: "determinism_rejected" });
+    expect(await call(priceSource({ url: "https://api.example.com/v1/finalized/rate" }).doc)).not.toHaveProperty("determinismWarnings");
+  });
+
+  it("warns about an svm account read in exact mode, and about nothing in an evm or starknet read", async () => {
+    const svm = await call(vector("svm-layout"));
+    expect(svm.determinismWarnings).toEqual([expect.stringContaining('Input "pool"')]);
+    expect(String((svm.determinismWarnings as string[])[0])).toContain("tolerance aggregation");
+
+    for (const pinned of ["evm-call-sig", "starknet-call"]) {
+      expect(await call(vector(pinned)), pinned).not.toHaveProperty("determinismWarnings");
+    }
+  });
+
+  it("states the canonical form in its description: sorted keys, JCS subset, numbers as strings", () => {
+    const text = derive.config.description;
+    expect(text).toContain("keccak256(canonicalJson)");
+    expect(text).toContain("subset of RFC 8785 (JCS)");
+    expect(text).toContain("keys sorted");
+    expect(text).toContain("NO JSON numbers");
+    expect(text).toContain("every numeric quantity is a string");
+    // The apiConfig-era claims are gone.
+    expect(text).not.toMatch(/fixed (key )?order|not RFC 8785|responseParser|valueTransform|apiConfig|numeric\{/);
   });
 });
 

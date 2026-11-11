@@ -5,7 +5,7 @@
 
 Molpha has two parts for agents:
 
-- **The MCP server** gives your agent Molpha tools: derive a `sourceId`, run a signing round, submit to Solana, build EVM/Starknet verifier calldata.
+- **The MCP server** gives your agent Molpha tools: validate a source and derive its `sourceId`, run a signing round, submit to Solana, build EVM/Starknet verifier calldata.
 - **The Molpha skill** teaches your agent how to use them safely, and how to write Solana, EVM and Starknet code that consumes Molpha data. It helps even if you never install the server.
 
 ## Choose where to start
@@ -178,7 +178,7 @@ MOLPHA_DRY_RUN = "true"
 
 **Claude Desktop (planned)**: download `molpha-mcp.mcpb` from the [latest release](https://github.com/molpha/mcp/releases/latest) once the first release that attaches it is published, double-click it, and fill in the signer fields. Leave them empty for read-only. Dry run is on by default.
 
-Try: *"Derive a Molpha sourceId for `<your API URL>` at `$.price`, then preview a subscription round with 3 signatures for EVM. Show me what would be sent."*
+Try: *"Write a Molpha source that reads `<your API URL>`, takes the JSON value at `$.price` and signs it as an int256 with 8 decimals, derive its sourceId, then preview a subscription round with 3 signatures for EVM. Show me what would be sent."* (A source is a JSON document, [described here](reference.md#sources); the server rejects a malformed one with the path of the offending field.)
 
 ## 3. Turn on spending
 
@@ -211,6 +211,7 @@ Round tools spend on **every** call. There is no idempotency key: a call repeate
 Rounds run on a fixed 100 ms tick: requests for one feed (the same source and quorum) inside one tick share a round, a feed runs at most 10 rounds per second, and one wallet gets at most one round per tick for a feed. Two errors follow from that ([details](reference.md#round-timing)):
 
 - `round_conflict` (HTTP 409): this wallet already has a round for the feed in the current tick. Nothing was reserved. The round tools have already retried the request a tick later; wait at least 100 ms and call again.
+- `source_failed` with HTTP 503: the nodes ran the source and it failed; the message names the stage (`fetching data`, `source assertion`, ...) and the input. Fix the source or wait for the upstream. Nothing was settled.
 - `round_timeout` with HTTP 503: usually the gateway's own capacity limit (`gateway at capacity`), which refuses a request before reading it, so nothing was reserved. Otherwise too few nodes completed the round. Wait before retrying.
 
 ## 4. Sign in with your own wallet (SIWX)
@@ -236,7 +237,7 @@ x402 pay-per-request rounds need no sign-in: the payment is the authorization. S
 | 2 | `begin_session({ address, owner? })` | The `message` to sign, an opaque `challenge`, and `expiresAt` |
 | 3 | Your wallet signs `message` | A 64-byte signature |
 | 4 | `complete_session({ challenge, signature })` | A `sessionToken`, the `role` it carries, and `expiresAt` |
-| 5 | `execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` | The signed attestation and verifier arguments |
+| 5 | `execute_subscription_round({ sessionToken, source, signaturesRequired, chains })` | The signed attestation and verifier arguments |
 
 Steps 2 to 4 happen once per session. Step 5 repeats until the token expires, and each call uses one round of the subscription's quota.
 

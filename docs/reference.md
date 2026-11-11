@@ -4,6 +4,7 @@ Details behind the tools in the [README](../README.md). For setup see [integrati
 
 - [Structured output and annotations](#structured-output-and-annotations)
 - [Round timing](#round-timing)
+- [Sources](#sources)
 - [How sourceId is derived](#how-sourceid-is-derived)
 - [Tolerance mode](#tolerance-mode)
 - [x402 pay-per-request](#x402-pay-per-request)
@@ -44,39 +45,63 @@ Rounds run on a fixed 100 ms tick. It is a protocol constant, not a setting: the
 
 HTTP 503 is reported as `round_timeout` (after an x402 payment was sent, as `payment_outcome_unknown`: see [x402 pay-per-request](#x402-pay-per-request)). The usual cause is the gateway's own capacity limit (`gateway at capacity`): the gateway refuses the request before reading it, so nothing was reserved or spent. Otherwise too few nodes accepted or finished the round, or it timed out; a node refuses a gateway only as a safety limit against one that floods it. The tools do not repeat a request after a 503: wait, read state (`describe_feed`, `get_x402_status`), then call again.
 
-## How sourceId is derived
+## Sources
 
-A source is identified by its API config alone — not by the quorum or the signer — and the same `sourceId` identifies it on Solana, EVM, and Starknet:
-
-```text
-sourceId      = keccak256(canonicalJson)
-canonicalJson = compact JSON of { url, method, headers, responseParser, valueTransform },
-                keys in exactly that order, with defaults method = "GET", headers = {},
-                valueTransform = "", and header names sorted
-```
-
-Median tolerance mode adds a final `aggregation` key (see [Tolerance mode](#tolerance-mode)); exact-mode configs omit it and keep their existing `sourceId`s.
-
-The SDK, gateway, and nodes all derive it this way. It is **not** RFC 8785 (JCS): JCS sorts the top-level keys, which hashes to a different id. Call `derive_source_id` rather than hashing client-side — one differing byte (key order, whitespace, a missing default, header order) produces a `sourceId` that points at the wrong feed and fails verification. The tool returns `canonicalJson` so the preimage can be audited.
-
-## Tolerance mode
-
-By default nodes must fetch a byte-identical value to co-sign. For a live-drifting source, set `apiConfig.aggregation` to let the nodes sign the **median** of their fresh observations instead:
+Every tool that runs or reads a feed takes a **source** (`source`), a JSON document that says what the nodes read, how the reads become one value, and how that value becomes the 32 bytes that are signed:
 
 ```json
-"aggregation": {
-  "mode": "tolerance",
-  "rule": "median",
-  "maxDeviationBps": 50,
-  "maxAgeMs": 2000,
-  "numeric": { "type": "int256", "decimals": 8 }
+{
+  "v": "1",
+  "inputs": { "px": { "kind": "http", "read": { "method": "GET", "url": "https://example.com", "headers": {}, "body": null },
+                      "decode": { "format": "json", "fields": { "price": { "path": "$.price" } } } } },
+  "transform": { "op": "rescale", "args": [{ "ref": "px.price" }], "scale": "8", "round": "halfEven" },
+  "assert": [],
+  "output": { "type": "int256", "decimals": "8" },
+  "aggregation": null
 }
 ```
 
-- `aggregation` is part of the `sourceId`, so a source's tolerance settings cannot change without changing its identity. Omit it for exact mode; `"mode": "exact"` is rejected because writing it would change the identity.
-- The round needs `signaturesRequired >= 3`; the tools refuse fewer before contacting a gateway or paying.
-- The transformed value is parsed as a decimal, scaled by `10^decimals` (round half to even) and signed as a **signed int256**: a two's-complement `bytes32`. Decode it with the same `decimals`; the feed account stores those 32 bytes verbatim. Leave `valueTransform` empty in this mode: it runs on each node before scaling, and a `multiply:` transform truncates to an integer first (`100.125` would sign as `100`).
-- Nodes exchange signed round-1 observations (up to about 5 seconds), drop values more than `maxDeviationBps` from the lower median, rank the survivors, and the first `signaturesRequired` of them sign. A round fails when too few survivors remain.
+- **1 to 4 named inputs** of kind `http`, `evm`, `starknet` or `svm`, each a read plus an explicit decoder (`json`, `csv`, `xml`, `text`, `abi`, `felts`, `layout`, `raw`) that names its fields. A chain input names the chain (CAIP-2), never an RPC endpoint; EVM and Starknet reads are pinned to a block every node derives from the round's timestamp.
+- **One transform**, a JSON AST over exact decimals (`ref`, `const`, `rescale`, `div`, `num`, `if`, `keccak256`, ...), and up to 8 assertions the nodes must see true before they sign.
+- **A declared output**: `int256` or `uint256` (with `decimals`), `bool`, `bytes32`, `string32` or `keccak256`.
+- **Every key is present** (an absent optional is `null`) and **every number is a string** (`"8"`, never `8`). A source that breaks either rule is refused with the path of the offending field, as an `invalid_source` error, before anything is sent or paid.
+
+The schema each tool advertises for `source` is a plain object, not a transcription of the whole format: the SDK's `parseSource` validates it, with the same rules as the gateway and the nodes. The molpha skill's [`references/source.md`](../plugins/molpha/skills/molpha/references/source.md) has the grammar, the operators, and worked examples (a JSON price feed, a tolerance feed, an EVM pinned read, a keccak256 output); the authoritative spec is `docs/source-format.md` in the node client.
+
+Secrets are `{{secret.NAME}}` placeholders, allowed only in an http input's URL after the host, a header value or `body.text`, and supplied with `encryptSecrets` (local server only). A paid (x402) source, a source payment (`sourcePayment`) or a provider credential needs exactly one http input: a payment names no host.
+
+## How sourceId is derived
+
+A source is identified by its document alone — not by the quorum or the signer — and the same `sourceId` identifies it on Solana, EVM, and Starknet:
+
+```text
+sourceId = keccak256(canonical bytes)       (no domain tag)
+canonical = a subset of RFC 8785 (JCS): UTF-8, object keys sorted by byte order, no whitespace,
+            arrays in order, strings escaped as JSON.stringify does, and no JSON numbers at all
+```
+
+Every numeric quantity is a string in a fixed grammar (`"8"`, `"0.5"`, `"-1"`, written exactly: no leading zeros, no trailing fractional zeros, no `+`), so two spellings of one quantity cannot be two sources: a string that is not exactly in its grammar is rejected, never normalized.
+
+The gateway and the SDKs accept any key order and whitespace and re-sort; a node requires the canonical bytes. The SDK, gateway and nodes derive the same id, and they are held to one set of known-answer vectors. Call `derive_source_id` rather than hashing client-side — one differing byte produces a `sourceId` that points at the wrong feed. The tool validates the source, returns `canonicalJson` (the exact preimage, so it can be audited) and `canonicalSource` (the same document as an object), the declared `output`, and heuristic determinism warnings.
+
+The Solana program and the EVM and Starknet verifiers do not recompute a `sourceId`: they never see the source. They check the aggregate signature over a payload that contains it, so a consumer pins the `sourceId` it expects and keeps its source document alongside.
+
+## Tolerance mode
+
+By default nodes must produce a byte-identical value to co-sign (`"aggregation": null`, **exact mode**). That suits settled data and pinned chain reads. For a live-drifting source, set `aggregation` to let the nodes sign the **median** of their final outputs instead:
+
+```json
+"aggregation": { "mode": "tolerance", "rule": "median", "maxDeviationBps": "50", "maxAgeMs": "2000" }
+```
+
+- `aggregation` is part of the `sourceId`, so a source's tolerance settings cannot change without changing its identity. `null` is exact mode; `"mode": "exact"` is not a value.
+- It needs `output.type` `int256` and `signaturesRequired >= 3`; the tools refuse fewer before contacting a gateway or paying.
+- The scale is `output.decimals`: the transform's result is rescaled to it (round half to even) and signed as a **signed int256**, a two's-complement `bytes32`. Decode it with the same `decimals`; the feed account stores those 32 bytes verbatim. There is no separate `numeric` block: the output type and scale are declared once, by the source, in both modes.
+- The median is taken over each node's final output, after the whole pipeline, so a ratio of two drifting inputs gets one band on the ratio. Nodes exchange signed observations (up to about 5 seconds), drop values too old, too late or more than `maxDeviationBps` from the lower median, and the first `signaturesRequired` survivors sign. A round fails when too few survivors remain.
+
+## Reading a value
+
+The feed account stores 32 bytes and no decimals field. The scale is the source's declared `output`, which the `sourceId` commits to, so it is attested: give `describe_feed` or `get_latest_value` the `source` (not just the `sourceId`) and `valueEncoding` reports the output type and decimals and renders the stored bytes by them (`decodedValue`). Round tools render `value` the same way. For a `keccak256` output the signed value is a hash, and the round returns the preimage as `valuePreimage`: keep it. `submit_attestation` passes it to the Solana program, which checks it against the signed value (the feed's `valueKind` becomes `hash`).
 
 ## x402 pay-per-request
 
@@ -110,7 +135,7 @@ The hosted server splits this into `prepare_x402_round` and `execute_x402_round`
 
 ## Integrated providers
 
-A gateway can integrate data providers; [TickerLayer](https://tickerlayer.com) market data is the first. A provider is a descriptor on the gateway (not on-chain state): it lists the access flows the gateway can serve and **ready-made feeds**, each with a complete `apiConfig` and its `sourceId`. Three tools expose it:
+A gateway can integrate data providers; [TickerLayer](https://tickerlayer.com) market data is the first. A provider is a descriptor on the gateway (not on-chain state): it lists the access flows the gateway can serve and **ready-made feeds**, each with a complete, canonical `source` document and its `sourceId`. Three tools expose it:
 
 | Tool | What it does |
 | --- | --- |
@@ -120,10 +145,10 @@ A gateway can integrate data providers; [TickerLayer](https://tickerlayer.com) m
 
 There are two ways to get a provider's data, and an agent chooses by what `get_provider` says each flow is:
 
-- **`api_key` — you pay nothing and send nothing.** The gateway operator holds the provider key. Pass the feed's `apiConfig`, unchanged, to `execute_subscription_round` with `signaturesRequired` of at least 3 (provider feeds use median tolerance aggregation). Do not add headers or a key to it: any change moves the `sourceId` and, on the provider's host, is refused by the gateway.
+- **`api_key` — you pay nothing and send nothing.** The gateway operator holds the provider key. Pass the feed's `source`, unchanged, to `execute_subscription_round` with `signaturesRequired` of at least 3 (provider feeds use median tolerance aggregation). Do not add headers or a key to it: any change moves the `sourceId` and, on the provider's host, is refused by the gateway.
 - **`x402` — you pay the provider, per node fetch.** Every node that fetches is paid for, so a round costs price × the nodes that may fetch. Call `quote_source_payment`, then run the feed with `sourcePayment: { maxSpendUsdc }` on `execute_subscription_round`.
 
-The credential or payment never enters the `apiConfig`, so the `sourceId` — the feed's identity — is the same whoever pays. Describe a provider's values as **attested provider quotes**: Molpha attests what the endpoint returned by threshold signature, not that the price is correct (`get_provider` returns the provider's own `disclosure`).
+The credential or payment never enters the `source`, so the `sourceId` — the feed's identity — is the same whoever pays. Describe a provider's values as **attested provider quotes**: Molpha attests what the endpoint returned by threshold signature, not that the price is correct (`get_provider` returns the provider's own `disclosure`).
 
 ### Paying a source
 
@@ -146,7 +171,7 @@ What stops an agent paying more than it meant to:
 6. **The spend is counted when committed,** not when it settles: a signed authorization can settle whether or not the round completes. Concurrent calls cannot all pass a cap that only one fits under.
 7. **The key stays in the server.** It is not in any output, error or log, and the hosted HTTP server never loads one (it holds no wallet).
 
-The payer pays the source directly; Molpha never receives it. Only authorizations the nodes actually spend settle, so the exact charge is visible in the payer's balance. Source payment is for public sources: it cannot be combined with `encryptSecrets`.
+The payer pays the source directly; Molpha never receives it. Only authorizations the nodes actually spend settle, so the exact charge is visible in the payer's balance. Source payment is for public sources: it cannot be combined with `encryptSecrets`, and the source must have exactly one http input (the payment names no host; `quote_source_payment` refuses any other source before making a request).
 
 ## Configuration
 

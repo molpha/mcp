@@ -31,7 +31,7 @@ A step-by-step walkthrough, with a signing example and delegate setup, is in [in
 
 `complete_session({ challenge, signature })` verifies the signature locally (base58, base64 or hex), exchanges it at the gateway, and returns a `sessionToken`. The gateway checks on chain that the signer is the subscription owner, or a delegate the owner added with `add_delegate`; a delegate passes the owner's address as `owner`. Use `describe_access` to see a wallet's role and limits first.
 
-`execute_subscription_round({ sessionToken, apiConfig, signaturesRequired, chains })` runs the round.
+`execute_subscription_round({ sessionToken, source, signaturesRequired, chains })` runs the round. `source` is the source document (see [Sources](reference.md#sources)); a source the SDK rejects fails with `invalid_source` and the path of the offending field, before any request.
 
 What a session is, and is not:
 
@@ -42,7 +42,7 @@ What a session is, and is not:
 
 ### x402 rounds: prepare, sign, execute
 
-`prepare_x402_round({ apiConfig, signaturesRequired, payer, chains })` quotes the round and verifies the gateway's payment requirements against the server's own chain reads — `payTo` is the protocol treasury owner (the ProtocolConfig PDA, not the gateway), the asset is the protocol USDC mint, the amount is the protocol round price, and the memo is the request's commitment — then returns an unsigned USDC transfer, a `summary` of what it does, and a `challenge`. The gateway's facilitator is the fee payer; `payer` is the only signature the caller provides.
+`prepare_x402_round({ source, signaturesRequired, payer, chains })` quotes the round and verifies the gateway's payment requirements against the server's own chain reads — `payTo` is the protocol treasury owner (the ProtocolConfig PDA, not the gateway), the asset is the protocol USDC mint, the amount is the protocol round price, and the memo is the request's commitment — then returns an unsigned USDC transfer, a `summary` of what it does, and a `challenge`. The gateway's facilitator is the fee payer; `payer` is the only signature the caller provides.
 
 Sign `unsignedTransaction` with the payer's wallet and **do not broadcast it**: the facilitator co-signs and submits it. Then call `execute_x402_round({ challenge, signedTransaction })`. The signed transaction is accepted only if it is byte-for-byte the prepared one carrying the payer's valid signature.
 
@@ -70,6 +70,7 @@ To rotate: set `MOLPHA_HTTP_CHALLENGE_SECRET_PREVIOUS` to the old value and `MOL
 | `sessions_unavailable` | The gateway has sessions disabled | Use x402, or a gateway with sessions |
 | `forbidden` | No active subscription, out of quota, or the delegate was removed | See `describe_access` |
 | `round_conflict` | HTTP 409, after one retry: this wallet already has a round for this feed (the same source and quorum) in the current 100 ms tick. Nothing was reserved | Wait at least 100 ms and call again; it is a new round |
+| `source_failed` | HTTP 503 with a node's stage and reason (`fetching data`, `source assertion`, ...): the nodes could not produce a value from the source. Nothing was settled | Fix the source or wait for the upstream; the same request fails the same way until one changes |
 | `round_timeout` | HTTP 503: the gateway reached its own capacity limit (`gateway at capacity`; nothing was reserved), or too few nodes completed the round. Or the upstream timed out | Wait, then read state before retrying; a retry is a new round |
 | `payment_outcome_unknown` | A payment was sent and the answer never arrived | Reconcile with `details` before paying again |
 | `missing_config` | The deployment has no challenge secret | Operator: set `MOLPHA_HTTP_CHALLENGE_SECRET` |
@@ -182,4 +183,4 @@ Scale-out needs a shared rate limiter and revised operational limits; the challe
 
 `npm test`, `npm run typecheck`, and `npm run build` cover the regular suite. HTTP tests start loopback servers and mock upstream services; they require no funded wallet. Canary tests capture request logs and scan for credential and argument markers, including error paths.
 
-Live devnet tests are skipped unless `MOLPHA_HTTP_DEVNET_TEST=true`. Set `MOLPHA_HTTP_TEST_API_CONFIG` to a deterministic public API config JSON and optionally `MOLPHA_HTTP_TEST_QUORUM` (default 2). This runs discovery and, when `MOLPHA_HTTP_TEST_PAYER` names a devnet wallet holding USDC, `prepare_x402_round` for it: a verified quote and an unsigned transaction, with nothing signed or spent. The test holds no key, loads no `.env` or keypair file, and needs `MOLPHA_HTTP_CHALLENGE_SECRET` for the prepare step.
+Live devnet tests are skipped unless `MOLPHA_HTTP_DEVNET_TEST=true`. Set `MOLPHA_HTTP_TEST_SOURCE` to a deterministic public source document (JSON) and optionally `MOLPHA_HTTP_TEST_QUORUM` (default 2). This runs discovery and, when `MOLPHA_HTTP_TEST_PAYER` names a devnet wallet holding USDC, `prepare_x402_round` for it: a verified quote and an unsigned transaction, with nothing signed or spent. The test holds no key, loads no `.env` or keypair file, and needs `MOLPHA_HTTP_CHALLENGE_SECRET` for the prepare step.

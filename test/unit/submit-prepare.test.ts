@@ -1,4 +1,4 @@
-import { BN, BorshAccountsCoder, type Idl } from "@anchor-lang/core";
+import { type Idl } from "@anchor-lang/core";
 import { address, getBase58Decoder, type Address } from "@solana/kit";
 import { Connection, Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,6 @@ import { callTool, callToolError, collectTools } from "./tool-harness.js";
 
 const programId = getMolphaProgramId();
 const idl = requireSdkExport<Idl>("MOLPHA_IDL");
-const coder = new BorshAccountsCoder(idl);
 const bs58 = { encode: (bytes: Uint8Array): string => getBase58Decoder().decode(bytes) };
 const pda = (name: string, ...args: unknown[]): string => String(requireSdkExport<(...a: unknown[]) => unknown>(name)(...args));
 const randomAddress = (): Address => address(Keypair.generate().publicKey.toBase58());
@@ -39,28 +38,31 @@ interface Rpc {
   nodes: Address[];
 }
 
-/** A Solana JSON-RPC node holding one registry and its node accounts, behind a real Connection. */
+/** A Solana JSON-RPC node holding one registry, behind a real Connection. */
 async function rpc(): Promise<Rpc> {
   const nodes = [randomAddress(), randomAddress(), randomAddress()];
   const accounts = new Map<string, Buffer>();
-  // Registry holds 256 node slots, more than the coder's encode buffer: lay it out by hand.
-  // discriminator | version u32 | node_count u16 | redundancy_buffer u8 | bump u8 | nodes [[u8;32];256] | i64 | i64
-  const registry = Buffer.alloc(8 + 4 + 2 + 1 + 1 + 256 * 32 + 8 + 8);
+  // A registry snapshot holds its members' keys, so no Node account is read. Laid out by hand
+  // (bytemuck, not borsh): discriminator | grace_active_until i64 | active_from i64 | version u32 |
+  // node_count u8 | provider_count u8 | redundancy_buffer u8 | bump u8, then one 96-byte record per
+  // slot: node account | secp256k1 x | y.
+  const registry = Buffer.alloc(32 + nodes.length * 96);
   Buffer.from(idl.accounts!.find((entry) => entry.name === "Registry")!.discriminator).copy(registry, 0);
-  registry.writeUInt32LE(3, 8);
-  registry.writeUInt16LE(nodes.length, 12);
-  registry.writeUInt8(1, 14);
-  registry.writeUInt8(255, 15);
-  nodes.forEach((node, i) => Buffer.from(new PublicKey(node).toBytes()).copy(registry, 16 + i * 32));
-  accounts.set(pda("registryPda", 3, programId), registry);
-  for (const [i, node] of nodes.entries()) {
+  registry.writeBigInt64LE(0n, 8);
+  registry.writeBigInt64LE(1n, 16);
+  registry.writeUInt32LE(3, 24);
+  registry.writeUInt8(nodes.length, 28);
+  registry.writeUInt8(0, 29);
+  registry.writeUInt8(1, 30);
+  registry.writeUInt8(255, 31);
+  nodes.forEach((node, i) => {
+    const at = 32 + i * 96;
     const [x, y] = NODE_KEYS[i % 2]!;
-    accounts.set(node, await coder.encode("Node", {
-      authority: new PublicKey(randomAddress()), secp256k1_pubkey_x: hex(x), secp256k1_pubkey_y: hex(y), status: { Active: {} },
-      ip: [127, 0, 0, 1], port: 9000, locked_amount: new BN(1), claimable_rewards: new BN(0), registered_at: new BN(1),
-      withdrawable_slot: new BN(0), frozen_until: new BN(0), bump: 255
-    }));
-  }
+    Buffer.from(new PublicKey(node).toBytes()).copy(registry, at);
+    Buffer.from(hex(x)).copy(registry, at + 32);
+    Buffer.from(hex(y)).copy(registry, at + 64);
+  });
+  accounts.set(pda("registryPda", 3, programId), registry);
   const account = (key: string) => {
     const data = accounts.get(key);
     return data ? { data: [data.toString("base64"), "base64"], executable: false, lamports: 1_000_000, owner: programId, rentEpoch: 0, space: data.length } : null;
@@ -128,15 +130,15 @@ describe("prepareSubmit", () => {
     const feed = pda("feedPda", Buffer.from(sourceId, "hex"), 2, payer.publicKey, programId);
     expect(prepared).toMatchObject({ payer: payerAddress, feed, sourceId: `0x${sourceId}`, signaturesRequired: 2, registryVersion: 3, lastValidBlockHeight: 100 });
 
-    // One program instruction, on the accounts the program's submit_attestation takes, with the
-    // two signing nodes' accounts after them in bitmap order.
+    // One program instruction, on exactly the accounts the program's submit_attestation takes:
+    // the signers' keys come from the registry, so no node account rides along.
     const submit = transaction.message.compiledInstructions.filter((ix) => keys[ix.programIdIndex] === programId);
     expect(submit).toHaveLength(1);
     const ixAccounts = submit[0]!.accountKeyIndexes.map((index) => keys[index]);
     expect(ixAccounts.slice(0, 5)).toEqual([
       payerAddress, pda("registryPda", 3, programId), feed, pda("protocolConfigPda", programId), "11111111111111111111111111111111"
     ]);
-    expect(ixAccounts.slice(5)).toEqual([node.nodes[0], node.nodes[1]]);
+    expect(ixAccounts).toHaveLength(5);
     expect(Buffer.from(submit[0]!.data).includes(Buffer.from(sourceId, "hex"))).toBe(true);
     // Everything else in the transaction is the compute budget program: no transfer rides along.
     const others = transaction.message.compiledInstructions.filter((ix) => keys[ix.programIdIndex] !== programId).map((ix) => keys[ix.programIdIndex]);

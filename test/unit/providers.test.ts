@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMolphaContext, type MolphaContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
+import { priceSource } from "./sources.js";
 import { callTool, callToolError } from "./tool-harness.js";
 
 vi.mock("../../src/clients.js", async (importOriginal) => ({
@@ -11,14 +12,23 @@ vi.mock("../../src/clients.js", async (importOriginal) => ({
   getMolphaContext: vi.fn()
 }));
 
-const feed = (id: string, flowHost: string) => ({
-  id,
-  title: `${id} last trade`,
-  operation: "crypto.trade_last",
-  symbol: id.toUpperCase(),
-  sourceId: id.padEnd(64, "0"),
-  apiConfig: { url: `${flowHost}/crypto/trade/last/${id.toUpperCase()}`, method: "GET", headers: {}, responseParser: "$.price", valueTransform: "" }
-});
+/** A catalog feed as the gateway serves it: the canonical `source` document and its ID, to be sent unchanged. */
+const feed = (id: string, flowHost: string) => {
+  const source = priceSource({
+    url: `${flowHost}/crypto/trade/last/${id.toUpperCase()}`,
+    path: "$.price",
+    decimals: 8,
+    tolerance: { maxDeviationBps: "50", maxAgeMs: "2000" }
+  });
+  return {
+    id,
+    title: `${id} last trade`,
+    operation: "crypto.trade_last",
+    symbol: id.toUpperCase(),
+    sourceId: source.sourceId,
+    source: JSON.parse(source.canonical) as Record<string, unknown>
+  };
+};
 
 const detail = {
   id: "tickerlayer",
@@ -92,11 +102,27 @@ describe("get_provider", () => {
     expect(out).toMatchObject({ id: "tickerlayer", aggregation: { mode: "tolerance", minSignatures: 3 }, disclosure: "Values are attested provider quotes." });
     expect((out.flows as unknown[]).length).toBe(2);
     expect(out.operations).toBeUndefined();
-    // Both flows are explained, and the advice is to pass the apiConfig unchanged.
+    // Both flows are explained, and the advice is to pass the source unchanged.
     expect(String(out.howToUse)).toContain("unchanged");
     expect(String(out.howToUse)).toContain("api_key flow");
     expect(String(out.howToUse)).toContain("x402 flow");
     expect(String(out.howToUse)).toContain("attested provider quotes");
+  });
+
+  it("returns each feed's source in a form that derives to the feed's own sourceId, so it can be sent unchanged", async () => {
+    useGateways(["http://gw.test"], () => ok(detail));
+    const out = await callTool("get_provider", { provider: "tickerlayer" });
+    const feeds = (out.flows as Array<{ feeds: Array<{ sourceId: string; source: Record<string, unknown> }> }>).flatMap((f) => f.feeds);
+
+    expect(feeds.length).toBeGreaterThan(0);
+    for (const f of feeds) {
+      expect(f).not.toHaveProperty("apiConfig");
+      const derived = await callTool("derive_source_id", { source: f.source });
+      expect(derived.sourceId).toBe(f.sourceId);
+      expect(derived.canonicalJson).toBe(JSON.stringify(f.source));
+    }
+    expect(String(out.howToUse)).toContain("source");
+    expect(String(out.howToUse)).not.toContain("apiConfig");
   });
 
   it("narrows to one flow and one feed", async () => {

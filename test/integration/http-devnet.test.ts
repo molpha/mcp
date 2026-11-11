@@ -24,13 +24,13 @@ it.runIf(process.env.MOLPHA_HTTP_DEVNET_TEST === "true")("hosted devnet discover
     expect((caps.payment as { signing?: string }).signing).toBe("caller");
     const payer = process.env.MOLPHA_HTTP_TEST_PAYER;
     if (payer) {
-      const apiConfigText = process.env.MOLPHA_HTTP_TEST_API_CONFIG;
-      if (!apiConfigText) throw new Error("Set MOLPHA_HTTP_TEST_API_CONFIG to a deterministic public API config JSON.");
+      const sourceText = process.env.MOLPHA_HTTP_TEST_SOURCE;
+      if (!sourceText) throw new Error("Set MOLPHA_HTTP_TEST_SOURCE to a deterministic public source document (JSON).");
       const signaturesRequired = Number(process.env.MOLPHA_HTTP_TEST_QUORUM ?? 2);
       expect(typeof (await call("get_x402_status", { signaturesRequired, payer })).payer === "string").toBe(true);
       // Needs MOLPHA_HTTP_CHALLENGE_SECRET. Verifies the gateway's live 402 against chain and stops
       // at the unsigned transaction: nothing is signed, paid or broadcast.
-      const prepared = await call("prepare_x402_round", { apiConfig: JSON.parse(apiConfigText), chains: ["solana"], signaturesRequired, payer });
+      const prepared = await call("prepare_x402_round", { source: JSON.parse(sourceText), chains: ["solana"], signaturesRequired, payer });
       expect(typeof prepared.unsignedTransaction === "string" && typeof prepared.challenge === "string").toBe(true);
     }
   } finally { await app.close(); }

@@ -89,7 +89,7 @@ skills/molpha/
   SKILL.md                  # when to use; invariants; decision tree; ≤ ~150 lines
   references/
     mcp-workflows.md        # tool sequences for each level; spend safety; error recovery
-    apiconfig.md            # writing a source; determinism; tolerance; sourceId
+    source.md               # writing a source; determinism; tolerance; sourceId
     integrate-solana.md     # reading a feed account from a program / client
     integrate-evm.md        # verify() call shape; trust model
     integrate-starknet.md

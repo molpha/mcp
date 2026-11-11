@@ -3,6 +3,7 @@ import { requireSigner, assertActive, getMolphaContext, requireMethod, type Tool
 import { parseUsdcAtomic } from "../config.js";
 import { recordSourceSpend, refuseSourcePayment, resolveDryRun, withSourceSpendSerialization } from "../guardrails.js";
 import { toolHandler } from "../mcp.js";
+import { parseSource, singleHttpInput } from "../source.js";
 import {
   authorizePayment, createPayer, describeQuote, disabledError, eligibleSetSizeFor, payerAddress, probeSourceTerms,
   sourcePaymentEnabled
@@ -35,14 +36,14 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
     {
       title: "Execute subscription-paid Molpha round",
       description:
-        "Run a threshold-signing round paid from this signer's USDC subscription and return the self-contained signed attestation PLUS prebuilt verifier arguments for each requested chain. The round is keyed by sourceId, derived here from apiConfig (see derive_source_id). The signed payload is the trust anchor — verify it or forward it to a contract; do not consume `value` alone. Only the `solana` leg can be settled from this server (via `autoSubmit`, or by passing this tool's output to submit_attestation unmodified); `evm` and `starknet` return contract-ready calldata only — executing verify() there is the agent's job by design (see build_verifier_calldata). Each live call consumes one round of subscription quota. Fails if the gateway refuses the subscription (missing, expired, or out of quota); use execute_x402_round to pay for the round per request instead.",
+        "Run a threshold-signing round paid from this signer's USDC subscription and return the self-contained signed attestation PLUS prebuilt verifier arguments for each requested chain. The round is keyed by sourceId, derived here from the `source` document (see derive_source_id); a `source` the SDK rejects is refused with the path of the offending field before anything is sent. The signed payload is the trust anchor — verify it or forward it to a contract; do not consume `value` alone. Only the `solana` leg can be settled from this server (via `autoSubmit`, or by passing this tool's output to submit_attestation unmodified); `evm` and `starknet` return contract-ready calldata only — executing verify() there is the agent's job by design (see build_verifier_calldata). Each live call consumes one round of subscription quota. Fails if the gateway refuses the subscription (missing, expired, or out of quota); use execute_x402_round to pay for the round per request instead.",
       inputSchema: {
         ...roundInputSchema,
         encryptSecrets: z
           .record(z.string())
           .optional()
           .describe(
-            "Private API secrets referenced as {{secret.<name>}} in apiConfig. Encrypted to each selected node after its key is checked against the on-chain registry; the gateway never sees plaintext."
+            "Private API secrets referenced as {{secret.<name>}} in source: only in an http input's URL after the host, a header value or a body text. Encrypted to each selected node after its key is checked against the on-chain registry; the gateway never sees plaintext."
           ),
         sourcePayment: z
           .object({
@@ -56,7 +57,7 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
           .strict()
           .optional()
           .describe(
-            "Authorize paying a paywalled source (for example a provider's x402 feed) from the payer wallet this server holds. Omit it and a paywalled source is refused with its quote, never paid. Off unless the server is configured with a payer key AND allowed networks. The source is paid directly; Molpha never receives it. Public sources only (not with encryptSecrets). There is no automatic retry once payment is signed: a retry would sign a fresh set. Call quote_source_payment first to see the price."
+            "Authorize paying a paywalled source (for example a provider's x402 feed) from the payer wallet this server holds. Omit it and a paywalled source is refused with its quote, never paid. Off unless the server is configured with a payer key AND allowed networks. The source is paid directly; Molpha never receives it. Public sources only (not with encryptSecrets), and only a source with exactly one http input (a payment names no host). There is no automatic retry once payment is signed: a retry would sign a fresh set. Call quote_source_payment first to see the price."
           )
       },
       outputSchema,
@@ -64,7 +65,7 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
     },
     toolHandler(outputSchema, async (args: RoundArgs & { encryptSecrets?: Record<string, string>; sourcePayment?: { maxSpendUsdc: string } }) => {
-      const { apiConfig, signaturesRequired, maxAge, chains, encryptSecrets, autoSubmit = false, dryRun, sourcePayment } = args;
+      const { source, signaturesRequired, maxAge, chains, encryptSecrets, autoSubmit = false, dryRun, sourcePayment } = args;
       const context = await (dependencies.getContext ?? getMolphaContext)();
       requireSigner(context);
       const { config, gateway } = context;
@@ -74,6 +75,8 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
       if (sourcePayment) {
         if (!sourcePaymentEnabled(config)) throw disabledError();
         if (encryptSecrets) refuseSourcePayment("Source payment is for public sources: it cannot be combined with encryptSecrets.");
+        // A payment names no host: refuse a source with other than one http input now, dry run or not.
+        singleHttpInput(parseSource(source));
       }
 
       if (isDryRun) {
@@ -109,7 +112,7 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
       let payment: Record<string, unknown> | undefined;
       if (sourcePayment) {
         const eligible = await eligibleSetSizeFor(context, signaturesRequired);
-        const terms = await probeSourceTerms(apiConfig);
+        const terms = await probeSourceTerms(source);
         if (terms === null) {
           paid = { paid: false, reason: "The source did not ask for payment, so none was made." };
         } else {
@@ -141,7 +144,8 @@ export function registerExecuteSubscriptionRoundTool(server: ToolServer, depende
 
       if (context.lifecycle) context.lifecycle.effectStarted = true;
       const result = await requestSignedData({
-        apiConfig,
+        // The SDK is handed the source this server parsed itself, never an object a caller shaped like one.
+        source: parseSource(source),
         signaturesRequired,
         ...(maxAge !== undefined ? { maxAge } : {}),
         ...(encryptSecrets ? { encrypt: { secrets: encryptSecrets } } : {}),

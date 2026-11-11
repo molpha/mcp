@@ -5,6 +5,8 @@
  */
 import { flattenAttestation } from "./artifacts.js";
 import { normalizeSourceId } from "./hex.js";
+import { requireSdkExport } from "./sdk.js";
+import { formatSourceValue, type SourceOutput } from "./source.js";
 
 /** How far a returned round's gateway-assigned timestamp may sit from this host's clock. */
 const ROUND_CLOCK_TOLERANCE_MS = 120_000;
@@ -14,6 +16,11 @@ export interface ExpectedRound {
   sourceId: string;
   registryVersion: number;
   signaturesRequired: number;
+  /**
+   * The requested source's declared output. With it, `value` is rendered here from the signed bytes
+   * rather than taken as the gateway sent it, and a `keccak256` preimage is checked to hash to them.
+   */
+  output?: SourceOutput;
 }
 
 export interface RoundResponse {
@@ -29,6 +36,10 @@ export interface RoundResponse {
  * milliseconds on the round tick grid, so the timestamp can only be checked for
  * plausibility: a value in seconds, or an aggregate replayed from another time, does
  * not pass.
+ *
+ * `value` is display only. When the request's output is known it is rendered from the signed
+ * `payload.value` (the SDK does the same on the subscription path); a `valuePreimage` is accepted only
+ * for a keccak256 output and only if it hashes to the signed value.
  */
 export function readRoundResponse(body: Record<string, unknown>, expected: ExpectedRound, startedAtMs: number): RoundResponse {
   const data = flattenAttestation(asRecord(body.data) ?? {});
@@ -42,21 +53,32 @@ export function readRoundResponse(body: Record<string, unknown>, expected: Expec
     timestamp >= startedAtMs - ROUND_CLOCK_TOLERANCE_MS &&
     timestamp <= Date.now() + ROUND_CLOCK_TOLERANCE_MS;
 
+  const preimage = typeof data.valuePreimage === "string" && data.valuePreimage !== "" ? data.valuePreimage : undefined;
+  if (preimage !== undefined && expected.output) {
+    if (expected.output.type !== "keccak256") {
+      throw new Error("the gateway returned a value preimage, but the source's output is not keccak256");
+    }
+    const verify = requireSdkExport<(valuePacked: string, preimageHex: string) => boolean>("verifyPreimage");
+    if (!verify(String(data.valuePacked ?? ""), preimage)) {
+      throw new Error("the gateway's value preimage does not hash to the signed value");
+    }
+  }
+  const rendered = expected.output ? formatSourceValue(data.valuePacked, expected.output) : undefined;
+
   return {
     matches: sameRequest && stampedNow,
     result: {
       sourceId: data.sourceId,
-      value: data.value,
+      value: rendered ?? data.value,
       valuePacked: data.valuePacked,
       timestamp: data.timestamp,
       registryVersion: data.registryVersion,
       signaturesRequired: data.signaturesRequired,
-      configHash: data.configHash,
       signersBitmap: data.signersBitmap,
       s: data.s,
       commitmentAddr: data.commitmentAddr,
       fresh: data.fresh ?? true,
-      ...(data.aggregation !== undefined ? { aggregation: data.aggregation } : {})
+      ...(preimage !== undefined ? { valuePreimage: preimage } : {})
     }
   };
 }
