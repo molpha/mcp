@@ -1,0 +1,23 @@
+name: Claude
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  review:
+    # Non-draft PRs from branches of this repo only: fork runs are not reviewed.
+    if: >-
+      !github.event.pull_request.draft
+      && github.event.pull_request.head.repo.full_name == github.repository
+    # A new push supersedes the review in progress.
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: molpha/.github/.github/workflows/claude-review.yml@v1
+    with:
+      model: claude-sonnet-5-5
