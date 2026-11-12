@@ -1,6 +1,6 @@
 {
   "name": "@molpha/mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "mcpName": "io.github.molpha/mcp",
   "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
   "license": "MIT",
