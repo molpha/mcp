@@ -175,14 +175,15 @@ The payer pays the source directly; Molpha never receives it. Only authorization
 
 ## Molpha Data
 
-Molpha Data is a catalog of on-chain data **templates**: a template turns a few parameters (a chain, a pool, a
-token) into a complete source, so common values need no hand-written source. `list_data_templates` lists them;
+Molpha Data is a catalog of data **templates**, on-chain reads and reference data from primary publishers: a
+template turns a few parameters (a chain, a pool, a token, a series) into a complete source, so common values need no hand-written source. `list_data_templates` lists them;
 each has a tool of its own (`get_pool_price`, `get_lst_rate`, `get_aave_health_factor`, ...), and `read_data`
 takes any of them by id, or a raw source.
 
 - **Read** (every server, read-only): the Molpha Data service reads the chain itself and answers with the value,
   the full `source` it read and its read context. Free and rate limited; no signature. Decide with it, do not settle
-  with it.
+  with it. Templates on Molpha's keyed sources (BEA, EIA, BLS with `access: key`) are private: the service cannot
+  read them unsigned, so only a signed round reads them.
 - **Sign** (`execute_data_round`, servers with a signer): the service derives the source, this server re-hashes it
   (a source that does not hash to its `sourceId` is refused), and the round runs through
   `execute_subscription_round` (default) or `execute_x402_round` (`payment: "x402"`) with their dry-run lock, spend

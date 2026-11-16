@@ -1,6 +1,6 @@
 /**
  * Molpha Data tools. The service is faked with a stubbed fetch answering with real responses of a service
- * that read mainnet (test/fixtures/data, 2026-11-11); signed reads run the real execute_subscription_round with a
+ * that read mainnet (test/fixtures/data, 2026-11-11; unsigned-pool-price.json 2026-11-16, molpha-data 97c9025); signed reads run the real execute_subscription_round with a
  * faked SDK gateway.
  */
 import { readFileSync } from "node:fs";
@@ -72,7 +72,7 @@ describe("unsigned reads", () => {
     const out = await callTool("get_pool_price", { chain: "ethereum", pool: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640" }, dependencies);
     expect(out).toMatchObject({ sourceId: unsignedPrice.source.sourceId, value: unsignedPrice.data.value, next: expect.stringContaining("execute_data_round") });
     expect(calls[0]!.url).toBe("http://data.test/v1/read");
-    expect(calls[0]!.body).toEqual({ template: "dex.pool.price@1", params: { chain: "ethereum", pool: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640" }, attest: false });
+    expect(calls[0]!.body).toEqual({ template: "dex.pool.price@2", params: { chain: "ethereum", pool: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640" }, attest: false });
     expect(calls[0]!.headers["x-api-key"]).toBe("client-key-0000000001");
   });
 

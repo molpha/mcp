@@ -8,7 +8,7 @@ export const DATA_CATALOG: DataTemplate[] = [
     "ref": "account.balance@1",
     "class": "Wallet · native and token balance",
     "title": "Account balance",
-    "summary": "A wallet's native balance (EVM) or token balance (ERC-20, Starknet token, or the wallet's associated SPL token account).",
+    "summary": "A wallet's native balance (EVM, Solana) or token balance (ERC-20, Starknet token, or the wallet's associated SPL token account).",
     "kinds": [
       "evm",
       "starknet",
@@ -38,7 +38,7 @@ export const DATA_CATALOG: DataTemplate[] = [
         "name": "token",
         "type": "address",
         "required": false,
-        "doc": "the token (ERC-20, Starknet token, SPL mint); omit for the native balance on EVM chains"
+        "doc": "the token (ERC-20, Starknet token, SPL mint); omit for the native balance (EVM chains, Solana)"
       },
       {
         "name": "tokenProgram",
@@ -63,10 +63,10 @@ export const DATA_CATALOG: DataTemplate[] = [
         "doc": "tolerance for a Solana account that changes between the nodes' reads"
       }
     ],
-    "returns": "the balance in whole tokens at the token's decimals (18 for native EVM balances); uint256, int256 in tolerance mode",
+    "returns": "the balance in whole tokens at the token's decimals (18 for native EVM balances, 9 for SOL); uint256, int256 in tolerance mode",
     "caveats": [
       "Solana reads the wallet's associated token account only; tokens held in other token accounts are not counted, and a wallet without one fails the read.",
-      "The Solana native balance (lamports) needs a source-format leaf that does not exist yet (Phase 2)."
+      "The Solana native balance is the account's lamports in SOL (9 decimals), rent-exempt reserve included; a wallet that never held SOL reads 0."
     ],
     "example": {
       "account": "0x9de443adc5a411e83f1878ef24c3f52c61571e72",
@@ -161,12 +161,95 @@ export const DATA_CATALOG: DataTemplate[] = [
     "path": "/v1/{chain}/curve/{pool}/price-oracle"
   },
   {
-    "id": "dex.pool.price",
+    "id": "dex.ekubo.price",
     "version": 1,
-    "ref": "dex.pool.price@1",
+    "ref": "dex.ekubo.price@1",
+    "class": "DEX · spot price as a decimal",
+    "title": "Ekubo pool spot price",
+    "summary": "An Ekubo pool's current price from its square-root price, adjusted for both tokens' decimals. Ekubo pools have no address: the pool is named by its key.",
+    "kinds": [
+      "starknet"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (Starknet chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "token0",
+        "type": "address",
+        "required": true,
+        "doc": "the pool's lower token (Ekubo sorts a pool's tokens)"
+      },
+      {
+        "name": "token1",
+        "type": "address",
+        "required": true,
+        "doc": "the pool's higher token"
+      },
+      {
+        "name": "fee",
+        "type": "uint",
+        "required": true,
+        "doc": "the fee as Ekubo writes it: a u128 fraction of 2^128 (0.05% is 170141183460469235273462165868118016)"
+      },
+      {
+        "name": "tickSpacing",
+        "type": "uint",
+        "required": true,
+        "doc": "the pool's tick spacing (1000 for the 0.05% pools)"
+      },
+      {
+        "name": "extension",
+        "type": "address",
+        "required": false,
+        "default": "0x0",
+        "doc": "the pool's extension contract; 0x0 for none"
+      },
+      {
+        "name": "invert",
+        "type": "enum",
+        "required": false,
+        "default": "false",
+        "enum": [
+          "false",
+          "true"
+        ],
+        "doc": "false: token1 per token0; true: the inverse"
+      }
+    ],
+    "returns": "quote-token units per one base token, 18 decimals (uint256); the base is token0 unless inverted",
+    "caveats": [
+      "A spot price moves within a block and can be pushed by a single trade.",
+      "The price names its quote token. There is no USD conversion.",
+      "A key that names no pool reads a zero price, which fails the round."
+    ],
+    "example": {
+      "chain": "starknet",
+      "fee": "170141183460469235273462165868118016",
+      "finality": "fast",
+      "invert": "true",
+      "tickSpacing": "1000",
+      "token0": "0x033068f6539f8e6e6b131e6b2b814e6c34a5224bc66947c47dab9dfee93b35fb",
+      "token1": "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"
+    }
+  },
+  {
+    "id": "dex.pool.price",
+    "version": 2,
+    "ref": "dex.pool.price@2",
     "class": "DEX · spot price as a decimal",
     "title": "Pool spot price",
-    "summary": "A concentrated-liquidity pool's current price from its square-root price, adjusted for both tokens' decimals.",
+    "summary": "A pool's current price: from a concentrated-liquidity pool's square-root price (Uniswap v3 and v4, Slipstream, Whirlpool, Raydium CLMM), a Meteora DLMM pair's active bin, or a v2-style pool's reserves, adjusted for both tokens' decimals.",
     "kinds": [
       "evm",
       "svm"
@@ -188,8 +271,14 @@ export const DATA_CATALOG: DataTemplate[] = [
       {
         "name": "pool",
         "type": "address",
-        "required": true,
-        "doc": "a Uniswap v3-style pool (Uniswap, PancakeSwap, Sushi v3, Aerodrome Slipstream) or an Orca Whirlpool"
+        "required": false,
+        "doc": "a Uniswap v3-style pool (Uniswap, PancakeSwap, Sushi v3, Aerodrome Slipstream), a v2-style pool (Uniswap v2, Sushi, Aerodrome volatile), an Orca Whirlpool, a Raydium CLMM pool or a Meteora DLMM pair; give pool or poolId"
+      },
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "required": false,
+        "doc": "a Uniswap v4 pool id (EVM); give pool or poolId"
       },
       {
         "name": "invert",
@@ -201,14 +290,24 @@ export const DATA_CATALOG: DataTemplate[] = [
           "true"
         ],
         "doc": "false: token1 per token0 (token B per token A); true: the inverse"
+      },
+      {
+        "name": "minReserve",
+        "type": "uint",
+        "required": false,
+        "doc": "v2-style pools only: refuse when the quote token's reserve is below this many whole tokens"
       }
     ],
-    "returns": "quote-token units per one base token, 18 decimals; the base is token0 (token A) unless inverted",
+    "returns": "quote-token units per one base token, 18 decimals; the base is token0 (token A, currency0) unless inverted",
     "caveats": [
-      "A spot price moves within a block and can be pushed by a single trade; use dex.pool.twap or a liquidity floor for settlement.",
-      "The price names its quote token. There is no USD conversion.",
-      "Solana pools are written every slot, so the Solana form runs in tolerance mode (median of node reads).",
-      "Prices below 1e-18 of the quote token round to zero; use invert."
+      "A spot price moves within a block and can be pushed by a single trade; use dex.pool.twap or a liquidity floor for settlement. A v2-style pool's price is its reserve ratio, the cheapest of all to move: set minReserve.",
+      "The price names its quote token. There is no USD conversion; Uniswap v4's native currency (address 0) is the chain's native token, 18 decimals.",
+      "Uniswap v4: the pool id is checked against the key the PositionManager stored for it, so a pool no position was ever opened in is refused. Pools whose hook may return a swap delta (beforeSwapReturnDelta or afterSwapReturnDelta, i.e. a custom curve) are refused: their square-root price need not be the price a swap gets. Dynamic-fee hooks are accepted. v4 pools have no TWAP oracle.",
+      "Aerodrome stable pools (x^3y + y^3x) are refused: their price is not the reserve ratio.",
+      "Solana pools are written every slot, so the Solana form runs in tolerance mode (median of node reads). Every Solana source asserts the pool's owner program (Whirlpool, Raydium CLMM or DLMM).",
+      "Prices below 1e-18 of the quote token round to zero; use invert.",
+      "A Meteora DLMM pair is priced at its active bin, (1 + binStep/10000)^activeId, computed to 36 places with each step rounded down: it agrees with the program's Q64.64 price to about 12 significant digits.",
+      "Version 1 did not assert the owner of Whirlpool and Raydium pools and read only Uniswap v3-style pools on EVM; it is no longer served."
     ],
     "example": {
       "chain": "ethereum",
@@ -326,11 +425,77 @@ export const DATA_CATALOG: DataTemplate[] = [
   },
   {
     "id": "dex.pool.twap",
-    "version": 1,
-    "ref": "dex.pool.twap@1",
+    "version": 2,
+    "ref": "dex.pool.twap@2",
     "class": "DEX · on-chain TWAP and EMA",
-    "title": "Pool TWAP (mean tick)",
-    "summary": "The arithmetic mean tick over a window, from the pool's own oracle (observe), rounded as Uniswap's OracleLibrary rounds.",
+    "title": "Pool TWAP price",
+    "summary": "The time-weighted average price over a window, from the pool's own oracle: 1.0001 raised to the mean tick (observe on EVM, rounded as Uniswap's OracleLibrary rounds it; a Raydium CLMM observation ring on Solana), or a Meteora DLMM pair's mean active bin, adjusted for both tokens' decimals.",
+    "kinds": [
+      "evm",
+      "svm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM, Solana chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "pool",
+        "type": "address",
+        "required": true,
+        "doc": "a Uniswap v3-style pool with an observation buffer (EVM), a Raydium CLMM pool or a Meteora DLMM pair (Solana)"
+      },
+      {
+        "name": "window",
+        "type": "uint",
+        "required": false,
+        "default": "1800",
+        "doc": "seconds, 1 to 86400"
+      },
+      {
+        "name": "invert",
+        "type": "enum",
+        "required": false,
+        "default": "false",
+        "enum": [
+          "false",
+          "true"
+        ],
+        "doc": "false: token1 per token0; true: the inverse"
+      }
+    ],
+    "returns": "quote-token units per one base token over the window ending at the pinned block, 18 decimals; the base is token0 unless inverted",
+    "caveats": [
+      "The pool must hold observations as old as the window, or every read fails.",
+      "The price names its quote token. There is no USD conversion.",
+      "The mean tick is OracleLibrary's (rounded toward negative infinity), and the price is 1.0001^tick computed to 36 places with each step rounded down, then rounded to 18: exact to about 24 significant digits for ticks above -400000. It is not bit-identical to OracleLibrary.getQuoteAtTick, which goes through TickMath's Q64.96 square root.",
+      "A price below 1e-18 of the quote token refuses (the source asserts a positive value); use invert.",
+      "Version 1 signed the mean tick itself; dex.pool.twapDeviation still compares ticks.",
+      "Solana: the pool's observation ring is read at its newest slot and the slot k observations earlier (k = window / the sampling interval: 15 s on Raydium CLMM, about 120 s on DLMM), so the span is set by when the pool was traded, not by the window exactly. The source refuses unless the span is between window/2 and 2 x window and the newest slot is no older than the window: quiet pools refuse. The window is at most 99 observations (about 24 minutes on Raydium).",
+      "Solana runs in tolerance mode (int256, median of node reads); the observation account's owner and its pool are asserted. Orca Whirlpools keep no price observations and are refused."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
+    },
+    "path": "/v1/{chain}/pools/{pool}/twap"
+  },
+  {
+    "id": "dex.pool.twapDeviation",
+    "version": 1,
+    "ref": "dex.pool.twapDeviation@1",
+    "class": "Derived · spot against TWAP",
+    "title": "Pool spot against its TWAP",
+    "summary": "How many ticks a pool's current tick is from its own mean tick over a window, both read at one block; or whether it is within a bound.",
     "kinds": [
       "evm"
     ],
@@ -360,18 +525,68 @@ export const DATA_CATALOG: DataTemplate[] = [
         "required": false,
         "default": "1800",
         "doc": "seconds, 1 to 86400"
+      },
+      {
+        "name": "maxTicks",
+        "type": "uint",
+        "required": false,
+        "doc": "set it to sign a yes/no answer (within maxTicks) instead of the distance"
       }
     ],
-    "returns": "the mean tick over the window ending at the pinned block (int256, 0 decimals); price = 1.0001^tick, adjusted for decimals",
+    "returns": "|tick - mean tick| in ticks (uint256, 0 decimals); with maxTicks, true when within it (bool). One tick is a price ratio of 1.0001, so d ticks is close to d bps for small d",
     "caveats": [
-      "The pool must hold observations as old as the window, or every read fails.",
-      "The signed value is the tick; converting it to a price needs a power the source format does not have yet (Phase 2). The response shows the price computed from the signed tick."
+      "The mean tick is dex.pool.twap's (OracleLibrary rounding toward negative infinity), read at the same block as the spot tick, so there is no skew between them.",
+      "The pool must hold observations as old as the window, or every read fails."
     ],
     "example": {
-      "chain": "ethereum",
-      "pool": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
-    },
-    "path": "/v1/{chain}/pools/{pool}/twap"
+      "chain": "base",
+      "pool": "0xd0b53d9277642d899df5c87a3966a349a798f224"
+    }
+  },
+  {
+    "id": "energy.eia",
+    "version": 1,
+    "ref": "energy.eia@1",
+    "class": "Reference data · U.S. energy prices and inventories",
+    "title": "EIA energy series",
+    "summary": "One observation of an EIA series: WTI and Brent spot, Henry Hub spot, weekly U.S. crude stocks, weekly natural gas storage, weekly retail gasoline.",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "series",
+        "type": "enum",
+        "required": true,
+        "enum": [
+          "wti",
+          "brent",
+          "henryHub",
+          "crudeStocks",
+          "gasStorage",
+          "gasolineRetail"
+        ],
+        "doc": "wti, brent, henryHub (daily); crudeStocks, gasStorage, gasolineRetail (weekly)"
+      },
+      {
+        "name": "date",
+        "type": "date",
+        "required": false,
+        "default": "latest",
+        "doc": "the observation's period (YYYY-MM-DD; a weekly series' week date as EIA writes it), or latest"
+      }
+    ],
+    "returns": "the value in the series' unit (fact unit), 4 decimals (int256)",
+    "caveats": [
+      "EIA requires a key: the source carries {{secret.EIA_KEY}} in its x-api-key header and Molpha's gateway fills Molpha's key, so the caller needs none (or brings its own in an encrypted bundle). Dry-runs and previews cannot run it.",
+      "Spot prices are published with a lag of a few days and can be revised; a day without a price (a holiday) fails the read. latest signs the value without its date.",
+      "Weekly series date their week differently (crude stocks and gas storage by the Friday, gasoline by the Monday).",
+      "EIA's API sometimes stalls past a node's 5 s fetch limit (seen on 2026-11-13); such a round fails and is worth retrying."
+    ],
+    "example": {
+      "date": "2026-11-10",
+      "series": "wti"
+    }
   },
   {
     "id": "erc4626.sharePrice",
@@ -460,6 +675,92 @@ export const DATA_CATALOG: DataTemplate[] = [
       "slot": "0x0000000000000000000000000000000000000000000000000000000000000000"
     },
     "path": "/v1/{chain}/accounts/{address}/storage/{slot}"
+  },
+  {
+    "id": "fx.reference",
+    "version": 1,
+    "ref": "fx.reference@1",
+    "class": "Reference data · central bank exchange rates",
+    "title": "Central bank reference exchange rate",
+    "summary": "A central bank's published exchange rate for one business day: the ECB's euro reference rates (about 16:00 CET) or the Bank of Canada's daily averages (by 16:30 ET).",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "publisher",
+        "type": "enum",
+        "required": true,
+        "enum": [
+          "ecb",
+          "boc"
+        ],
+        "doc": "ecb (rates per euro) or boc (Canadian dollars per unit)"
+      },
+      {
+        "name": "currency",
+        "type": "text",
+        "required": true,
+        "doc": "ISO 4217 code: with ecb, the currency quoted per 1 EUR; with boc, the currency priced in CAD"
+      },
+      {
+        "name": "date",
+        "type": "date",
+        "required": false,
+        "default": "latest",
+        "doc": "the business day (YYYY-MM-DD), or latest"
+      }
+    ],
+    "returns": "units of the quote currency per 1 unit of the base currency (facts base and quote), 10 decimals (uint256)",
+    "caveats": [
+      "Reference rates are mid rates for information, not tradable prices; the two publishers fix at different times and by different methods.",
+      "A day without a rate (a TARGET or Canadian holiday, a weekend) fails the read; latest signs the value without its date."
+    ],
+    "example": {
+      "currency": "USD",
+      "date": "2026-11-10",
+      "publisher": "ecb"
+    }
+  },
+  {
+    "id": "lei.status",
+    "version": 1,
+    "ref": "lei.status@1",
+    "class": "Reference data · legal entity identifiers",
+    "title": "LEI status",
+    "summary": "Whether a Legal Entity Identifier is issued to an active entity, or its registration or entity status, from GLEIF's LEI records.",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "lei",
+        "type": "text",
+        "required": true,
+        "doc": "the 20-character LEI (ISO 17442; its check digits are verified)"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "valid",
+        "enum": [
+          "valid",
+          "registration",
+          "entity"
+        ],
+        "doc": "valid (registration ISSUED and entity ACTIVE), registration (ISSUED, LAPSED, RETIRED, ...) or entity (ACTIVE, INACTIVE)"
+      }
+    ],
+    "returns": "valid: a bool; registration and entity: the status as GLEIF writes it (string32)",
+    "caveats": [
+      "GLEIF updates records several times a day; a round across an update of this LEI fails because nodes disagree.",
+      "An LEI GLEIF does not know fails the read rather than signing false.",
+      "A registration status other than ISSUED (PENDING_TRANSFER, PENDING_ARCHIVAL) reads as not valid."
+    ],
+    "example": {
+      "lei": "5493001KJTIIGC8Y1R12"
+    }
   },
   {
     "id": "lending.aave.reserve",
@@ -593,12 +894,456 @@ export const DATA_CATALOG: DataTemplate[] = [
     "path": "/v1/{chain}/lending/{market}/markets/{asset}/totals"
   },
   {
+    "id": "lending.aave4.hub",
+    "version": 1,
+    "ref": "lending.aave4.hub@1",
+    "class": "Lending · totals and utilization",
+    "title": "Aave v4 Hub asset totals and rates",
+    "summary": "An Aave v4 Liquidity Hub asset's total added (supplied through every Spoke) or owed, its utilization, its drawn (base borrow) rate or the rate its suppliers earn.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "hub",
+        "type": "enum",
+        "required": false,
+        "default": "core",
+        "enum": [
+          "core",
+          "global-dollar",
+          "plus",
+          "prime"
+        ],
+        "doc": "the Liquidity Hub"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "required": true,
+        "doc": "the asset's underlying token"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied (added assets) and borrowed (total owed, drawn plus premium) in whole tokens; utilization = borrowed / supplied; borrowRate: the drawn rate; supplyRate: what suppliers earn"
+      }
+    ],
+    "returns": "supplied and borrowed: whole tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (uint256)",
+    "caveats": [
+      "borrowRate is the Hub's drawn rate, the base every borrower pays. Each borrower also pays a risk premium on top (from the quality of their collateral), so a borrower's own rate is higher.",
+      "supplyRate = drawnRate x (drawnShares + premiumShares) x drawnIndex x (1 - liquidityFee) / addedAssets: interest accrues at the drawn rate on both share kinds and the Hub keeps the liquidity fee. Premiums owed but not yet realized count at their share value.",
+      "Rates are simple yearly rates (Aave v4 accrues the drawn rate linearly over a 365-day year), not APY. Totals include interest up to the read's block."
+    ],
+    "example": {
+      "asset": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "chain": "ethereum",
+      "field": "supplyRate",
+      "hub": "core"
+    }
+  },
+  {
+    "id": "lending.aave4.spoke",
+    "version": 1,
+    "ref": "lending.aave4.spoke@1",
+    "class": "Lending · totals and utilization",
+    "title": "Aave v4 Spoke reserve totals",
+    "summary": "An Aave v4 Spoke reserve's total supplied or borrowed (drawn plus premium), or its utilization: the part of a Hub asset that flows through one Spoke.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "spoke",
+        "type": "enum",
+        "required": false,
+        "default": "main",
+        "enum": [
+          "bluechip",
+          "etherfi",
+          "forex",
+          "gold",
+          "kelp",
+          "lido",
+          "lombard-btc",
+          "main",
+          "paxg-gold",
+          "paxg-paxos",
+          "usdg-maple",
+          "usdg-pendle"
+        ],
+        "doc": "the Spoke"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "required": true,
+        "doc": "the reserve's underlying token"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization"
+        ],
+        "doc": "supplied and borrowed in whole tokens; utilization = borrowed / supplied"
+      }
+    ],
+    "returns": "supplied and borrowed: whole tokens; utilization: a fraction, 18 decimals (uint256)",
+    "caveats": [
+      "The reserve id, its Hub and asset id are read when the source is derived. A Spoke that lists the same underlying from two Hubs is refused: read each Hub with lending.aave4.hub.",
+      "Rates are set per Hub asset, not per Spoke: suppliers on every Spoke earn the Hub's supply rate (lending.aave4.hub). Borrowers pay the Hub's drawn rate plus their own risk premium."
+    ],
+    "example": {
+      "asset": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "chain": "ethereum",
+      "spoke": "main"
+    }
+  },
+  {
+    "id": "lending.compound.market",
+    "version": 1,
+    "ref": "lending.compound.market@1",
+    "class": "Lending · totals and utilization",
+    "title": "Compound v3 market totals and rates",
+    "summary": "A Compound v3 (Comet) market's total supplied or borrowed base asset, its utilization, or its supply or borrow rate, computed from totalsBasic() as Comet computes getUtilization, getSupplyRate and getBorrowRate.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "market",
+        "type": "enum",
+        "required": false,
+        "default": "usdc",
+        "enum": [
+          "aero",
+          "usdc",
+          "usds",
+          "usdt",
+          "wbtc",
+          "weth",
+          "wsteth"
+        ],
+        "doc": "the Comet market, by base asset"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied and borrowed in whole base tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
+      }
+    ],
+    "returns": "supplied and borrowed: whole base tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (uint256)",
+    "caveats": [
+      "Totals and utilization use the indices stored at the market's last accrual (as getUtilization does): interest accrued since is not included.",
+      "The kink curve's constants are Comet immutables, read when the source is derived and written into it. The source also reads the proxy's EIP-1967 implementation slot and refuses once Compound governance upgrades the market, until the source is derived again.",
+      "Rates are simple yearly rates (per-second rate x 31,536,000), not APY. Checked on cUSDCv3 at block 26428088: the transform equals getSupplyRate(getUtilization()) and getBorrowRate(getUtilization()) exactly.",
+      "Only the base asset earns or pays interest in Compound v3; collateral assets earn nothing."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "field": "supplyRate",
+      "market": "usdc"
+    }
+  },
+  {
+    "id": "lending.euler.vault",
+    "version": 1,
+    "ref": "lending.euler.vault@1",
+    "class": "Lending · totals and utilization",
+    "title": "Euler v2 vault totals and rates",
+    "summary": "An Euler v2 (EVK) vault's total assets or borrows, its utilization, or its supply or borrow rate, from the vault's own views.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "vault",
+        "type": "address",
+        "required": true,
+        "doc": "an EVK vault deployed by Euler's factory"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied (totalAssets) and borrowed (totalBorrows) in whole tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
+      }
+    ],
+    "returns": "supplied and borrowed: whole tokens of the vault's asset; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (uint256)",
+    "caveats": [
+      "Only vaults that Euler's evkFactoryPerspective verifies (deployed by the canonical EVK factory) are accepted. That says the code is Euler's, not that the vault's governor, oracle or collateral are sound.",
+      "borrowRate = interestRate() (per second, 1e27) x 31,536,000. supplyRate = borrowRate x totalBorrows / totalAssets x (1 - interestFee), the formula of Euler's UtilsLens; checked against its getAPYs on eUSDC-2 on 2026-11-16.",
+      "The vault's views accrue interest up to the read's block, so totals include interest since the last interaction.",
+      "Rates are simple yearly rates, not APY."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "field": "supplyRate",
+      "vault": "0x797dd80692c3b2dadabce8e30c07fde5307d48a9"
+    }
+  },
+  {
+    "id": "lending.fluid.token",
+    "version": 1,
+    "ref": "lending.fluid.token@1",
+    "class": "Lending · totals and utilization",
+    "title": "Fluid Liquidity layer totals and rates",
+    "summary": "A token's total supplied or borrowed on Fluid's Liquidity layer (shared by every Fluid lending, vault and DEX protocol), its utilization, or its supply or borrow rate.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "required": true,
+        "doc": "the token; 0xeeee…eeee is the native token"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied and borrowed in whole tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
+      }
+    ],
+    "returns": "supplied and borrowed: whole tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (uint256)",
+    "caveats": [
+      "Read through Fluid's LiquidityResolver getOverallTokenData, which is immutable and pinned per chain.",
+      "Rates are the ones the Liquidity layer stored at its last update of the token (it updates on interactions past a utilization threshold), with 2-decimal percent precision: 1482 is 14.82% APR. They are simple yearly rates, as Fluid accrues them.",
+      "Totals include both interest-bearing and interest-free supply and borrow."
+    ],
+    "example": {
+      "asset": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "chain": "ethereum",
+      "field": "supplyRate"
+    }
+  },
+  {
+    "id": "lending.kamino.reserve",
+    "version": 1,
+    "ref": "lending.kamino.reserve@1",
+    "class": "Lending · totals and utilization",
+    "title": "Kamino Lending reserve totals and rates",
+    "summary": "A Kamino Lending reserve's total supplied or borrowed liquidity, its utilization, or its supply or borrow rate, from the reserve account and its borrow-rate curve.",
+    "kinds": [
+      "svm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (Solana chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "reserve",
+        "type": "address",
+        "required": true,
+        "doc": "the Reserve account"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied and borrowed in whole liquidity tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
+      }
+    ],
+    "returns": "supplied and borrowed: whole liquidity tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (int256, tolerance mode)",
+    "caveats": [
+      "borrowRate is the reserve's borrow-rate curve at its utilization (interp over the points read from the reserve) plus the host's fixed rate; supplyRate is the curve rate x utilization x (1 - protocol take rate). Both are simple yearly rates, not APY. Kamino matches a curve segment on whole basis points and holds a kink's rate flat for the first basis point after it; the source interpolates there.",
+      "Borrowed liquidity accrues only when the reserve is refreshed (refresh_reserve), so a read lags the accrued debt slightly.",
+      "Supplied is available + borrowed - protocol and referrer fees, as the program computes it; it is not the cToken supply.",
+      "The reserve is written on every refresh, so the source runs in tolerance mode (median of node reads)."
+    ],
+    "example": {
+      "chain": "solana",
+      "reserve": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+    }
+  },
+  {
+    "id": "lending.marginfi.bank",
+    "version": 1,
+    "ref": "lending.marginfi.bank@1",
+    "class": "Lending · totals and utilization",
+    "title": "marginfi bank totals and rates",
+    "summary": "A marginfi v2 bank's total deposits or borrows, its utilization, or its lending or borrowing rate, from the bank's shares, share values and rate cache.",
+    "kinds": [
+      "svm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (Solana chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "bank",
+        "type": "address",
+        "required": true,
+        "doc": "the Bank account"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied (deposits) and borrowed in whole tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
+      }
+    ],
+    "returns": "supplied and borrowed: whole tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (int256, tolerance mode)",
+    "caveats": [
+      "supplyRate and borrowRate are the lending and borrowing rates the program cached at the bank's last accrual (Bank.cache): the borrowing rate includes the bank's fixed and interest-rate fees. They are simple yearly rates, not APY.",
+      "Share values move only when the bank accrues interest, so a read lags the accrued totals slightly.",
+      "Integration banks (Kamino, Drift, Solend asset tags) are refused: their shares count another protocol's collateral tokens.",
+      "The bank layout changes across marginfi releases; offsets were checked on 2026-11-16 (Bank is 3904 bytes).",
+      "The bank is written on every deposit, borrow and accrual, so the source runs in tolerance mode (median of node reads)."
+    ],
+    "example": {
+      "bank": "2s37akK2eyBbp8DZgCm7RtsaEz8eJP3Nxd4urLHQv7yB",
+      "chain": "solana"
+    }
+  },
+  {
     "id": "lending.morpho.market",
     "version": 1,
     "ref": "lending.morpho.market@1",
     "class": "Lending · totals and utilization",
-    "title": "Morpho Blue market totals",
-    "summary": "A Morpho Blue market's total supplied or borrowed assets, or its utilization, from market(id).",
+    "title": "Morpho Blue market totals and rates",
+    "summary": "A Morpho Blue market's total supplied or borrowed assets, its utilization, or its supply or borrow rate, from market(id) and the AdaptiveCurveIRM's rateAtTarget(id).",
     "kinds": [
       "evm"
     ],
@@ -630,20 +1375,166 @@ export const DATA_CATALOG: DataTemplate[] = [
         "enum": [
           "supplied",
           "borrowed",
-          "utilization"
+          "utilization",
+          "supplyRate",
+          "borrowRate"
         ],
-        "doc": "supplied and borrowed in whole loan tokens; utilization = borrowed / supplied"
+        "doc": "supplied and borrowed in whole loan tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
       }
     ],
-    "returns": "supplied and borrowed: whole loan tokens; utilization: a fraction, 18 decimals (uint256)",
+    "returns": "supplied and borrowed: whole loan tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (uint256)",
     "caveats": [
-      "Totals are as of the market's last interaction (lastUpdate): interest accrued since is not included."
+      "Totals are as of the market's last interaction (lastUpdate): interest accrued since is not included.",
+      "borrowRate is the AdaptiveCurveIRM curve at the current utilization and the stored rateAtTarget: it leaves out the rate-at-target adaptation since the last interaction, so it can differ from the IRM's borrowRateView by that drift (7e-6 relative after 816 s on USDC/wstETH, 2026-11-16). supplyRate = borrowRate x utilization x (1 - fee).",
+      "Rates are simple yearly rates (per-second rate x 31,536,000), not APY. Only markets on the AdaptiveCurveIRM sign a rate."
     ],
     "example": {
       "chain": "ethereum",
       "id": "0xb323495f7e4148be5643a4ea4a8221eef163e4bccfdedc2a6f4696baacbc86cc"
     },
     "path": "/v1/{chain}/lending/morpho/markets/{id}"
+  },
+  {
+    "id": "lending.vesu.market",
+    "version": 1,
+    "ref": "lending.vesu.market@1",
+    "class": "Lending · totals and utilization",
+    "title": "Vesu market totals and rates",
+    "summary": "A Vesu v2 pool's total supplied or borrowed amount of one asset, its utilization, or its supply or borrow rate, from asset_config(asset), utilization(asset) and interest_rate_config(asset).",
+    "kinds": [
+      "starknet"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (Starknet chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "pool",
+        "type": "enum",
+        "required": false,
+        "default": "prime",
+        "enum": [
+          "clearstar-usdc-reactor",
+          "prime",
+          "re7-eth",
+          "re7-strk",
+          "re7-usdc-core",
+          "re7-usdc-prime",
+          "re7-usdc-stable-core",
+          "re7-xbtc"
+        ],
+        "doc": "the Vesu v2 pool"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "required": true,
+        "doc": "the asset's token contract"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "utilization",
+        "enum": [
+          "supplied",
+          "borrowed",
+          "utilization",
+          "supplyRate",
+          "borrowRate"
+        ],
+        "doc": "supplied (reserve + debt) and borrowed in whole tokens; utilization = borrowed / supplied; supplyRate and borrowRate: yearly rates"
+      }
+    ],
+    "returns": "supplied and borrowed: whole tokens; utilization: a fraction, 18 decimals; supplyRate and borrowRate: APR as a fraction, 18 decimals (uint256)",
+    "caveats": [
+      "borrowRate is the pool's interest rate at the pinned block (what interest_rate answers for the current utilization); supplyRate = borrowRate x utilization x (1 - fee_rate). Both are simple yearly rates (per-second rate x 31,536,000), not APY.",
+      "Interest is accrued to the pinned block's timestamp, so totals are current at that block.",
+      "Utilization equals the pool's own utilization(asset) view at the same block.",
+      "Only the listed pools are offered; each Vesu v2 pool is a separate contract."
+    ],
+    "example": {
+      "asset": "0x033068f6539f8e6e6b131e6b2b814e6c34a5224bc66947c47dab9dfee93b35fb",
+      "chain": "starknet",
+      "pool": "prime"
+    }
+  },
+  {
+    "id": "lst.marketDeviation",
+    "version": 1,
+    "ref": "lst.marketDeviation@1",
+    "class": "Derived · LST market against redemption",
+    "title": "LST market price against its exchange rate",
+    "summary": "How far a liquid staking token's pool price is from its own exchange rate, in basis points; negative when it trades at a discount. Or whether it is outside a band.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "required": true,
+        "doc": "a liquid staking token listed for lst.rate on this chain"
+      },
+      {
+        "name": "pool",
+        "type": "address",
+        "required": true,
+        "doc": "a Uniswap v3-style pool of exactly the token against the wrapped native token (WETH)"
+      },
+      {
+        "name": "result",
+        "type": "enum",
+        "required": false,
+        "default": "deviation",
+        "enum": [
+          "deviation",
+          "flag"
+        ],
+        "doc": "deviation = (market - rate) / rate in basis points; flag = |deviation| > bandBps"
+      },
+      {
+        "name": "bandBps",
+        "type": "uint",
+        "required": false,
+        "default": "50",
+        "doc": "the band of result=flag, basis points"
+      }
+    ],
+    "returns": "(market - rate) * 10000 / rate in basis points, 2 decimals, signed (int256), where market is WETH per token from the pool and rate is lst.rate's; with result=flag, true when outside the band (bool)",
+    "caveats": [
+      "wstETH's rate is stETH per wstETH. Priced against WETH, it assumes stETH equals ETH, and that gap is part of what the deviation measures.",
+      "A pool's spot price can be pushed by one trade. The deepest pools (checked 2026-11-15, Uniswap v3): wstETH/WETH 0.01% 0x109830a1aaad605bbf02a9dfa7b0b92ec2fb7daa, rETH/WETH 0.01% 0x553e9c493678d8606d6a5ba284643db2110df823, cbETH/WETH 0.05% 0x840deeef2f115cf50da625f7368c24af6fe74410.",
+      "Ethereum only in v1. Solana's JitoSOL needs tolerance mode, which cannot sign a deviation near zero."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "pool": "0x109830a1aaad605bbf02a9dfa7b0b92ec2fb7daa",
+      "token": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
+    }
   },
   {
     "id": "lst.rate",
@@ -679,8 +1570,11 @@ export const DATA_CATALOG: DataTemplate[] = [
     ],
     "returns": "base-asset units per one token, 18 decimals (uint256)",
     "caveats": [
-      "Only the tokens listed in the catalog are supported; the reader differs per token.",
-      "A Solana stake pool updates once per epoch, so its rate is constant between updates."
+      "Only the tokens listed in the catalog are supported; the reader differs per token. Ethereum: wstETH, rETH, cbETH, weETH, rsETH, ezETH, ETHx, osETH, mETH, sfrxETH, LBTC. Solana: JitoSOL, bSOL, JupSOL, hSOL, mSOL, INF.",
+      "ETHx is the rate Stader's oracle last reported; LBTC is the BTC per LBTC Lombard's ratio feed sets. BTC wrappers redeemed 1:1 (uniBTC, SolvBTC, pumpBTC and the like) have no exchange rate and are not listed: their risk is backing, not a rate.",
+      "INF is Sanctum Infinity's LP token: total_sol_value / supply. The pool updates total_sol_value when it syncs an LST's value (on swaps, adds and removes), so it can lag the member LSTs' rates until the next sync.",
+      "A Solana stake pool and Marinade update once per epoch, so their rates are constant between updates.",
+      "rsETH is the price Kelp's oracle last stored; weETH is in eETH, which ether.fi redeems 1:1 for ETH."
     ],
     "example": {
       "chain": "ethereum",
@@ -689,21 +1583,125 @@ export const DATA_CATALOG: DataTemplate[] = [
     "path": "/v1/{chain}/lst/{token}/rate"
   },
   {
+    "id": "macro.bea",
+    "version": 1,
+    "ref": "macro.bea@1",
+    "class": "Reference data · U.S. national accounts",
+    "title": "BEA national accounts series",
+    "summary": "One period of a U.S. Bureau of Economic Analysis NIPA series as currently published: real GDP growth, final sales, PCE growth, and the PCE and core PCE price indexes and their monthly change.",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "series",
+        "type": "enum",
+        "required": true,
+        "enum": [
+          "core-pce-price-index",
+          "core-pce-price-mom",
+          "final-sales-private-real-growth",
+          "final-sales-real-growth",
+          "gdp-nominal-growth",
+          "gdp-real-growth",
+          "pce-price-index",
+          "pce-price-mom",
+          "pce-real-growth"
+        ],
+        "doc": "the series: quarterly growth rates (gdp-real-growth, gdp-nominal-growth, pce-real-growth, final-sales-real-growth, final-sales-private-real-growth) or monthly PCE prices (pce-price-index, core-pce-price-index, pce-price-mom, core-pce-price-mom)"
+      },
+      {
+        "name": "period",
+        "type": "text",
+        "required": true,
+        "doc": "a quarter (2026Q2) for the quarterly series, a month (2026-09) for the monthly ones"
+      }
+    ],
+    "returns": "the value in the series' own unit (a percent, or an index level with 2017 = 100), 6 decimals (int256)",
+    "caveats": [
+      "The value is the vintage published at the round's time: BEA revises each quarter twice after its advance estimate, and again in annual and comprehensive updates, so a later read of the same period may differ.",
+      "A private source the gateway completes with Molpha's BEA key (BEA allows 100 requests a minute per key, and the gateway keeps under it); a round costs one request per node it asks. Dry-runs and previews cannot run it, since its key travels only inside a round.",
+      "The row is picked by BEA's series code and the period, and its unit is asserted. A period not yet released fails the read.",
+      "Dollar levels (GDP, PCE in dollars) are not offered: BEA publishes them with thousands separators, which a source cannot parse."
+    ],
+    "example": {
+      "period": "2026Q3",
+      "series": "gdp-real-growth"
+    }
+  },
+  {
+    "id": "macro.bls",
+    "version": 1,
+    "ref": "macro.bls@1",
+    "class": "Reference data · U.S. labor and price statistics",
+    "title": "BLS series value",
+    "summary": "One period of a U.S. Bureau of Labor Statistics series as currently published: CPI-U (CUUR0000SA0), the unemployment rate (LNS14000000), nonfarm payrolls (CES0000000001), or any other BLS series ID.",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "series",
+        "type": "text",
+        "required": true,
+        "doc": "the BLS series ID, e.g. CUUR0000SA0 (CPI-U, not seasonally adjusted), LNS14000000 (unemployment rate, percent), CES0000000001 (nonfarm payrolls, thousands)"
+      },
+      {
+        "name": "year",
+        "type": "uint",
+        "required": true,
+        "doc": "the year of the period"
+      },
+      {
+        "name": "period",
+        "type": "text",
+        "required": true,
+        "doc": "M01 to M12 (months), M13 (annual average), Q01 to Q05, S01 to S03, A01"
+      },
+      {
+        "name": "access",
+        "type": "enum",
+        "required": false,
+        "default": "key",
+        "enum": [
+          "key",
+          "keyless"
+        ],
+        "doc": "key: Molpha's gateway fills its own BLS registration key ({{secret.BLS_KEY}} in the request body), so the caller needs none; keyless: BLS's public API, limited per address"
+      }
+    ],
+    "returns": "the value in the series' own unit (an index level, a percent, thousands of persons), 6 decimals (int256)",
+    "caveats": [
+      "The value is the vintage published at the round's time: BLS revises recent months (payrolls twice, then annually), so a later read of the same period may differ.",
+      "key (default): a private source the gateway completes with Molpha's key, shared by every caller within BLS's limit of 500 requests a day; a round costs one request per node it asks, so the gateway refuses rounds past that budget until the next UTC day. Dry-runs and previews cannot run it (its key travels only inside a round); use keyless to preview.",
+      "keyless: BLS limits keyless reads per address per day, and on 2026-11-13 it refused one address (503, then 403 for all of bls.gov) after about five requests, for a while.",
+      "The two access modes are two feeds (two sourceIds).",
+      "A period not yet released fails the read."
+    ],
+    "example": {
+      "period": "M09",
+      "series": "CUUR0000SA0",
+      "year": "2026"
+    }
+  },
+  {
     "id": "oracle.compare",
     "version": 1,
     "ref": "oracle.compare@1",
     "class": "Oracle · cross-check",
     "title": "Two oracle prices compared",
-    "summary": "The deviation between two price feeds on one chain (Chainlink aggregators or Pyth price feeds), refusing a feed older than maxAge; or whether they agree within a bound.",
+    "summary": "The deviation between two prices on one chain (Chainlink, Pyth, RedStone, Chronicle or a pool's spot price on EVM; Pragma or an Ekubo pool on Starknet; Pyth or a pool on Solana), refusing a feed older than maxAge; or whether they agree within a bound.",
     "kinds": [
-      "evm"
+      "evm",
+      "starknet",
+      "svm"
     ],
     "params": [
       {
         "name": "chain",
         "type": "chain",
         "required": true,
-        "doc": "CAIP-2 id or alias (EVM chains)"
+        "doc": "CAIP-2 id or alias (EVM, Starknet, Solana chains)"
       },
       {
         "name": "finality",
@@ -716,32 +1714,49 @@ export const DATA_CATALOG: DataTemplate[] = [
         "name": "a",
         "type": "text",
         "required": true,
-        "doc": "\"chainlink:<aggregator or proxy>\" or \"pyth:<price feed id>\""
+        "doc": "EVM: \"chainlink:<aggregator or proxy>\", \"redstone:<price feed>\", \"chronicle:<oracle>\", \"pyth:<price feed id>\" or \"pool:<Uniswap v3-style pool>[:invert]\"; Starknet: \"pragma:<pair id>\" (e.g. pragma:ETH/USD) or \"pool:ekubo:<token0>:<token1>:<fee>:<tickSpacing>:<extension>[:invert]\"; Solana: \"pyth:<price feed id>\" or \"pool:<Whirlpool, Raydium CLMM pool or DLMM pair>[:invert]\""
       },
       {
         "name": "b",
         "type": "text",
         "required": true,
-        "doc": "the second feed, in the same form"
+        "doc": "the second price, in the same forms"
       },
       {
         "name": "maxAge",
         "type": "uint",
         "required": false,
         "default": "86400",
-        "doc": "seconds; a feed updated longer ago than this before the round fails it"
+        "doc": "seconds; a feed updated longer ago than this before the round fails it (pool legs have no update time)"
       },
       {
         "name": "maxDeviationBps",
         "type": "uint",
         "required": false,
-        "doc": "set it to sign a yes/no answer (deviation within the bound) instead of the deviation"
+        "doc": "set it to sign a yes/no answer (deviation within the bound) instead of the deviation (not on Solana)"
+      },
+      {
+        "name": "agreeBps",
+        "type": "uint",
+        "required": false,
+        "doc": "Solana: nodes whose deviation is within this many bps of the median deviation agree (5 when not set)"
+      },
+      {
+        "name": "minSources",
+        "type": "uint",
+        "required": false,
+        "doc": "Pragma legs: the fewest sources the median may aggregate (1 when not set)"
       }
     ],
     "returns": "the deviation |a - b| / min(a, b) in basis points, 2 decimals (uint256); with maxDeviationBps, true when within it (bool)",
     "caveats": [
       "Both feeds must price the same pair in the same quote; the service shows Chainlink's description, but cannot read what a Pyth id names on chain.",
-      "Pyth prices on EVM are pull-based: a feed nobody updated is refused by maxAge rather than compared."
+      "Pyth prices on EVM are pull-based: a feed nobody updated is refused by maxAge rather than compared.",
+      "A pool leg is a spot price, token1 per token0 unless inverted; it can be pushed by one trade, and its quote is a token, not USD.",
+      "Starknet's final profile lags at least 6 hours, which counts toward maxAge; use finality=fast for a fresh comparison.",
+      "RedStone push feeds speak Chainlink's AggregatorV3 interface and are read like it; a RedStone feed named for an asset (\"RedStone Price Feed for ETH\") is quoted in USD.",
+      "Chronicle oracles are read-gated: the source calls readWithAge() from address 0, which Chronicle tolls for off-chain reads (checked when the source is derived). If Chronicle stops tolling it, the read reverts and the round fails rather than signing.",
+      "On Solana the comparison signs in tolerance mode: the deviation is an int256 whose nodes agree within agreeBps of the median (an absolute band), and maxDeviationBps (a yes/no) is refused. Every Solana pool leg asserts its owner program."
     ],
     "example": {
       "a": "chainlink:0x71041dddad3595f9ced3dccfbe3d1f4b0a16bb70",
@@ -749,6 +1764,63 @@ export const DATA_CATALOG: DataTemplate[] = [
       "chain": "base"
     },
     "path": "/v1/{chain}/oracles/compare"
+  },
+  {
+    "id": "oracle.staleness",
+    "version": 1,
+    "ref": "oracle.staleness@1",
+    "class": "Derived · feed staleness",
+    "title": "Price feed age",
+    "summary": "How long ago a price feed was last updated (Chainlink or Pyth on EVM, Pragma on Starknet, Pyth on Solana), at the round time; or, off Solana, whether it is within a maximum age.",
+    "kinds": [
+      "evm",
+      "starknet",
+      "svm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM, Starknet, Solana chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "feed",
+        "type": "text",
+        "required": true,
+        "doc": "\"chainlink:<aggregator or proxy>\" or \"pyth:<price feed id>\" (EVM), \"pragma:<pair id>\" (Starknet), \"pyth:<price feed id>\" (Solana: the feed's push-oracle account)"
+      },
+      {
+        "name": "maxAge",
+        "type": "uint",
+        "required": false,
+        "doc": "seconds; set it to sign a yes/no answer (fresh within maxAge) instead of the age. Not on Solana"
+      },
+      {
+        "name": "agreeSeconds",
+        "type": "uint",
+        "required": false,
+        "doc": "Solana only: nodes agree when their ages are within this many seconds of the median age (the absolute tolerance band; 5 when not set)"
+      }
+    ],
+    "returns": "the age, round time minus the feed's last update, in seconds (uint256, 0 decimals; int256 in tolerance mode on Solana; 0 when the update is after the round time); with maxAge, true when fresh (bool)",
+    "caveats": [
+      "The update time is read at the pinned block and the age is taken at the round time, so it includes the finality lag. Use finality=fast for heartbeat checks; final adds about 13 minutes on Ethereum and at least 6 hours on Starknet.",
+      "Pyth on EVM is pull-based: the age says when someone last pushed an update to this chain, not how fresh Pyth's network is.",
+      "On Solana the Pyth leg reads the feed's shard-0 push-oracle account (owner, Full verification and feed id asserted). Nodes read it at different slots, so they sign the median age within agreeSeconds (tolerance mode); maxAge is not offered there, because a yes/no cannot be a median."
+    ],
+    "example": {
+      "chain": "base",
+      "feed": "chainlink:0x71041dddad3595f9ced3dccfbe3d1f4b0a16bb70",
+      "finality": "fast"
+    }
   },
   {
     "id": "position.aave.health",
@@ -854,6 +1926,69 @@ export const DATA_CATALOG: DataTemplate[] = [
       "user": "0xedfa9614cb7c2b52b5180294d7736abb50dfbac1"
     },
     "path": "/v1/{chain}/lending/{market}/positions/{user}/liquidation"
+  },
+  {
+    "id": "position.aave4.health",
+    "version": 1,
+    "ref": "position.aave4.health@1",
+    "class": "Position · health factor",
+    "title": "Aave v4 health factor",
+    "summary": "A user's health factor on an Aave v4 Spoke, from the Spoke's getUserAccountData.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "spoke",
+        "type": "enum",
+        "required": false,
+        "default": "main",
+        "enum": [
+          "bluechip",
+          "etherfi",
+          "forex",
+          "gold",
+          "kelp",
+          "lido",
+          "lombard-btc",
+          "main",
+          "paxg-gold",
+          "paxg-paxos",
+          "usdg-maple",
+          "usdg-pendle"
+        ],
+        "doc": "the Spoke"
+      },
+      {
+        "name": "user",
+        "type": "address",
+        "required": true,
+        "doc": "the account"
+      }
+    ],
+    "returns": "health factor, 18 decimals (uint256); 10^18 (as a value) when the account has no debt, as position.aave.health",
+    "caveats": [
+      "A position can be liquidated below 1. An account without debt has an unbounded health factor (uint256.max on chain), signed as 10^18 as Aave v3's template does.",
+      "The health factor uses the Spoke's oracle prices and each collateral's dynamic configuration at the read's block."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "spoke": "main",
+      "user": "0x000000000000000000000000000000000000dead"
+    }
   },
   {
     "id": "position.morpho.health",
@@ -969,6 +2104,235 @@ export const DATA_CATALOG: DataTemplate[] = [
     "path": "/v1/{chain}/tokens/{token}/price"
   },
   {
+    "id": "random.drand",
+    "version": 1,
+    "ref": "random.drand@1",
+    "class": "Reference data · public randomness",
+    "title": "drand quicknet randomness",
+    "summary": "The randomness of one drand quicknet round (League of Entropy), delivered with a Molpha attestation on every chain Molpha verifies on.",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "round",
+        "type": "uint",
+        "required": true,
+        "doc": "the quicknet round; round n is produced at 1692803367 + 3(n-1) unix seconds (fact time)"
+      }
+    ],
+    "returns": "the round's 32 bytes of randomness (bytes32)",
+    "caveats": [
+      "Nodes read api.drand.sh and do not check drand's BLS signature: a consumer that can verify drand on its chain should verify the round's signature itself.",
+      "A round not yet produced fails the read. Commit to a round before it is produced, never pick one after seeing its value."
+    ],
+    "example": {
+      "round": "1000"
+    }
+  },
+  {
+    "id": "rates.reference",
+    "version": 1,
+    "ref": "rates.reference@1",
+    "class": "Reference data · overnight interest rates",
+    "title": "Overnight reference rate",
+    "summary": "An official overnight rate for one business day, from its administrator: SOFR, EFFR, OBFR, TGCR, BGCR and the SOFR Averages and Index (New York Fed), €STR (ECB), CORRA (Bank of Canada).",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "rate",
+        "type": "enum",
+        "required": true,
+        "enum": [
+          "sofr",
+          "effr",
+          "obfr",
+          "tgcr",
+          "bgcr",
+          "sofr30",
+          "sofr90",
+          "sofr180",
+          "sofrIndex",
+          "estr",
+          "corra"
+        ],
+        "doc": "sofr, effr, obfr, tgcr, bgcr; sofr30, sofr90, sofr180 (SOFR Averages); sofrIndex; estr; corra"
+      },
+      {
+        "name": "date",
+        "type": "date",
+        "required": false,
+        "default": "latest",
+        "doc": "the business day the rate is for (YYYY-MM-DD), or latest for the newest published rate"
+      }
+    ],
+    "returns": "the rate in percent per annum, 5 decimals (int256); sofrIndex is the index level, 8 decimals",
+    "caveats": [
+      "A date the administrator published no rate for (a weekend, a holiday, a day not yet published) fails the read.",
+      "latest signs the value without its date: it changes when the administrator publishes, and a round across that moment fails because nodes disagree. Use a date to sign one day's rate.",
+      "Administrators may revise a published rate the same day (the New York Fed's revisionIndicator); a read signs the rate published at the round's time."
+    ],
+    "example": {
+      "date": "2026-11-10",
+      "rate": "sofr"
+    }
+  },
+  {
+    "id": "savings.sky",
+    "version": 1,
+    "ref": "savings.sky@1",
+    "class": "Yield · savings rate",
+    "title": "Sky savings rate",
+    "summary": "The Sky Savings Rate (sUSDS) or the DAI Savings Rate (sDAI): as a simple APR, as the compounded APY, or as the vault's share price.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "product",
+        "type": "enum",
+        "required": false,
+        "default": "susds",
+        "enum": [
+          "sdai",
+          "susds"
+        ],
+        "doc": "susds (Sky Savings Rate; Ethereum and Base) or sdai (DAI Savings Rate; Ethereum)"
+      },
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "apy",
+        "enum": [
+          "apr",
+          "apy",
+          "conversionRate"
+        ],
+        "doc": "apr = (rate - 1) x 31,536,000; apy = rate^31,536,000 - 1; conversionRate: USDS (or DAI) per share"
+      }
+    ],
+    "returns": "apr and apy: fractions, 18 decimals; conversionRate: assets per share, 18 decimals (uint256)",
+    "caveats": [
+      "The rate is set by Sky governance as a per-second factor (ray) that compounds every second, so apy is the native quote; apr is given to compare with the APR of the lending templates.",
+      "On Base the rate and share price come from Sky's SSR oracle, which a bridge message updates from Ethereum: it can lag a governance change by the bridge's delay.",
+      "apy is (rate^31,536)^1,000 = rate^31,536,000 by repeated squaring at 27 decimals, rounded down at each step (about 1e-25 low), then rounded half-even to 18 decimals: Sky's 3.80% reads 0.038."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "field": "apy",
+      "product": "susds"
+    }
+  },
+  {
+    "id": "stable.depeg",
+    "version": 1,
+    "ref": "stable.depeg@1",
+    "class": "Derived · stablecoin peg",
+    "title": "Stablecoin peg deviation",
+    "summary": "How far a stablecoin's price is from its peg, from a pool's spot price, a Chainlink feed (EVM) or a Pyth feed (Solana); or, on EVM, whether it is outside a band.",
+    "kinds": [
+      "evm",
+      "svm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM, Solana chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "price",
+        "type": "text",
+        "required": true,
+        "doc": "EVM: \"pool:<address>\" (a Uniswap v3-style pool of the stablecoin against its quote) or \"chainlink:<aggregator or proxy>\"; Solana: \"pool:<address>\" (an Orca Whirlpool, Raydium CLMM pool or Meteora DLMM pair) or \"pyth:<price feed id>\""
+      },
+      {
+        "name": "invert",
+        "type": "enum",
+        "required": false,
+        "default": "false",
+        "enum": [
+          "false",
+          "true"
+        ],
+        "doc": "pool only. false: token1 per token0; true: token0 per token1"
+      },
+      {
+        "name": "peg",
+        "type": "text",
+        "required": false,
+        "default": "1",
+        "doc": "the peg, in quote units per stablecoin (a positive decimal)"
+      },
+      {
+        "name": "result",
+        "type": "enum",
+        "required": false,
+        "default": "deviation",
+        "enum": [
+          "deviation",
+          "flag"
+        ],
+        "doc": "deviation = |price - peg| / peg in basis points; flag = deviation > bandBps"
+      },
+      {
+        "name": "bandBps",
+        "type": "uint",
+        "required": false,
+        "default": "50",
+        "doc": "the band of result=flag, basis points"
+      },
+      {
+        "name": "maxAge",
+        "type": "uint",
+        "required": false,
+        "default": "86400",
+        "doc": "Chainlink and Pyth only: seconds; a feed updated longer ago than this before the round fails it"
+      },
+      {
+        "name": "agreeBps",
+        "type": "uint",
+        "required": false,
+        "doc": "Solana only: nodes agree when their deviations are within this many basis points of the median deviation (the absolute tolerance band; 5 when not set)"
+      }
+    ],
+    "returns": "the deviation |price - peg| * 10000 / peg in basis points, 2 decimals (uint256 on EVM, int256 in tolerance mode on Solana); with result=flag (EVM only), true when outside the band (bool)",
+    "caveats": [
+      "The peg is in the quote token: a USDC/USDT pool measures USDC against USDT, not against USD, and cannot show both coins depegging together.",
+      "A pool's spot price can be pushed by one trade. For settlement, pair it with dex.pool.twapDeviation or use a Chainlink feed.",
+      "On Solana the reads differ by slot, so nodes sign the median deviation within the absolute band agreeBps (tolerance mode); result=flag is EVM only, because a yes/no cannot be a median. Compare the signed deviation with your own threshold.",
+      "A Solana pool's owner program is asserted in the source (Whirlpool, Raydium CLMM, Meteora DLMM)."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "price": "pool:0x3416cf6c708da44db2624d63ea0aaef7113527c6"
+    }
+  },
+  {
     "id": "supply.reconcile",
     "version": 1,
     "ref": "supply.reconcile@1",
@@ -1034,6 +2398,49 @@ export const DATA_CATALOG: DataTemplate[] = [
       "token": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0"
     },
     "path": "/v1/{chain}/tokens/{token}/reconcile"
+  },
+  {
+    "id": "token.controls",
+    "version": 1,
+    "ref": "token.controls@1",
+    "class": "Token · control flags",
+    "title": "Token control flags",
+    "summary": "An EVM token's pause flag, owner, and EIP-1967 implementation and admin, under one signature.",
+    "kinds": [
+      "evm"
+    ],
+    "params": [
+      {
+        "name": "chain",
+        "type": "chain",
+        "required": true,
+        "doc": "CAIP-2 id or alias (EVM chains)"
+      },
+      {
+        "name": "finality",
+        "type": "finality",
+        "required": false,
+        "default": "final",
+        "doc": "\"final\" or \"fast\", or a raw mode: \"finalized\", \"safe\", \"confirmations:<n>\" (EVM, Starknet), \"confirmed\" (Solana)"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "required": true,
+        "doc": "the ERC-20 contract"
+      }
+    ],
+    "returns": "keccak256 of a 128-byte payload (bytes32): paused, owner, implementation and admin, one 32-byte word each; the payload and its layout come with the response and are decoded into fields",
+    "caveats": [
+      "paused() and owner() are probed when the source is derived: a token without one has the word 0xff…ff in its place, shown as absent. A token upgraded to drop a function fails every later round; one that adds it stays absent until the source is derived again.",
+      "Only EIP-1967 slots are read. Older ZeppelinOS-style proxies (USDC's FiatTokenProxy) and beacon proxies keep their implementation elsewhere, so it reads zero.",
+      "Not covered: other pause names, blacklists (USDC isBlacklisted), AccessControl roles. Each needs the token's own interface.",
+      "The template signs what the token's state is. It never says a token is safe."
+    ],
+    "example": {
+      "chain": "ethereum",
+      "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    }
   },
   {
     "id": "token.snapshot",
@@ -1132,5 +2539,89 @@ export const DATA_CATALOG: DataTemplate[] = [
       "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
     },
     "path": "/v1/{chain}/tokens/{token}/supply"
+  },
+  {
+    "id": "treasury.avgRate",
+    "version": 1,
+    "ref": "treasury.avgRate@1",
+    "class": "Reference data · U.S. Treasury rates",
+    "title": "Average interest rate on Treasury securities",
+    "summary": "The average interest rate on outstanding U.S. Treasury securities of one kind for one month (Fiscal Data, Average Interest Rates on U.S. Treasury Securities).",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "security",
+        "type": "enum",
+        "required": true,
+        "enum": [
+          "bills",
+          "notes",
+          "bonds",
+          "tips",
+          "frn",
+          "marketable",
+          "nonMarketable",
+          "total"
+        ],
+        "doc": "bills, notes, bonds, tips, frn, marketable (total marketable), nonMarketable, total (all interest-bearing debt)"
+      },
+      {
+        "name": "month",
+        "type": "month",
+        "required": false,
+        "default": "latest",
+        "doc": "the month (YYYY-MM), or latest"
+      }
+    ],
+    "returns": "the average rate in percent per annum, 3 decimals (int256)",
+    "caveats": [
+      "Monthly, recorded on the month's last day and published in the following weeks; a month not yet published fails the read. latest signs the value without its month."
+    ],
+    "example": {
+      "month": "2026-10",
+      "security": "bills"
+    }
+  },
+  {
+    "id": "treasury.debt",
+    "version": 1,
+    "ref": "treasury.debt@1",
+    "class": "Reference data · U.S. public debt",
+    "title": "Debt to the Penny",
+    "summary": "U.S. total public debt outstanding, or its debt held by the public or intragovernmental holdings, for one business day (Fiscal Data, Debt to the Penny).",
+    "kinds": [
+      "http"
+    ],
+    "params": [
+      {
+        "name": "field",
+        "type": "enum",
+        "required": false,
+        "default": "total",
+        "enum": [
+          "total",
+          "public",
+          "intragovernmental"
+        ],
+        "doc": "total, public (held by the public) or intragovernmental"
+      },
+      {
+        "name": "date",
+        "type": "date",
+        "required": false,
+        "default": "latest",
+        "doc": "the record date (YYYY-MM-DD), or latest"
+      }
+    ],
+    "returns": "U.S. dollars, 2 decimals (uint256)",
+    "caveats": [
+      "Published with a lag of about one business day; a date without a record fails the read. latest signs the value without its date."
+    ],
+    "example": {
+      "date": "2026-11-10",
+      "field": "total"
+    }
   }
 ];

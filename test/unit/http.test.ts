@@ -13,6 +13,7 @@ import { getSharedRuntime, type RequestContext } from "../../src/clients.js";
 import { sanitizeToolResult } from "../../src/http/policy.js";
 import { executePreparedX402Round, fetchX402Status } from "../../src/x402.js";
 import { priceSource } from "./sources.js";
+import { DATA_READ_TOOL_NAMES } from "./tool-harness.js";
 
 vi.mock("../../src/x402.js", async original => ({
   ...await original<typeof import("../../src/x402.js")>(),
@@ -24,8 +25,8 @@ const source = priceSource({ url: "https://example.com/finalized", path: "$.valu
 const walletA = Keypair.generate().publicKey.toBase58();
 const walletB = Keypair.generate().publicKey.toBase58();
 const canary = "CANARY_NEVER_LOG_882197";
-// 17 session, x402 and read tools, plus the Molpha Data read tools: list_data_templates, read_data and 21 template tools.
-const HOSTED_TOOLS = 17 + 23;
+// 17 session, x402 and read tools, plus the Molpha Data read tools: list_data_templates, read_data and one tool per template.
+const HOSTED_TOOLS = 17 + DATA_READ_TOOL_NAMES.length;
 /** What a client configured for the removed per-request signer scheme still sends. */
 function legacySignerHeaders(wallet = walletA) {
   return { "X-Molpha-Signer": "privy", "X-Molpha-Privy-App-Id": canary + "app", "X-Molpha-Privy-App-Secret": canary + "secret", "X-Molpha-Privy-Wallet-Id": canary + "wallet", "X-Molpha-Privy-Wallet-Address": wallet };
