@@ -55,10 +55,11 @@ If `autoSubmit` fails, the round result is still returned in full. Keep it and c
 
 Describe provider values as attested provider quotes: Molpha attests what the endpoint returned, not that the price is right. `get_provider` returns the provider's own disclosure.
 
-## On-chain data: Molpha Data templates
+## On-chain and reference data: Molpha Data templates
 
 For common on-chain values (token supply and balances, pool prices and TWAPs, LST rates, vault share prices,
-lending rates and health factors) do not write a source by hand: a template builds one.
+lending and savings rates, health factors) and reference data from primary publishers (overnight rates, FX
+reference rates, Treasury, BLS, BEA, EIA, LEI status, drand) do not write a source by hand: a template builds one.
 
 1. `list_data_templates` (optionally `chain`, `class`): every template, its parameters and its tool.
 2. Call the template's tool, or `read_data` with `template` and `params`. The answer is the Molpha Data service's
@@ -74,11 +75,20 @@ lending rates and health factors) do not write a source by hand: a template buil
 | Tool | Value |
 |---|---|
 | `get_token_supply`, `get_balance`, `get_token_snapshot` | supply; a wallet's balance; supply, decimals and authorities under one signature |
-| `get_pool_price`, `get_median_price`, `get_pool_twap`, `get_pool_reserve`, `get_pool_snapshot`, `get_curve_oracle_price` | spot price, median of 2 to 4 pools, mean tick, one side's reserve, pool state, Curve EMA |
-| `get_lst_rate`, `get_vault_share_price` | LST exchange rate, ERC-4626 assets per share |
+| `get_token_controls` | owner, pause, freeze and upgrade flags |
+| `get_pool_price`, `get_median_price`, `get_pool_twap`, `get_pool_reserve`, `get_pool_snapshot`, `get_curve_oracle_price`, `get_ekubo_price` | spot price (Uniswap v3/v4, v2-style, Solana CLMM and DLMM), median of 2 to 4 pools, TWAP, one side's reserve, pool state, Curve EMA, Ekubo on Starknet |
+| `get_lst_rate`, `get_vault_share_price`, `get_sky_savings_rate` | LST and LRT exchange rate, ERC-4626 assets per share, Sky (sUSDS) and DAI savings rate |
 | `get_aave_reserve`, `get_aave_totals`, `get_aave_health_factor`, `get_aave_liquidation_distance` | Aave v3 and Spark rates, totals and utilization, health, distance to liquidation |
+| `get_aave4_hub`, `get_aave4_spoke`, `get_aave4_health_factor` | Aave v4 Hub totals and rates, Spoke reserve totals, health |
 | `get_morpho_market`, `get_morpho_health_factor` | Morpho Blue totals and utilization, health |
-| `compare_oracles`, `reconcile_supply`, `get_chain_head`, `get_storage_slot` | Chainlink or Pyth deviation, bridged supply against its lockbox, pinned block, a storage slot |
+| `get_compound_market`, `get_euler_vault`, `get_fluid_token`, `get_kamino_reserve`, `get_marginfi_bank`, `get_vesu_market` | Compound v3, Euler v2, Fluid, Kamino, marginfi and Vesu totals, utilization and rates |
+| `get_pool_twap_deviation`, `get_lst_market_deviation`, `get_stablecoin_depeg`, `get_oracle_staleness` | derived: spot against TWAP, LST market against redemption, stablecoin peg, feed staleness |
+| `compare_oracles`, `reconcile_supply`, `get_chain_head`, `get_storage_slot` | two oracles' deviation (Chainlink, Pyth, RedStone, Chronicle and Solana feeds), bridged supply against its lockbox, pinned block, a storage slot |
+| `get_reference_rate`, `get_fx_reference_rate`, `get_treasury_avg_rate`, `get_treasury_debt` | SOFR, EFFR and other overnight rates; ECB and Bank of Canada FX; Treasury average rates and debt |
+| `get_bls_series`, `get_bea_series`, `get_eia_series`, `get_lei_status`, `get_drand_randomness` | BLS (CPI, jobs), BEA (GDP, PCE), EIA energy series, an LEI's status, a drand round |
+
+Templates on Molpha's keyed sources (BEA, EIA, BLS with its default `access: key`) are private: the service cannot
+read them unsigned, so their read tools answer with that refusal; `execute_data_round` is the way to read them.
 
 A snapshot's `payload` is what is signed (as keccak256); its `fields` are the service's decoding, not signed.
 Prices name their quote token: there is no USD.
