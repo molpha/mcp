@@ -3,7 +3,6 @@
  * and deciding whether it is the round that was asked for. Both paths answer with the
  * same envelope, and neither lets the caller choose the round's timestamp.
  */
-import { keccak_256 } from "@noble/hashes/sha3.js";
 import { flattenAttestation } from "./artifacts.js";
 import { normalizeSourceId } from "./hex.js";
 import { requireSdkExport } from "./sdk.js";
@@ -45,15 +44,8 @@ export interface RoundResponse {
 export function readRoundResponse(body: Record<string, unknown>, expected: ExpectedRound, startedAtMs: number): RoundResponse {
   const data = flattenAttestation(asRecord(body.data) ?? {});
   const timestamp = Number(data.timestamp);
-  // A policy's INCONCLUSIVE result is signed under I(S), its value the reason (node-client docs/policy.md).
-  const signed = normalizeSourceId(String(data.sourceId ?? ""));
-  const inconclusive = data.outcome === "inconclusive" && signed === inconclusiveIdHex(expected.sourceId);
-  const reasonWord = /^0{62}([0-9a-f]{2})$/.exec(normalizeSourceId(String(data.valuePacked ?? "")));
-  if (inconclusive && (!reasonWord || reasonWord[1] === "00")) {
-    throw new Error("an INCONCLUSIVE attestation's value must be its reason code");
-  }
   const sameRequest =
-    (signed === expected.sourceId || inconclusive) &&
+    normalizeSourceId(String(data.sourceId ?? "")) === expected.sourceId &&
     Number(data.registryVersion) === expected.registryVersion &&
     Number(data.signaturesRequired) === expected.signaturesRequired;
   const stampedNow =
@@ -71,11 +63,7 @@ export function readRoundResponse(body: Record<string, unknown>, expected: Expec
       throw new Error("the gateway's value preimage does not hash to the signed value");
     }
   }
-  const rendered = inconclusive
-    ? `inconclusive 0x${reasonWord![1]}`
-    : expected.output
-      ? formatSourceValue(data.valuePacked, expected.output)
-      : undefined;
+  const rendered = expected.output ? formatSourceValue(data.valuePacked, expected.output) : undefined;
 
   return {
     matches: sameRequest && stampedNow,
@@ -91,22 +79,10 @@ export function readRoundResponse(body: Record<string, unknown>, expected: Expec
       commitmentAddr: data.commitmentAddr,
       fresh: data.fresh ?? true,
       ...(preimage !== undefined ? { valuePreimage: preimage } : {}),
-      ...(typeof data.outcome === "string" ? { outcome: data.outcome } : {}),
-      ...(inconclusive ? { reason: `0x${reasonWord![1]}` } : {}),
-      ...(typeof data.roundSourceId === "string" ? { roundSourceId: data.roundSourceId } : {})
+      ...(data.outcome !== undefined ? { outcome: data.outcome } : {}),
+      ...(data.reason !== undefined ? { reason: data.reason } : {})
     }
   };
-}
-
-const INCONCLUSIVE_TAG = new TextEncoder().encode("MOLPHA_INCONCLUSIVE_V1");
-
-/** I(S) = keccak256("MOLPHA_INCONCLUSIVE_V1" || S), bare lowercase hex. */
-export function inconclusiveIdHex(sourceIdHex: string): string {
-  const s = normalizeSourceId(sourceIdHex);
-  const b = new Uint8Array(INCONCLUSIVE_TAG.length + 32);
-  b.set(INCONCLUSIVE_TAG);
-  for (let i = 0; i < 32; i++) b[INCONCLUSIVE_TAG.length + i] = parseInt(s.slice(2 * i, 2 * i + 2), 16);
-  return Array.from(keccak_256(b), (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

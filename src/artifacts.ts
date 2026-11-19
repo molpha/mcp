@@ -58,13 +58,15 @@ export const signedArtifactSchema = z.object({
       "keccak256 outputs only: the 0x-hex bytes whose keccak256 is attestation.payload.value. The gateway keeps no copy, so this response is the only one: keep it. submit_attestation stores it (at most 256 bytes) as the feed's raw value. Not signed; it is bound by hashing to the signed value."
     ),
   outcome: z
-    .enum(["conclusive", "inconclusive"])
+    .enum(["conclusive", "fallback"])
     .optional()
     .describe(
-      "Sources with a policy only. inconclusive: the attestation is signed under I(sourceId) = keccak256(\"MOLPHA_INCONCLUSIVE_V1\" || sourceId), its payload.value is the reason as a uint256, and value says so; it is not the source's result. Decide by attestation.payload.sourceId, not by this label."
+      "Sources with a policy only. conclusive: value is the source's result. fallback: the policy concluded INCONCLUSIVE (see reason) and value is the fallback the source declares in policy.inconclusive.fallback. Both are signed under sourceId. The label is the nodes' word, not signed: a consumer tells a fallback by comparing the signed value with the source's declared fallback."
     ),
-  reason: z.string().optional().describe("The INCONCLUSIVE reason code: 0x01 insufficient sources, 0x02 divergence, 0x03 primary unconfirmed, 0x10+i the policy's inconclusiveIf entry i."),
-  roundSourceId: z.string().optional().describe("The requested source's ID, with outcome."),
+  reason: z
+    .string()
+    .optional()
+    .describe("With outcome fallback: the INCONCLUSIVE reason code. 0x01 insufficient sources, 0x02 divergence, 0x03 primary unconfirmed, 0x10+i the policy's inconclusiveIf entry i."),
   ...signedAttestationSchema.shape
 });
 
@@ -112,11 +114,9 @@ export function flattenAttestation(input: Record<string, unknown>): Record<strin
     commitmentAddr: signature.commitmentAddr ?? signature.commitment,
     fresh: input.fresh ?? true,
     ...(typeof input.valuePreimage === "string" && input.valuePreimage !== "" ? { valuePreimage: input.valuePreimage } : {}),
-    // A source with a policy (node-client docs/policy.md): the outcome, the INCONCLUSIVE reason, and the
-    // requested source's ID, which differs from payload.sourceId (I(S)) for an inconclusive result.
-    ...(typeof input.outcome === "string" ? { outcome: input.outcome } : {}),
-    ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
-    ...(typeof input.outcome === "string" && typeof input.sourceId === "string" ? { roundSourceId: input.sourceId } : {})
+    // A source with a policy (node-client docs/policy.md): conclusive, or fallback with its reason.
+    ...(input.outcome === "conclusive" || input.outcome === "fallback" ? { outcome: input.outcome } : {}),
+    ...(input.outcome === "fallback" && typeof input.reason === "string" ? { reason: input.reason } : {})
   };
 }
 
