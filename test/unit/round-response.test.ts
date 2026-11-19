@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { loadConfig } from "../../src/config.js";
 import { readRoundResponse } from "../../src/round-response.js";
+import { buildRoundResult } from "../../src/tools/round.js";
 
 // A policy's fallback (node-client docs/policy.md) is an ordinary value under S; the gateway labels it.
 const S = "11".repeat(32);
@@ -43,5 +45,29 @@ describe("readRoundResponse with a policy outcome", () => {
     const r = readRoundResponse(body(S, "00".repeat(31) + "0a", { outcome: "inconclusive", reason: "0x01" }), expected, now);
     expect(r.result.outcome).toBeUndefined();
     expect(r.result.reason).toBeUndefined();
+  });
+});
+
+describe("buildRoundResult with a policy outcome", () => {
+  const config = loadConfig({ GATEWAY_ENDPOINTS: "http://gateway.test", SOLANA_RPC: "http://solana.test" });
+
+  it("emits the fallback label and reason in the round tools' output", async () => {
+    const r = readRoundResponse(body(S, "ff".repeat(32), { outcome: "fallback", reason: "0x01" }), expected, now);
+    const out = await buildRoundResult(r.result, [], config, "subscription", false);
+    expect(out).toMatchObject({ value: "-1", outcome: "fallback", reason: "0x01" });
+  });
+
+  it("emits a conclusive label without a reason", async () => {
+    const r = readRoundResponse(body(S, "00".repeat(31) + "0a", { outcome: "conclusive" }), expected, now);
+    const out = await buildRoundResult(r.result, [], config, "x402", false);
+    expect(out).toMatchObject({ value: "10", outcome: "conclusive" });
+    expect(out).not.toHaveProperty("reason");
+  });
+
+  it("emits no label for a source without a policy", async () => {
+    const r = readRoundResponse(body(S, "00".repeat(31) + "0a"), expected, now);
+    const out = await buildRoundResult(r.result, [], config, "subscription", false);
+    expect(out).not.toHaveProperty("outcome");
+    expect(out).not.toHaveProperty("reason");
   });
 });

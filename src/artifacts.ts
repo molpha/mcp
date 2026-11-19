@@ -191,6 +191,9 @@ export function toAttestationArtifact(result: Record<string, unknown>): Attestat
     value: String(normalized.value ?? ""),
     fresh: Boolean(normalized.fresh ?? true),
     ...(typeof normalized.valuePreimage === "string" ? { valuePreimage: normalized.valuePreimage } : {}),
+    // The policy label (flattenAttestation keeps only a known one, and a reason only with a fallback).
+    ...(normalized.outcome === "conclusive" || normalized.outcome === "fallback" ? { outcome: normalized.outcome } : {}),
+    ...(normalized.outcome === "fallback" && typeof normalized.reason === "string" ? { reason: normalized.reason } : {}),
     attestation: {
       payload: {
         value: String(normalized.valuePacked ?? ""),
