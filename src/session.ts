@@ -20,7 +20,7 @@ import {
 } from "@solana/kit";
 import type { Connection } from "@solana/web3.js";
 import { exactBytes, utf8Bytes } from "./bytes.js";
-import { assertToleranceQuorum, canonicalSourceDocument, guardSourceId, parseSource } from "./source.js";
+import { assertToleranceQuorum, canonicalSourceDocument, fallbackWordsOf, guardSourceId, parseSource } from "./source.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import type { MolphaConfig } from "./config.js";
 import { normalizeSourceId } from "./hex.js";
@@ -252,7 +252,13 @@ export async function executeSessionRound(ctx: SessionContext, opts: SessionRoun
   }
   const { matches, result } = readRoundResponse(
     asRecord(await res.json()) ?? {},
-    { sourceId, registryVersion, signaturesRequired: opts.signaturesRequired, output: parsed.output },
+    {
+      sourceId,
+      registryVersion,
+      signaturesRequired: opts.signaturesRequired,
+      output: parsed.output,
+      ...fallbackWordsOf(parsed)
+    },
     startedAtMs
   );
   if (!matches) {

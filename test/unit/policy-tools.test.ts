@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getMolphaContext, type MolphaContext } from "../../src/clients.js";
 import { loadConfig } from "../../src/config.js";
+import { deriveSourceId, parseSource, policyFallbackWords } from "../../src/source.js";
 import { priceSource } from "./sources.js";
 import { callTool, callToolError } from "./tool-harness.js";
 
@@ -82,7 +83,7 @@ function useGateways(endpoints: string[], answer: (url: string, body: unknown) =
 }
 
 const simulation = {
-  sourceId: "ab".repeat(32),
+  sourceId: deriveSourceId(policySource).sourceId.slice(2),
   source: policySource,
   inputs: [],
   value: { encoded: "0x" + "ff".repeat(31) + "9c", display: "-1", type: "int256", decimals: 2 },
@@ -122,9 +123,31 @@ describe("simulate_source", () => {
     expect(JSON.stringify(err)).toMatch(/a\.gw: HTTP 503/);
   });
 
+  it("does not take an answer about another source", async () => {
+    const calls = useGateways(["https://a.gw", "https://b.gw"], (url) =>
+      new Response(
+        JSON.stringify({ status: "ok", data: url.startsWith("https://a.gw") ? { ...simulation, sourceId: "ab".repeat(32) } : simulation }),
+        { status: 200 }
+      )
+    );
+    const out = await callTool("simulate_source", { source: policySource, inputs: { a: { body: "{}" }, b: { body: "{}" } } });
+    expect(out.gateway).toBe("https://b.gw");
+    expect(calls).toHaveLength(2);
+    useGateways(["https://a.gw"], () => new Response(JSON.stringify({ status: "ok", data: { ...simulation, sourceId: "ab".repeat(32) } })));
+    const err = await callToolError("simulate_source", { source: policySource, inputs: {} });
+    expect(JSON.stringify(err)).toMatch(/answered for source/);
+  });
+
   it("refuses an invalid source before any request", async () => {
     const calls = useGateways(["https://a.gw"], () => new Response("{}"));
     expect(await callToolError("simulate_source", { source: { ...policySource, v: "2" }, inputs: {} })).toMatchObject({ code: "invalid_source" });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("policyFallbackWords", () => {
+  it("gives a policy source's fallback words, and nothing for a source without a policy", () => {
+    expect(policyFallbackWords(parseSource(policySource))).toEqual(["0x" + "ff".repeat(31) + "9c"]);
+    expect(policyFallbackWords(parseSource(priceSource({ url: "https://api.example.com/p" }).doc))).toBeUndefined();
   });
 });

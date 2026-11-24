@@ -17,7 +17,14 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { address, getBase58Decoder, type Address } from "@solana/kit";
 import type { Connection, VersionedTransaction } from "@solana/web3.js";
-import { assertToleranceQuorum, canonicalSourceDocument, guardSourceId, parseSource, type SourceOutput } from "./source.js";
+import {
+  assertToleranceQuorum,
+  canonicalSourceDocument,
+  fallbackWordsOf,
+  guardSourceId,
+  parseSource,
+  type SourceOutput
+} from "./source.js";
 import { getMolphaProgramId, requireMethod, type RequestLifecycle } from "./clients.js";
 import { formatUsdcAtomic, type MolphaConfig } from "./config.js";
 import {
@@ -108,6 +115,8 @@ export interface X402PaidRound {
   sourceId: string;
   /** The source's declared output, which renders the round's value and checks a keccak256 preimage. */
   output?: SourceOutput;
+  /** The source's fallback words when it has a policy: the round's outcome is read from the signed value. */
+  fallbackWords?: string[];
   signaturesRequired: number;
   registryVersion: number;
   /** Hex SHA-256 of the unsigned payment transaction's message. */
@@ -371,6 +380,8 @@ interface RoundPlan {
   /** The canonical source document, as hashed. */
   source: Record<string, unknown>;
   output: SourceOutput;
+  /** The source's fallback words when it has a policy. */
+  fallbackWords?: string[];
   /** Bare lowercase hex. */
   sourceId: string;
   sourceIdBytes: Uint8Array;
@@ -414,6 +425,7 @@ async function planRound(ctx: X402RoundContext, opts: X402RoundOptions): Promise
   return {
     source: canonicalSourceDocument(parsed),
     output: parsed.output,
+    ...fallbackWordsOf(parsed),
     sourceId,
     sourceIdBytes: Buffer.from(sourceId, "hex"),
     signaturesRequired,
@@ -504,6 +516,7 @@ async function buildPayableRound(ctx: X402RoundContext, plan: RoundPlan, payer: 
       body: executeBody(plan),
       sourceId: plan.sourceId,
       output: plan.output,
+      ...(plan.fallbackWords ? { fallbackWords: plan.fallbackWords } : {}),
       signaturesRequired: plan.signaturesRequired,
       registryVersion: plan.registryVersion,
       messageSha256: paymentMessageSha256(transaction),
@@ -673,7 +686,8 @@ function completeRound(
         sourceId: round.sourceId,
         registryVersion: round.registryVersion,
         signaturesRequired: round.signaturesRequired,
-        ...(round.output ? { output: round.output } : {})
+        ...(round.output ? { output: round.output } : {}),
+        ...(round.fallbackWords ? { fallbackWords: round.fallbackWords } : {})
       },
       startedAtMs
     );

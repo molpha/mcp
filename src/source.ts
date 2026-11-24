@@ -80,6 +80,19 @@ export function parseSource(source: unknown): ParsedSourceLike {
   }
 }
 
+/**
+ * The 32-byte words (`0x` hex) a signed fallback of `parsed` can be, or `undefined` for a source without a
+ * policy. A signed value among them is the policy's fallback (node-client docs/policy.md); the gateway's
+ * outcome label is not signed and is never the judge of that.
+ */
+export function policyFallbackWords(parsed: ParsedSourceLike): string[] | undefined {
+  const policy = parsed.doc.policy;
+  if (policy === undefined || policy === null) {
+    return undefined;
+  }
+  return requireSdkExport<(src: ParsedSourceLike) => string[]>("fallbackWords")(parsed).map((w) => w.toLowerCase());
+}
+
 /** Refuses a tolerance-mode request the nodes would reject, before any gateway call or payment. */
 export function assertToleranceQuorum(source: ParsedSourceLike, signaturesRequired: number): void {
   requireSdkExport<(src: ParsedSourceLike, quorum: number) => void>("assertToleranceQuorum")(source, signaturesRequired);
@@ -176,4 +189,10 @@ export function formatSourceValue(valuePacked: unknown, output: SourceOutput): s
   }
   const hex = valuePacked.startsWith("0x") ? valuePacked : `0x${valuePacked}`;
   return requireSdkExport<(value: string, output: SourceOutput) => string>("formatValue")(hex, output);
+}
+
+/** `{ fallbackWords }` for a source with a policy, else nothing: spread into an {@link ExpectedRound}. */
+export function fallbackWordsOf(parsed: ParsedSourceLike): { fallbackWords?: string[] } {
+  const words = policyFallbackWords(parsed);
+  return words === undefined ? {} : { fallbackWords: words };
 }

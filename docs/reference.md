@@ -91,9 +91,9 @@ The Solana program and the EVM and Starknet verifiers do not recompute a `source
 A source may carry a `policy` (node-client `docs/policy.md`): several candidate inputs, rules that qualify each, a way to combine them, and a `fallback` the nodes sign under the same `sourceId` when the result is INCONCLUSIVE. Two read-only tools check one before a round is paid for:
 
 - `analyze_source` is local: the SDK's `analyzeSource` (the same facts as the nodes' own analysis): inputs, candidates and roles, the combinator, independence, the fallback words the policy can sign and whether a conclusive result can reach one, fetches per node, and warnings with what each means.
-- `simulate_source` asks the gateway (`POST /v1/source/simulate`) to evaluate the source over inputs you give: each input a response `body`, decoded `fields` (a chain input with its `block`), or an `error` (`fetch`, `decode`). Nothing is fetched, signed or charged. The answer is each candidate's qualification, the combined value, the outcome and reason, and the value nodes would sign (the fallback when `policy.signed`), or the stage the source refuses at. A private source is not simulated.
+- `simulate_source` asks the gateway (`POST /v1/source/simulate`) to evaluate the source over inputs you give: each input a response `body`, decoded `fields` (a chain input with its `block`), or an `error` (`fetch`, `decode`). Nothing is fetched, signed or charged. The answer is each candidate's qualification, the combined value, the outcome and reason, and the value nodes would sign (the fallback when `policy.signed`), or the stage the source refuses at. A private source is not simulated. An answer whose `sourceId` is not the sent source's is not taken; the next gateway is asked.
 
-A round of a policy source returns `outcome` (`conclusive` or `fallback`) and, for a fallback, `reason`, read from the signed value.
+A round of a policy source returns `outcome` (`conclusive` or `fallback`) and, for a fallback, `reason`. The outcome is read from the signed value: a value among the source's fallback words (`analyze_source`) is the fallback, whatever the gateway's unsigned label says; the label only supplies the reason, and only when it also says fallback. A source without a policy has no `outcome`.
 
 ## Tolerance mode
 

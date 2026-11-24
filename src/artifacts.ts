@@ -61,12 +61,12 @@ export const signedArtifactSchema = z.object({
     .enum(["conclusive", "fallback"])
     .optional()
     .describe(
-      "Sources with a policy only. conclusive: value is the source's result. fallback: the policy concluded INCONCLUSIVE (see reason) and value is the fallback the source declares in policy.inconclusive.fallback. Both are signed under sourceId. The label is the nodes' word, not signed: a consumer tells a fallback by comparing the signed value with the source's declared fallback."
+      "Sources with a policy only. conclusive: value is the source's result. fallback: the policy concluded INCONCLUSIVE (see reason) and value is the fallback the source declares in policy.inconclusive.fallback. Both are signed under sourceId. Read from the signed value, not from the gateway's unsigned label: a value among the source's fallback words (analyze_source) is the fallback. A consumer checks it the same way."
     ),
   reason: z
     .string()
     .optional()
-    .describe("With outcome fallback: the INCONCLUSIVE reason code. 0x01 insufficient sources, 0x02 divergence, 0x03 primary unconfirmed, 0x10+i the policy's inconclusiveIf entry i."),
+    .describe("With outcome fallback: the INCONCLUSIVE reason code, as the nodes labelled it (not signed; absent when the label did not say fallback). 0x01 insufficient sources, 0x02 divergence, 0x03 primary unconfirmed, 0x10+i the policy's inconclusiveIf entry i."),
   ...signedAttestationSchema.shape
 });
 
