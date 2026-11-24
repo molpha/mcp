@@ -72,6 +72,14 @@
       "description": "Validate a source document and derive its sourceId locally: keccak256 of its canonical JSON (a JCS subset, sorted keys, numbers as strings). Returns the canonical JSON, the declared output and determinism warnings. No transaction or wallet."
     },
     {
+      "name": "analyze_source",
+      "description": "Describe what a source can do without fetching or evaluating it: inputs and, for a policy, candidates, combinator, INCONCLUSIVE reasons, the fallback words it would sign, and warnings. No network or wallet."
+    },
+    {
+      "name": "simulate_source",
+      "description": "Evaluate a source over inputs you supply (a response body, decoded fields, or a failed fetch) on the gateway: the policy outcome and the value nodes would sign. Nothing is fetched, signed or charged."
+    },
+    {
       "name": "describe_feed",
       "description": "Read the Solana feed for (sourceId, quorum, submitter) and the signer's subscription status. Pass the source to read the stored value by its declared output."
     },

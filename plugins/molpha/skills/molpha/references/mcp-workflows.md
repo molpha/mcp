@@ -6,7 +6,7 @@ Tool sequences for each level, spend safety, and error recovery. Tools are refer
 
 | Server | Tools |
 |---|---|
-| Read-only (no signer) | `get_capabilities`, `derive_source_id`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status`, `list_providers`, `get_provider`, `quote_source_payment`, `build_verifier_calldata` |
+| Read-only (no signer) | `get_capabilities`, `derive_source_id`, `analyze_source`, `simulate_source`, `describe_feed`, `get_latest_value`, `describe_access`, `get_x402_status`, `list_providers`, `get_provider`, `quote_source_payment`, `build_verifier_calldata` |
 | Local, with a signer | The read tools above, plus `execute_subscription_round`, `execute_x402_round`, `submit_attestation` |
 | Hosted (holds no key) | The read tools, plus the split flows below. The caller's own wallet signs |
 
@@ -19,6 +19,7 @@ On a read-only server, `describe_feed` and `get_latest_value` need an explicit `
 3. `derive_source_id` for any `source` the user describes. It validates it (a rejection names the field's path), returns the canonical JSON so the preimage can be audited, the declared output, and warnings about determinism.
 4. `describe_feed` or `get_latest_value` with a `submitter` to read a feed. `describe_access` with an `owner` to see whether a wallet has a subscription or is a delegate.
 5. `quote_source_payment` to price a paywalled source, and `get_x402_status` to price an x402 round.
+6. For a source with a `policy`: `analyze_source` says what it can conclude (its candidates, the reasons it can be INCONCLUSIVE, the fallback words it would sign, warnings), and `simulate_source` evaluates it over inputs you supply on the gateway, for example one venue down (`{"error": "fetch"}`) or a stale price in its body, so the user sees the outcome and the fallback before paying for a round.
 
 Nothing here signs or spends.
 

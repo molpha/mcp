@@ -106,6 +106,8 @@ With no signer configured the server starts **read-only** and offers only the re
 | --- | --- | --- |
 | `get_capabilities` | Read | Run level, program id, registry version, nodes, gateways, chains, verifier addresses, x402 caps and source-payment policy. |
 | `derive_source_id` | Read, local | Validate a `source` document and derive its `sourceId` ([how](docs/reference.md#how-sourceid-is-derived)): the canonical JSON, the declared output, determinism warnings. No transaction, no wallet. |
+| `analyze_source` | Read, local | What a `source` can do: its inputs and, for a policy, candidates, combinator, the INCONCLUSIVE reasons it can reach and the fallback words it would sign, with warnings. No network. |
+| `simulate_source` | Read, gateway | Evaluate a `source` over inputs you supply (a body, decoded fields, or a failed fetch) on the gateway: the policy outcome and the value nodes would sign. Nothing is fetched, signed or charged. |
 | `describe_feed` | Read | Read the Solana feed for `(sourceId, signaturesRequired, submitter)` and the signer's subscription status. Pass the `source` to read the stored value by its declared output. |
 | `get_latest_value` | Read | Read the latest attested value stored in a Solana feed account; with the `source`, rendered by its declared output. |
 | `describe_access` | Read | Whether a wallet is a subscription owner or delegate, with the plan's and the delegate's limits. |
