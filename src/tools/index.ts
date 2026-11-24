@@ -9,6 +9,7 @@ import { registerExecuteX402RoundTool } from "./execute_x402_round.js";
 import { registerGetCapabilitiesTool } from "./get_capabilities.js";
 import { registerGetLatestValueTool } from "./get_latest_value.js";
 import { registerGetX402StatusTool } from "./get_x402_status.js";
+import { registerAnalyzeSourceTool, registerSimulateSourceTool } from "./policy_tools.js";
 import { registerGetProviderTool, registerListProvidersTool } from "./providers.js";
 import { registerQuoteSourcePaymentTool } from "./quote_source_payment.js";
 import { registerBeginSessionTool } from "./hosted/begin_session.js";
@@ -30,6 +31,9 @@ import { type ToolServer } from "./types.js";
 export function registerTools(server: ToolServer, dependencies: ToolDependencies = {}): void {
   registerGetCapabilitiesTool(server, dependencies);
   registerDeriveSourceIdTool(server, dependencies);
+  // A source's policy, read statically or evaluated over supplied inputs: no wallet, nothing signed.
+  registerAnalyzeSourceTool(server, dependencies);
+  registerSimulateSourceTool(server, dependencies);
   registerDescribeFeedTool(server, dependencies);
   registerGetLatestValueTool(server, dependencies);
   registerDescribeAccessTool(server, dependencies);

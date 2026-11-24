@@ -8,6 +8,7 @@ import { DATA_READ_TOOL_NAMES, DATA_TOOL_NAMES, callTool, collectTools } from ".
 
 
 const READ_TOOLS = [
+  "analyze_source",
   "build_verifier_calldata",
   "derive_source_id",
   "describe_access",
@@ -18,6 +19,7 @@ const READ_TOOLS = [
   "get_x402_status",
   "list_providers",
   "quote_source_payment",
+  "simulate_source",
   ...DATA_READ_TOOL_NAMES
 ].sort();
 
@@ -52,8 +54,8 @@ describe("the read-only tool surface", () => {
     expect(collectTools({ readOnly: { reason: "test" } }).every((tool) => tool.config.annotations.readOnlyHint === true)).toBe(true);
   });
 
-  it("leaves the default surface at 13 tools plus the data tools", () => {
-    expect(collectTools()).toHaveLength(13 + DATA_TOOL_NAMES.length);
+  it("leaves the default surface at 15 tools plus the data tools", () => {
+    expect(collectTools()).toHaveLength(15 + DATA_TOOL_NAMES.length);
   });
 });
 

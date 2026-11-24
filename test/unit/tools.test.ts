@@ -10,6 +10,7 @@ import { GOLDEN_CANONICAL, GOLDEN_SOURCE_ID, priceSource } from "./sources.js";
 import { DATA_READ_TOOL_NAMES, DATA_TOOL_NAMES, callTool, callToolError, collectTools } from "./tool-harness.js";
 
 const TOOL_NAMES = [
+  "analyze_source",
   "build_verifier_calldata",
   "derive_source_id",
   "describe_access",
@@ -22,6 +23,7 @@ const TOOL_NAMES = [
   "get_x402_status",
   "list_providers",
   "quote_source_payment",
+  "simulate_source",
   "submit_attestation",
   ...DATA_TOOL_NAMES
 ].sort();
@@ -31,6 +33,7 @@ const TOOL_NAMES = [
  * the caller's own wallet, and nothing that signs on the server is offered.
  */
 const HOSTED_TOOL_NAMES = [
+  "analyze_source",
   "begin_session",
   "build_verifier_calldata",
   "complete_session",
@@ -48,10 +51,12 @@ const HOSTED_TOOL_NAMES = [
   "prepare_x402_round",
   "quote_source_payment",
   "send_signed_transaction",
+  "simulate_source",
   ...DATA_READ_TOOL_NAMES
 ].sort();
 
 const READ_ONLY = [
+  "analyze_source",
   "build_verifier_calldata",
   "derive_source_id",
   "describe_access",
@@ -62,6 +67,7 @@ const READ_ONLY = [
   "get_x402_status",
   "list_providers",
   "quote_source_payment",
+  "simulate_source",
   ...DATA_READ_TOOL_NAMES
 ].sort();
 
