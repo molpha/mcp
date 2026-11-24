@@ -18,7 +18,10 @@ const body = (sourceId: string, valuePacked: string, extra: Record<string, unkno
     ...extra
   }
 });
-const expected = { sourceId: S, registryVersion: 4, signaturesRequired: 3, output: { type: "int256", decimals: 0 } as const };
+const FALLBACK = "0x" + "ff".repeat(32); // -1 as int256
+const plain = { sourceId: S, registryVersion: 4, signaturesRequired: 3, output: { type: "int256", decimals: 0 } as const };
+// A source with a policy whose fallback is -1: the outcome is read from the signed value against its words.
+const expected = { ...plain, fallbackWords: [FALLBACK] };
 
 describe("readRoundResponse with a policy outcome", () => {
   it("matches a fallback round under S, renders the fallback as a value and keeps the label", () => {
@@ -41,8 +44,26 @@ describe("readRoundResponse with a policy outcome", () => {
     expect(readRoundResponse(body("22".repeat(32), "ff".repeat(32), { outcome: "fallback", reason: "0x01" }), expected, now).matches).toBe(false);
   });
 
-  it("drops an unknown label", () => {
-    const r = readRoundResponse(body(S, "00".repeat(31) + "0a", { outcome: "inconclusive", reason: "0x01" }), expected, now);
+  it("reads the outcome from the signed value, not the label", () => {
+    // A conclusive value labelled anything else is conclusive, with no reason.
+    for (const extra of [{ outcome: "inconclusive", reason: "0x01" }, { outcome: "fallback", reason: "0x01" }, {}]) {
+      const r = readRoundResponse(body(S, "00".repeat(31) + "0a", extra), expected, now);
+      expect(r.result.outcome, JSON.stringify(extra)).toBe("conclusive");
+      expect(r.result.reason).toBeUndefined();
+    }
+    // A fallback word is the fallback with or without a label; only a fallback label gives the reason.
+    for (const extra of [{}, { outcome: "conclusive" }, { outcome: "inconclusive", reason: "0x02" }]) {
+      const r = readRoundResponse(body(S, "FF".repeat(32), extra), expected, now);
+      expect(r.result.outcome, JSON.stringify(extra)).toBe("fallback");
+      expect(r.result.reason).toBeUndefined();
+    }
+    // A reason that is not one byte is dropped.
+    expect(readRoundResponse(body(S, "ff".repeat(32), { outcome: "fallback", reason: "nope" }), expected, now).result.reason).toBeUndefined();
+  });
+
+  it("reports no outcome for a source without a policy, whatever the label", () => {
+    const r = readRoundResponse(body(S, "ff".repeat(32), { outcome: "fallback", reason: "0x01" }), plain, now);
+    expect(r.result.value).toBe("-1");
     expect(r.result.outcome).toBeUndefined();
     expect(r.result.reason).toBeUndefined();
   });
@@ -65,7 +86,7 @@ describe("buildRoundResult with a policy outcome", () => {
   });
 
   it("emits no label for a source without a policy", async () => {
-    const r = readRoundResponse(body(S, "00".repeat(31) + "0a"), expected, now);
+    const r = readRoundResponse(body(S, "00".repeat(31) + "0a"), plain, now);
     const out = await buildRoundResult(r.result, [], config, "subscription", false);
     expect(out).not.toHaveProperty("outcome");
     expect(out).not.toHaveProperty("reason");

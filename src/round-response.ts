@@ -21,6 +21,12 @@ export interface ExpectedRound {
    * rather than taken as the gateway sent it, and a `keccak256` preimage is checked to hash to them.
    */
   output?: SourceOutput;
+  /**
+   * The requested source's fallback words ({@link policyFallbackWords}) when it has a policy. With them the
+   * outcome is read from the signed value: a value among them is the fallback, anything else conclusive.
+   * Without them (no policy) no outcome is reported, whatever the gateway's unsigned label says.
+   */
+  fallbackWords?: string[];
 }
 
 export interface RoundResponse {
@@ -79,10 +85,31 @@ export function readRoundResponse(body: Record<string, unknown>, expected: Expec
       commitmentAddr: data.commitmentAddr,
       fresh: data.fresh ?? true,
       ...(preimage !== undefined ? { valuePreimage: preimage } : {}),
-      ...(data.outcome !== undefined ? { outcome: data.outcome } : {}),
-      ...(data.reason !== undefined ? { reason: data.reason } : {})
+      ...policyOutcome(data, expected.fallbackWords)
     }
   };
+}
+
+/**
+ * A policy round's outcome, from the signed value (as the SDK's `readOutcome` reads it): a value among the
+ * source's fallback words is its fallback, anything else conclusive. The gateway's label is unsigned: it only
+ * supplies the reason, and only when it also says fallback. A source without a policy has no outcome.
+ */
+export function policyOutcome(
+  data: Record<string, unknown>,
+  fallbackWords: string[] | undefined
+): { outcome?: "conclusive" | "fallback"; reason?: string } {
+  if (fallbackWords === undefined) {
+    return {};
+  }
+  const value = "0x" + String(data.valuePacked ?? "").replace(/^0[xX]/, "").toLowerCase();
+  if (!fallbackWords.includes(value)) {
+    return { outcome: "conclusive" };
+  }
+  const reason = data.outcome === "fallback" && typeof data.reason === "string" && /^0x[0-9a-f]{2}$/i.test(data.reason)
+    ? data.reason.toLowerCase()
+    : undefined;
+  return { outcome: "fallback", ...(reason !== undefined ? { reason } : {}) };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

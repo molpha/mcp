@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getMolphaContext, type ToolDependencies } from "../clients.js";
 import { checkSourceDeterminism } from "../determinism.js";
+import { normalizeSourceId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
 import { requireSdkExport } from "../sdk.js";
 import { parseSource, type ParsedSourceLike } from "../source.js";
@@ -155,6 +156,11 @@ export function registerSimulateSourceTool(server: ToolServer, dependencies: Too
             answer = JSON.parse(text) as typeof answer;
           } catch {
             // An older gateway's own 404 page, or a proxy.
+          }
+          if (res.ok && answer.data && normalizeSourceId(String(answer.data.sourceId ?? "")) !== normalizeSourceId(parsed.idHex)) {
+            // An answer about another source says nothing about this one.
+            failures.push(`${gateway}: answered for source ${String(answer.data.sourceId)}, not ${parsed.idHex}`);
+            continue;
           }
           if (res.ok && answer.data) {
             return {
